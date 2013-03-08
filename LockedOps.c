@@ -1,19 +1,30 @@
 /*
  * LockedOps.c
  *
- * -> In dieser Datei darf sich immer nur ein Thread/process befinden
- * -> die args müssen soweit wie möglich gültig sein
+ * Handle the the read/write/IO Ops 
+ * (only one thread is inside this file at the same time, every arg should be valid)
+ * 
+ * Copyright (C) 201x IMAGO Technologies GmbH
  *
- *  Created on: 23.12.2011
- *      Author: imago
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * version 2, as published by the Free Software Foundation
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ *
  */
 
 #include "AGEXDrv.h"
 
-char 				pBuildTime[] = {__DATE__ " - " __TIME__};
-char 				pVersion[] = {"1.0.1.0"};
-
-
+char 	pBuildTime[] = {__DATE__ " - " __TIME__};
+char 	pVersion[] = {"1.0.1.0"};
 
 
 //führt die sucht einen freien eintrag und belegt diesen, gibt >= 0 für OK sonst fehler code zurück,
@@ -150,8 +161,8 @@ long Locked_ioctl(const u32 cmd, u8 __user * pToUserMem, const u32 BufferSizeByt
 				else
 				{
 					//nur zum Tracen
-					printk(KERN_DEBUG "agexdrv: Locked_ioctl> Release DeviceID = %d, was %s\n",
-								   DeviceID, (_boIsDeviceIDUsed[DeviceID])?("true"):("false") );
+					pr_debug("agexdrv: Locked_ioctl> Release DeviceID = %d, was %s\n",
+							   DeviceID, (_boIsDeviceIDUsed[DeviceID])?("true"):("false") );
 
 					//freigeben, immer egal was für ein Zustand war
 					_boIsDeviceIDUsed[DeviceID] = FALSE;
@@ -221,7 +232,7 @@ long Locked_ioctl(const u32 cmd, u8 __user * pToUserMem, const u32 BufferSizeByt
 					result = -EMFILE;
 				}
 				else
-					printk(KERN_DEBUG "AgeXEvtIoDeviceControl NewDeviceID = %d\n", NewDeviceID );
+					pr_debug("AgeXEvtIoDeviceControl NewDeviceID = %d\n", NewDeviceID );
 			}
 
 			break;

@@ -43,6 +43,14 @@ long Locked_startlongtermread(const u32 DeviceID);
 long Locked_write(const u8 __user * pToUserMem, const size_t BytesToWrite);
 long Locked_ioctl(const u32 cmd, u8 __user * pToUserMem, const u32 BufferSizeBytes);
 
+/* prototypes */
+ssize_t AGEXDrv_read (struct file *filp, char __user *buf, size_t count, loff_t *pos);
+ssize_t AGEXDrv_write (struct file *filp, const char __user *buf, size_t count,loff_t *pos);
+long AGEXDrv_unlocked_ioctl (struct file *filp, unsigned int cmd,unsigned long arg);
+
+irqreturn_t AGEXDrv_interrupt(int irq, void *args);
+void AGEXDrv_SwitchInterruptOn(const bool boTurnOn);
+void AGEXDrv_tasklet(unsigned long unused);
 
 /*** Infos über die DeviceID buw LongTermRequest ***/
 //Gibt wie viele LongTerm Requests offen sein dürfen/können
@@ -91,9 +99,13 @@ typedef struct _LONG_TERM_IO_REQUEST
 //Feld mit den DeviceIDs, UserMode fragt an welche frei sind
 extern bool _boIsDeviceIDUsed[MAX_IRQDEVICECOUNT];
 extern LONGTERM_IOREQUEST  _LongTermRequestList[MAX_LONG_TERM_IO_REQUEST];
+extern bool _boIsIRQOpen;
+extern unsigned long _BAR0_Len;;
+extern char pBuildTime[];
+extern char pVersion[];
 
-
-
+extern struct tasklet_struct	_AGEXDrv_tasklet;
+extern struct semaphore 		_Driver_Sem;
 
 /*** Ioctl definitions siehe. "ioctl-number.txt" ***/
 //magic number

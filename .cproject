@@ -26,8 +26,9 @@
 								<inputType id="cdt.managedbuild.tool.gnu.cpp.compiler.input.88361900" superClass="cdt.managedbuild.tool.gnu.cpp.compiler.input"/>
 							</tool>
 							<tool id="cdt.managedbuild.tool.gnu.c.compiler.base.1606789573" name="GCC C Compiler" superClass="cdt.managedbuild.tool.gnu.c.compiler.base">
-								<option id="gnu.c.compiler.option.include.paths.2050469275" superClass="gnu.c.compiler.option.include.paths" valueType="includePath">
+								<option id="gnu.c.compiler.option.include.paths.2050469275" name="Include paths (-I)" superClass="gnu.c.compiler.option.include.paths" valueType="includePath">
 									<listOptionValue builtIn="false" value="/usr/src/linux-headers-2.6.32-5-common/include"/>
+									<listOptionValue builtIn="false" value="/usr/src/linux-headers-3.5.0-25-lowlatency/include"/>
 								</option>
 								<inputType id="cdt.managedbuild.tool.gnu.c.compiler.input.1417336326" superClass="cdt.managedbuild.tool.gnu.c.compiler.input"/>
 							</tool>

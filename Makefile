@@ -1,24 +1,33 @@
 # Comment/uncomment the following line to disable/enable debugging
-DEBUG = y
+# or call make DEBUG=y default is DEBUG=n
+#DEBUG = y
 
 # Add your debugging flag (or not) to EXTRA_CLAGS
 #Note:
-#	for kernel upto 2.6.23
-#       Makefile need to change for kernel 2.6.24 used EXTRA_CLAGS instead of CFLAGS 
+# for kernel upto 2.6.23 uses
+# 		CFLAGS
+#
+# later it used EXTRA_CLAGS instead of CFLAGS 
+#		e.g: EXTRA_CLAGS += $(DEBFLAGS) 
+#
+# since ~2007/2009 it uses ccflags-y
+#		e.g: ccflags-y += -v
+#
+
 ifeq ($(DEBUG),y)
-  DEBFLAGS = -O -g # "-O" is needed to expand inlines
+  DEBFLAGS = -O -g -DDEBUG # "-O" is needed to expand inlines
 else
-  DEBFLAGS = -O2
+  DEBFLAGS = -O2  
 endif
 
-EXTRA_CLAGS += $(DEBFLAGS) -I$(LDDINCDIR)
+ccflags-y := $(DEBFLAGS) -Werror -Wall 
 
 # If KERNELRELEASE is defined, we've been invoked from the
 # kernel build system and can use its language.
 ifneq ($(KERNELRELEASE),)
 # call from kernel build system
 
-	AGEXDrvAMD64-objs := LockedOps.o AGEXDrv.o
+	AGEXDrvAMD64-objs := FileOps.o ISRTasklet.o LockedOps.o AGEXDrv.o
 
 	obj-m	:= AGEXDrvAMD64.o
 
@@ -29,8 +38,6 @@ else
 	PWD       := $(shell pwd)
 
 default:
-#für ein local include dir
-#LDDINCDIR=$(PWD)/../include
 	$(MAKE) -C $(KERNELDIR) M=$(PWD) modules
 
 endif
@@ -40,10 +47,8 @@ endif
 clean:
 	rm -rf *.o *~ core .depend .*.cmd *.ko *.mod.c .tmp_versions modules.order Module.symvers
 
-depend .depend dep:
-	$(CC) $(EXTRA_CLAGS) -M *.c > .depend
+#default /lib/modules/$(KERNELRELEASE)/extra
+install:
+	make -C $(KERNELDIR) M=$(PWD) modules_install
+	depmod -a -q
 
-
-ifeq (.depend,$(wildcard .depend))
-include .depend
-endif
