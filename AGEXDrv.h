@@ -1,8 +1,20 @@
 /*
  * AGEXDrv.h
  *
- *  Created on: 20.12.2011
- *      Author: imago
+ * Copyright (C) 201x IMAGO Technologies GmbH
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * version 2, as published by the Free Software Foundation
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.*
  */
 
 #ifndef AGEXDRV_H_
@@ -28,6 +40,7 @@
 #include <linux/pci.h>		// für pci*
 #include <linux/ioport.h>	// für _regio*
 #include <linux/interrupt.h>// für IRQ*
+#include <linux/dma-mapping.h>	//für dma_*
 #if LINUX_VERSION_CODE != KERNEL_VERSION(2,6,32)
 	#include <asm/uaccess.h>	// für copy_to_user
 #else
@@ -37,6 +50,15 @@
 typedef u8 IOCTLBUFFER[128];
 #define FALSE 0
 #define TRUE 1
+
+//AGEX<>AGEX2<>Invalid
+enum AGEX_DEVICE_SUBTYPE
+{
+	SubType_Invalid = 0,
+	SubType_AGEX	= 1,
+	SubType_AGEX2	= 2
+};
+
 
 /*** LOCKED fns ***/
 long Locked_startlongtermread(const u32 DeviceID);
@@ -61,7 +83,10 @@ void AGEXDrv_tasklet(unsigned long unused);
 #define MAX_SUNPACKETSIZE  (4*3)// größe in Bytes mit Header
 
 //1 schaltet den Interrupt an
-#define ISR_ONOFF_OFFSET (1<<20)
+#define ISR_ONOFF_OFFSET_AGEX (1<<20)
+#define ISR_ONOFF_OFFSET_AGEX2 (0x10010)
+//wo kommt die PCI-Adr des common buffers his
+#define ISR_COMMONBUFFER_ADR_AGEX2 (0x10000)
 //1 sagt das, dass device einen Interrupt angelegt hat
 #define ISR_AVAILABLE_OFFSET (1<<20)
 
@@ -100,7 +125,11 @@ typedef struct _LONG_TERM_IO_REQUEST
 extern bool _boIsDeviceIDUsed[MAX_IRQDEVICECOUNT];
 extern LONGTERM_IOREQUEST  _LongTermRequestList[MAX_LONG_TERM_IO_REQUEST];
 extern bool _boIsIRQOpen;
-extern unsigned long _BAR0_Len;;
+extern unsigned long _BAR0_Len;
+extern u8 			_DevSubType;
+extern void* 		_pVA_CommonBuffer;
+extern dma_addr_t 	_pBA_CommonBuffer;
+
 extern char pBuildTime[];
 extern char pVersion[];
 
@@ -116,10 +145,12 @@ extern struct semaphore 		_Driver_Sem;
 #define AGEXDRV_IOC_GET_BUILD_DATE 	_IOR(AGEXDRV_IOC_MAGIC, 1, IOCTLBUFFER)
 #define AGEXDRV_IOC_RELEASE_DEVICEID _IOWR(AGEXDRV_IOC_MAGIC, 2, u8)
 #define AGEXDRV_IOC_CREATE_DEVICEID _IOR(AGEXDRV_IOC_MAGIC, 3, u8)
+#define AGEXDRV_IOC_GET_SUBTYPE 	_IOR(AGEXDRV_IOC_MAGIC, 4, u8)
+
 
 
 //max num (nur zum Testen)
-#define AGEXDRV_IOC_MAXNR 3
+#define AGEXDRV_IOC_MAXNR 4
 
 //zeigt auf den Anfang des gemapped mem vom PCIDev
 extern void* _PCI_IOMEM_StartAdr;

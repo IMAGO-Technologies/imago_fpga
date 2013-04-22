@@ -34,19 +34,43 @@ DECLARE_TASKLET(_AGEXDrv_tasklet,AGEXDrv_tasklet,0);
 //Schaltet im PCI-Gerät die Ints ab/zu
 void AGEXDrv_SwitchInterruptOn(const bool boTurnOn)
 {
-	u32 regVal;
+	u32 regVal,regAdr;
 
-	//alles gut?
-	if(_PCI_IOMEM_StartAdr == NULL)
+	//>alles gut?
+	if( (_PCI_IOMEM_StartAdr == NULL) || (_DevSubType == SubType_Invalid))
 		return;
 
+	//> CommonBuffer Adr setzen (nur gültig solange IRQon) & Init
+	//hat nur eine AGEX2
+	if( boTurnOn && (_DevSubType == SubType_AGEX2) )
+	{
+		//nur um ganz sicher zu sein
+		if( (_pVA_CommonBuffer == NULL) || (_pBA_CommonBuffer == 0) )
+		  	return;
+
+		//das IRQ Flag löschen (1 Word, 4 Word sind nur zu Sicherheit)
+		memset(_pVA_CommonBuffer,0, (2+3) + sizeof(u32));
+		smp_mb();	//nop bei x86
+
+		//Adr ins FPGA setzen
+		iowrite32(_pBA_CommonBuffer, _PCI_IOMEM_StartAdr +ISR_COMMONBUFFER_ADR_AGEX2);
+	}
+
+
+	//> IRQ enable flag
 	//was schreiben
 	if(boTurnOn)
 		regVal = 0x1;
 	else
 		regVal = 0x0;
 
-	iowrite32(regVal, _PCI_IOMEM_StartAdr + ISR_ONOFF_OFFSET);
+	//wo kommt das On/Off Bit hin?
+	if(_DevSubType == SubType_AGEX2)
+		regAdr = ISR_ONOFF_OFFSET_AGEX2;
+	else
+		regAdr = ISR_ONOFF_OFFSET_AGEX;
+
+	iowrite32(regVal, _PCI_IOMEM_StartAdr + regAdr);
 }
 
 
@@ -57,14 +81,33 @@ irqreturn_t AGEXDrv_interrupt(int irq, void *args)
 	u32 regVal;
 
 	/* war der int von uns? reg lesen  */
-	if(_PCI_IOMEM_StartAdr == NULL)
+	if( (_PCI_IOMEM_StartAdr == NULL) || (_DevSubType == SubType_Invalid) )
 		return IRQ_NONE;
 
-	regVal = ioread32(_PCI_IOMEM_StartAdr + ISR_AVAILABLE_OFFSET);
+
+	/* liest das IRQ flag ein */
+	if(_DevSubType == SubType_AGEX2)
+	{
+		if( (_pVA_CommonBuffer == NULL) || (_pBA_CommonBuffer == 0) )
+			return IRQ_NONE;
+
+		regVal = ((u32*)_pVA_CommonBuffer)[0];		//das Bit steht in uns Drin
+	}
+	else
+	{
+		//das Flag geht weg wenn FIFO leer oder IRQs off sind
+		regVal = ioread32(_PCI_IOMEM_StartAdr + ISR_AVAILABLE_OFFSET);
+	}
+
+
+	/* ja, unser interrupt */
 	if(regVal & 0x1)
 	{
 		//INTs abschalten
-		AGEXDrv_SwitchInterruptOn(FALSE);
+		//AGEX: IRQ geht weg wenn FIFO leer oder IRQs off sind
+		//AGEX2: automatisch
+		if(_DevSubType == SubType_AGEX)
+			AGEXDrv_SwitchInterruptOn(FALSE);
 
 		// trigger the tasklet
 		tasklet_schedule(&_AGEXDrv_tasklet);
@@ -93,32 +136,50 @@ void AGEXDrv_tasklet (unsigned long unused)
 
 
 	//Alles gut?
-	if(_PCI_IOMEM_StartAdr == NULL)
+	if( (_PCI_IOMEM_StartAdr == NULL) || (_DevSubType == SubType_Invalid) )
 		return;
+	if(_DevSubType == SubType_AGEX2)
+	{
+		if( (_pVA_CommonBuffer == NULL) || (_pBA_CommonBuffer == 0) )
+			return;
+	}
 
 
 	/* vom FPGA den PaketKopf einlesen/auswerten */
-	// FIFO-Fuellstand einlesen
-	regVal = ioread32(_PCI_IOMEM_StartAdr + ISR_AVAILABLE_OFFSET);
+	// FIFO-Fuellstand einlesen (AGEX hat ein FIFO)
+	// bei AGEX2 steht an Pos 3 Header0 im CommonBuffer das Paket hat daher keine größe
+	if(_DevSubType == SubType_AGEX)
+	{
+		// FIFO-Fuellstand einlesen
+		regVal = ioread32(_PCI_IOMEM_StartAdr + ISR_AVAILABLE_OFFSET);
 
-	// im Bit 0 steht das Interrupt-Flag, danach der Fuellstand
-	fifoLevel = (regVal >> 1) & 0x1FF;
+		// im Bit 0 steht das Interrupt-Flag, danach der Fuellstand
+		fifoLevel = (regVal >> 1) & 0x1FF;
 
-	if (fifoLevel < 3){
-		// sollte nicht auftreten
-		printk(KERN_ERR "agexdrv: SUN Error: FIFO level to small: %d\n", fifoLevel);
-		return;
+		if (fifoLevel < 3){
+			// sollte nicht auftreten
+			printk(KERN_ERR "agexdrv: SUN Error: FIFO level to small: %d\n", fifoLevel);
+			return;
+		}
+		pr_devel("agexdrv: SUN FIFO level: %d\n", fifoLevel);
 	}
-	pr_devel("agexdrv: SUN FIFO level: %d\n", fifoLevel);
 
 	// Header0 und Header1 einlesen
-	header0 = ioread32(_PCI_IOMEM_StartAdr);
-	header1 = ioread32(_PCI_IOMEM_StartAdr);
-	wordCount = header1 & 0xFF;
+	if(_DevSubType == SubType_AGEX)
+	{
+		header0 = ioread32(_PCI_IOMEM_StartAdr);
+		header1 = ioread32(_PCI_IOMEM_StartAdr);
+	}
+	else
+	{
+		header0 = ((u32*)_pVA_CommonBuffer)[2+0];
+		header1 = ((u32*)_pVA_CommonBuffer)[2+1];
+	}
+
+
+	wordCount = header1 & 0xFF;	//ist somit auch kleiner PAGE_SIZE
 	deviceID = (header1>>20) & (MAX_IRQDEVICECOUNT-1);
 	pr_devel("agexdrv: SUN WordCount: %d\n", wordCount);
-
-
 
 
 	/* läuft noch eine Anfrage für die ID? */
@@ -137,11 +198,14 @@ void AGEXDrv_tasklet (unsigned long unused)
 				//wenns in den Buffer passt, Daten einlesen
 				if(MAX_SUNPACKETSIZE >= 4*wordCount+8) // Paket mit Header0/1
 				{
-					_LongTermRequestList[index].IRQBuffer[0] = header0;
-					_LongTermRequestList[index].IRQBuffer[1] = header1;
-
-					ioread32_rep(_PCI_IOMEM_StartAdr,_LongTermRequestList[index].IRQBuffer+2,wordCount);
-
+					if(_DevSubType == SubType_AGEX)
+					{
+						_LongTermRequestList[index].IRQBuffer[0] = header0;
+						_LongTermRequestList[index].IRQBuffer[1] = header1;
+						ioread32_rep(_PCI_IOMEM_StartAdr,_LongTermRequestList[index].IRQBuffer+2,wordCount);
+					}
+					else
+						memcpy(	_LongTermRequestList[index].IRQBuffer, ((u32*)_pVA_CommonBuffer) + 2, 4*wordCount+8);
 					boPacketDataDone	= TRUE;
 					_LongTermRequestList[index].IRQBuffer_anzBytes = 4*wordCount+8;
 				}
@@ -168,7 +232,8 @@ void AGEXDrv_tasklet (unsigned long unused)
 
 
 	/* Immer! egal ob sie einer will oder nicht die daten weglesen */
-	if (!boPacketDataDone)
+	//Nur bei der AGEX, bei der AGEX2 wird beim IRQenablen der Buffer ungültig gemacht
+	if (!boPacketDataDone && (_DevSubType == SubType_AGEX) )
 	{
 		u16 i;
 		volatile u32 dummy;

@@ -36,14 +36,17 @@ static int AGEXDrv_PCI_probe(struct pci_dev *dev, const struct pci_device_id *id
 static void AGEXDrv_PCI_remove(struct pci_dev *dev);
 
 /* Members :-) */
-bool _boIsIRQOpen;
-bool _boIsBAR0Requested;
-void* _PCI_IOMEM_StartAdr;
-unsigned long _BAR0_Len;
-dev_t 		_DeviceNumber;
-struct cdev	_Device;
-struct cdev * _pDevice;
-struct class *_pClassType;
+bool 	_boIsIRQOpen;
+bool 	_boIsBAR0Requested;
+void* 	_PCI_IOMEM_StartAdr;
+void* 	_pVA_CommonBuffer;
+dma_addr_t _pBA_CommonBuffer;
+unsigned long 	_BAR0_Len;
+dev_t 			_DeviceNumber;
+u8 _DevSubType;
+struct cdev		_Device;
+struct cdev * 	_pDevice;
+struct class *	_pClassType;
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
 	DEFINE_SEMAPHORE(_Driver_Sem);		//erzeugt eine mit sem_count = 1 -> frei
 #else
@@ -66,6 +69,7 @@ struct file_operations AGEXDrv_fops = {
 //für welche PCI IDs sind wir zuständi?
 static struct pci_device_id AGEXDrv_ids[] = {
 	{ PCI_DEVICE(0x1204/*VendorID (Lattice Semi)*/, 0x0200 /*DeviceID*/), },
+	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0x0004 /*DeviceID*/), },
 	{ 0, }
 };
 MODULE_DEVICE_TABLE(pci, AGEXDrv_ids);		//macht dem kernel bekannt was dieses modul für PCI devs kann
@@ -88,15 +92,34 @@ static struct pci_driver AGEXDrv_pci_driver = {
 //wird aufgerufen wenn der kernel denkt das der treiber das PCIDev unterstützt, 0 ja <0 nein
 static int AGEXDrv_PCI_probe(struct pci_dev *dev, const struct pci_device_id *id)
 {
-	unsigned long bar0_start,bar0_len;
+	u64 bar0_start,bar0_len;
 
 	pr_devel("agexdrv: AGEXDrv_PCI_probe\n");
+
+	//>was sind wir AGEX(2)?
+	if( (id->vendor == 0x1204) &&  (id->device == 0x0200) )		//Lattice
+	{
+		_DevSubType = SubType_AGEX;
+		pr_devel("agexdrv: found AGE-X device\n");
+	}
+	else if((id->vendor == 0x1172) &&  (id->device == 0x0004) )	//Altera
+	{
+		_DevSubType = SubType_AGEX2;
+		pr_devel("agexdrv: found AGE-X2 device\n");
+	}
+	else
+	{
+		printk(KERN_WARNING "agexdrv: unknowen device identifier (ven: 0x%x,  dev: 0x%x)\n", id->vendor, id->device);
+		return -EINVAL;
+	}
+
 
 	//hat ein counter
 	if (pci_enable_device(dev) < 0) {
 		printk(KERN_ERR "agexdrv: pci_enable_device failed\n");
 		return -EIO;
 	}
+
 
 	//BAR0>
 	//das bar0 prüfen
@@ -107,9 +130,9 @@ static int AGEXDrv_PCI_probe(struct pci_dev *dev, const struct pci_device_id *id
 		return -ENODEV;
 	}
 	else
-		pr_devel("agexdrv: bar0> 0x%lx, %lubytes\n",bar0_start,bar0_len);
+		pr_devel("agexdrv: bar0> 0x%llx, %llubytes\n",bar0_start,bar0_len);
 
-	//bar0 mappen request_region();
+	//bar0 mappen request_region(); request_mem_region() macht kein mapping sondern 'nur' eine 'reservation'
 	if( request_mem_region(bar0_start, bar0_len,"agexdrv") == NULL){
 		_boIsBAR0Requested = FALSE;
 		printk(KERN_ERR "agexdrv: request_mem_region failed!\n");
@@ -122,13 +145,59 @@ static int AGEXDrv_PCI_probe(struct pci_dev *dev, const struct pci_device_id *id
 		if(_PCI_IOMEM_StartAdr == NULL)
 			printk(KERN_ERR "agexdrv: ioremap failed!\n");
 		else
-			pr_devel("agexdrv: map bar0> 0x%lx to 0x%p\n",bar0_start,_PCI_IOMEM_StartAdr);
+			pr_devel("agexdrv: map bar0> 0x%llx to 0x%p\n",bar0_start,_PCI_IOMEM_StartAdr);
 	}
 	_BAR0_Len = bar0_len;
 
 
+	//DMA(Coherent) Buffer (AGEX2 only)
+	if(_DevSubType == SubType_AGEX2)
+	{
+		//sagt das wir 32Bit können
+		//https://www.kernel.org/doc/Documentation/DMA-API-HOWTO.txt
+		// "...By default, the kernel assumes that your device can address the full 32-bits...
+		//  ... It is good style to do this even if your device holds the default setting ..."
+		if( dma_set_mask(&dev->dev, DMA_BIT_MASK(32) ) != 0)
+			{printk(KERN_ERR "agexdrv: dma_set_mask failed!\n"); return -EIO;}
+		//ab 2.6.34
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,34)
+		if( dma_set_coherent_mask(&dev->dev, DMA_BIT_MASK(32) ) != 0)
+			{printk(KERN_ERR "agexdrv: dma_set_coherent_mask failed!\n"); return -EIO;}
+#endif
 
+
+		//gibt speicher zurück ohne/mit cache off und auf Page ausgerichtet
+		// https://www.kernel.org/doc/Documentation/DMA-API.txt
+		// "... Consistent memory is memory for which a write by either the device or
+		//	the processor can immediately be read by the processor or device
+		//	without having to worry about caching effects..."
+		_pVA_CommonBuffer = dma_alloc_coherent(	&dev->dev, 	/* für welches device */
+												PAGE_SIZE, 	/* größe in Bytes (wird eh min zu einer Page)*/
+												&_pBA_CommonBuffer,
+												GFP_KERNEL);/* zone wird über die maske eingestellt, sonst nur noch ob GFP_ATOMIC)*/
+		if(_pVA_CommonBuffer == 0)
+			{printk(KERN_ERR "agexdrv: dma_alloc_coherent failed!\n"); return -ENOMEM;}
+		else
+		{
+			if( sizeof(dma_addr_t) == sizeof(u32) )
+				pr_devel("agexdrv: DMABuffer> VA: 0x%p, BA: 0x%x, %ld [Bytes]\n", _pVA_CommonBuffer, (u32)_pBA_CommonBuffer, PAGE_SIZE);
+			else
+				pr_devel("agexdrv: DMABuffer> VA: 0x%p, BA: 0x%llx, %ld [Bytes]\n", _pVA_CommonBuffer, (u64)_pBA_CommonBuffer, PAGE_SIZE);
+		}
+		memset(_pVA_CommonBuffer, 0 ,PAGE_SIZE);	//es gibt ab 3.2 dma_zalloc_coherent()
+	}
+
+	
 	//IRQ>
+	//msi einschalten
+	//http://www.mjmwired.net/kernel/Documentation/MSI-HOWTO.txt
+	// "... to call this API before calling request_irq()..."
+	if(_DevSubType == SubType_AGEX2)
+	{
+		if( pci_enable_msi(dev) != 0)
+			{printk(KERN_ERR "agexdrv:pci_enable_msi failed!\n"); return -EIO;}
+	}
+
 	//das gibt die (un)gemapped nummer zurück lspci zeigt die mapped an!
 	//if(pci_read_config_byte(dev, PCI_INTERRUPT_LINE, &PCIIRQ_Number) ) {
 	if( request_irq(dev->irq,	/* die IRQ nummer */
@@ -139,6 +208,9 @@ static int AGEXDrv_PCI_probe(struct pci_dev *dev, const struct pci_device_id *id
 			) != 0)
 	{
 		printk(KERN_ERR "agexdrv: request_irq failed\n");
+		if(_DevSubType == SubType_AGEX2)
+			pci_disable_msi(dev);
+
 		_boIsIRQOpen = FALSE;
 	}
 	else
@@ -150,9 +222,9 @@ static int AGEXDrv_PCI_probe(struct pci_dev *dev, const struct pci_device_id *id
 	}
 
 
-
 	return 0;
 }
+
 
 //wird aufgerufen wenn das PCIdev removed wird
 static void AGEXDrv_PCI_remove(struct pci_dev *dev)
@@ -160,9 +232,12 @@ static void AGEXDrv_PCI_remove(struct pci_dev *dev)
 	pr_devel("agexdrv: AGEXDrv_PCI_remove\n");
 
 	//IRQ zuückgeben
-	if(_boIsIRQOpen){
+	if(_boIsIRQOpen)
+	{
 		AGEXDrv_SwitchInterruptOn(FALSE);
 		free_irq(dev->irq, &_boIsIRQOpen);
+		if(_DevSubType == SubType_AGEX2)
+			pci_disable_msi(dev);
 	}
 
 	//unmappen
@@ -173,6 +248,10 @@ static void AGEXDrv_PCI_remove(struct pci_dev *dev)
 	if(_boIsBAR0Requested)
 		release_mem_region( pci_resource_start(dev, 0), pci_resource_len(dev, 0) );
 	_boIsBAR0Requested = FALSE;
+
+	if( (_DevSubType == SubType_AGEX2) && (_pVA_CommonBuffer != NULL) )
+		dma_free_coherent(&dev->dev, PAGE_SIZE, _pVA_CommonBuffer, _pBA_CommonBuffer);
+	_pVA_CommonBuffer = NULL;
 
 	pci_disable_device(dev);
 }
@@ -194,6 +273,9 @@ static int AGEXDrv_init(void)
 	/* init member */
 	_boIsIRQOpen		= FALSE;
 	_boIsBAR0Requested 	= FALSE;
+	_DevSubType			= SubType_Invalid;
+	_pVA_CommonBuffer 	= NULL;
+	_pBA_CommonBuffer	= 0;
 	_PCI_IOMEM_StartAdr = NULL;
 	_pDevice = NULL;	//damit wir erkennen ob wir das dev öffnen konnten
 	_pClassType =  ERR_PTR(-EFAULT);

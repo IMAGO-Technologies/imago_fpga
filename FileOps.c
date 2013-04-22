@@ -105,7 +105,7 @@ ssize_t AGEXDrv_read (struct file *filp, char __user *buf, size_t count, loff_t 
 		return -EFBIG;
 	if(_boIsIRQOpen == FALSE)
 		return -EFAULT;
-	if(count < (2*4))
+	if(count < (2*4))		//min 2 DWords, 2. is the size
 		return -EFAULT;
 
 	//dürfen wir den mem nutzen?
@@ -114,13 +114,17 @@ ssize_t AGEXDrv_read (struct file *filp, char __user *buf, size_t count, loff_t 
 
 
 	/* freien eintrag suchen */
+	//0. DWord <> DevID
+	//1. DWord <> anzBytesToWrite
+	//2. DWord <> Header0
+	//3. DWord <> Header1
+	//4. DWord <> Data
+	//5..n. DWord <> DummyDWords
 	//args lesen
 	if( get_user(DeviceID, buf) != 0)
 		return -EFAULT;
 	if( get_user(BytesToWrite, buf+4) != 0)
 		return -EFAULT;
-	if(BytesToWrite > MAX_SUNPACKETSIZE)
-		return -EFBIG;
 	if( (BytesToWrite+2*4) > count)
 		return -EFBIG;
 
@@ -188,7 +192,7 @@ ssize_t AGEXDrv_write (struct file *filp, const char __user *buf, size_t count,l
 
 	/* Alles gut? */
 	//mem ok?
-	if( (count > _BAR0_Len) || (count > MAX_SUNPACKETSIZE))
+	if(count > _BAR0_Len)
 		return -EFBIG;
 	if(_PCI_IOMEM_StartAdr == NULL)
 		return -EFBIG;

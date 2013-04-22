@@ -24,7 +24,7 @@
 #include "AGEXDrv.h"
 
 char 	pBuildTime[] = {__DATE__ " - " __TIME__};
-char 	pVersion[] = {"1.0.1.0"};
+char 	pVersion[] = {"1.1.0.0"};
 
 
 //führt die sucht einen freien eintrag und belegt diesen, gibt >= 0 für OK sonst fehler code zurück,
@@ -72,10 +72,10 @@ long Locked_startlongtermread(const u32 DeviceID)
 //führt die WriteOp aus, gibt >= 0 für OK sonst fehler code zurück,
 long Locked_write(const u8 __user * pToUserMem, const size_t BytesToWrite)
 {
-	u8 TempBuffer[MAX_SUNPACKETSIZE];
+	u8 TempBuffer[4*(3+1)];		//damit bei AGEX2 immer 64Bit sind
 
 	/* User Data -> Kernel */
-	if(BytesToWrite > MAX_SUNPACKETSIZE)
+	if(BytesToWrite > sizeof(TempBuffer) )
 		return -EFBIG;
 	if( copy_from_user (TempBuffer, pToUserMem, BytesToWrite) != 0){
 		printk(KERN_WARNING "agexdrv: Locked_write> copy_from_user faild\n");
@@ -85,10 +85,30 @@ long Locked_write(const u8 __user * pToUserMem, const size_t BytesToWrite)
 
 
 	/* Kernel -> PCI */
+	//Notes:
+	// -für die AGEX muss sich die Adr nicht ändern
+	// -bei der AGEX2 müssen es 32Bit mit steigender Adr sein
+	//
+	// aus include/asm-generic/iomap.h für ioread/writeX_rep
+	// "...They do _not_ update the port address. If you
+	//	want MMIO that copies stuff laid out in MMIO
+	//	memory across multiple ports, use "memcpy_toio()..."
+	//
+	// aber auch memcpy_toio() macht nicht immer 32Bit
+	// "http://www.gossamer-threads.com/lists/linux/kernel/650995?do=post_view_threaded#650995"
 	if (BytesToWrite % 4)
-		iowrite8_rep(_PCI_IOMEM_StartAdr, TempBuffer, BytesToWrite);
+	{
+		u32 ByteIndex =0;
+		for(; ByteIndex < BytesToWrite; ByteIndex++)
+			iowrite8(TempBuffer[ByteIndex], _PCI_IOMEM_StartAdr+ByteIndex);
+	}
 	else
-		iowrite32_rep(_PCI_IOMEM_StartAdr, TempBuffer, BytesToWrite/4);
+	{
+		u32 WordsToCopy = BytesToWrite/4;
+		u32 WordIndex =0;
+		for(; WordIndex < WordsToCopy; WordIndex++)
+			iowrite32( ((u32*)TempBuffer)[WordIndex], _PCI_IOMEM_StartAdr + WordIndex*4 );
+	}
 
 	return BytesToWrite;
 }
@@ -136,6 +156,26 @@ long Locked_ioctl(const u32 cmd, u8 __user * pToUserMem, const u32 BufferSizeByt
 			}
 
 		break;
+
+
+		/* Gibt SubType zurück */
+		case AGEXDRV_IOC_GET_SUBTYPE:
+			if( sizeof(_DevSubType) > BufferSizeBytes){
+				printk(KERN_WARNING "agexdrv: Locked_ioctl> Buffer Length to short\n");
+				result = -EFBIG;
+			}
+			else
+			{
+				if( copy_to_user(pToUserMem,&_DevSubType,sizeof(_DevSubType)) !=0 ){
+					printk(KERN_WARNING "agexdrv: Locked_ioctl> copy_to_user faild\n");
+					result = -EFAULT;
+				}
+				else
+					result = sizeof(_DevSubType);
+			}
+
+		break;
+
 
 
 		/* Markiert die DeviceID als frei*/
@@ -232,7 +272,7 @@ long Locked_ioctl(const u32 cmd, u8 __user * pToUserMem, const u32 BufferSizeByt
 					result = -EMFILE;
 				}
 				else
-					pr_debug("AgeXEvtIoDeviceControl NewDeviceID = %d\n", NewDeviceID );
+					pr_debug("agexdrv: Locked_ioctl> NewDeviceID = %d\n", NewDeviceID );
 			}
 
 			break;
