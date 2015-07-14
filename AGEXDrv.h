@@ -20,8 +20,22 @@
 #ifndef AGEXDRV_H_
 #define AGEXDRV_H_
 
-//aus usr/src/linux-headers-2.6.38-8-generic/include
+//> defines about the Module
+/******************************************************************************************/
+#define MODVERSION "1.1.5.0"
+#define MODDATECODE __DATE__ " - " __TIME__
+#define MODLICENSE "GPL";
+#define MODDESCRIPTION "Kernel module for the VisionBox AGE-X PCI(e) devices";
+#define MODAUTHOR "IMAGO Technologies GmbH";
 
+#define MODCLASSNAME	"agexdrv"
+#define MODMODULENAME	"agexpcidrv"
+#define MODDEBUGOUTTEXT	"agexpcidrv:"
+
+
+/*** includes ***/
+/******************************************************************************************/
+//aus usr/src/linux-headers-2.6.38-8-generic/include
 #include <linux/init.h>		// für module_init(),
 #include <linux/module.h>	// für MODULE_LICENSE
 #include <linux/version.h>	// für die Version
@@ -47,6 +61,10 @@
 	#include <linux/uaccess.h>	// für copy_to_user
 #endif
 
+
+
+/*** defines ***/
+/******************************************************************************************/
 typedef u8 IOCTLBUFFER[128];
 #define FALSE 0
 #define TRUE 1
@@ -60,21 +78,27 @@ enum AGEX_DEVICE_SUBTYPE
 };
 
 
-/*** LOCKED fns ***/
-long Locked_startlongtermread(const u32 DeviceID);
-long Locked_write(const u8 __user * pToUserMem, const size_t BytesToWrite);
-long Locked_ioctl(const u32 cmd, u8 __user * pToUserMem, const u32 BufferSizeBytes);
+//> Ioctl definitions siehe. "ioctl-number.txt"
+/******************************************************************************************/
+//magic number
+#define AGEXDRV_IOC_MAGIC  '['
 
-/* prototypes */
-ssize_t AGEXDrv_read (struct file *filp, char __user *buf, size_t count, loff_t *pos);
-ssize_t AGEXDrv_write (struct file *filp, const char __user *buf, size_t count,loff_t *pos);
-long AGEXDrv_unlocked_ioctl (struct file *filp, unsigned int cmd,unsigned long arg);
+//richtung ist aus UserSicht, size ist ehr der Type
+#define AGEXDRV_IOC_GET_VERSION 	_IOR(AGEXDRV_IOC_MAGIC, 0, IOCTLBUFFER)
+#define AGEXDRV_IOC_GET_BUILD_DATE 	_IOR(AGEXDRV_IOC_MAGIC, 1, IOCTLBUFFER)
+#define AGEXDRV_IOC_RELEASE_DEVICEID _IOWR(AGEXDRV_IOC_MAGIC, 2, u8)
+#define AGEXDRV_IOC_CREATE_DEVICEID _IOR(AGEXDRV_IOC_MAGIC, 3, u8)
+#define AGEXDRV_IOC_GET_SUBTYPE 	_IOR(AGEXDRV_IOC_MAGIC, 4, u8)
 
-irqreturn_t AGEXDrv_interrupt(int irq, void *args);
-void AGEXDrv_SwitchInterruptOn(const bool boTurnOn);
-void AGEXDrv_tasklet(unsigned long unused);
+//max num (nur zum Testen)
+#define AGEXDRV_IOC_MAXNR 4
 
-/*** Infos über die DeviceID buw LongTermRequest ***/
+
+//> Infos über die DeviceID bzw. LongTermRequest
+/******************************************************************************************/
+//Wie viele devices können wir zugleich bedienen
+#define MAX_DEVICE_COUNT 4
+
 //Gibt wie viele LongTerm Requests offen sein dürfen/können
 #define MAX_LONG_TERM_IO_REQUEST 8
 
@@ -85,11 +109,15 @@ void AGEXDrv_tasklet(unsigned long unused);
 //1 schaltet den Interrupt an
 #define ISR_ONOFF_OFFSET_AGEX (1<<20)
 #define ISR_ONOFF_OFFSET_AGEX2 (0x10010)
-//wo kommt die PCI-Adr des common buffers his
+//wo kommt die PCI-Adr des common buffers hin
 #define ISR_COMMONBUFFER_ADR_AGEX2 (0x10000)
 //1 sagt das, dass device einen Interrupt angelegt hat
 #define ISR_AVAILABLE_OFFSET (1<<20)
 
+
+
+/*** structs ***/
+/******************************************************************************************/
 
 /*NOTE:
  * es gibt 3 Arten der Nutzung einer DeviceID
@@ -98,7 +126,6 @@ void AGEXDrv_tasklet(unsigned long unused);
  * -> ein Process wartet auf eine DeviceID
  * -> die DLL hat eine ID belegt
 */
-
 //Fast alles zusammen was es über solch ein Request zu wissen gibt
 typedef struct _LONG_TERM_IO_REQUEST
 {
@@ -118,42 +145,81 @@ typedef struct _LONG_TERM_IO_REQUEST
 	//im DPC/Tasklet wird das Paket aufgehoben(dort kann nicht in den USER Mem geschrieben werden)
 	u32	IRQBuffer[MAX_SUNPACKETSIZE/4];
 	u8	IRQBuffer_anzBytes;
-}  LONGTERM_IOREQUEST , *PLONGTERM_IOREQUEST;
+}  LONGTERM_IOREQUEST, *PLONGTERM_IOREQUEST;
+
+//Fast alle Infos zu seinen PCI(e) Device zusammen, das Module wird ja nur 1x pro System geladen
+typedef struct _DEVICE_DATA
+{		
+	//> Device	
+	bool			boIsDeviceOpen;	//true <> Device ist valid
+	struct cdev		Device;			//das KernelObj vom Module	
+	u8 				DeviceSubType;	//was sind wir AGEX, AGEX2... <> AGEX_DEVICE_SUBTYPE	
+	struct semaphore DeviceSem;		//lock für ein Device (diese struct & common buffer)
+	dev_t			DeviceNumber;	//Nummer von CHAR device
+
+	//> IDs/MetaInfos für ein read	
+	bool				boIsDeviceIDUsed[MAX_IRQDEVICECOUNT];	//Feld mit den DeviceIDs, UserMode fragt an, welche frei sind
+	LONGTERM_IOREQUEST  LongTermRequestList[MAX_LONG_TERM_IO_REQUEST];
+
+	//> BAR0
+	bool			boIsBAR0Requested;	//ist die Bar0 gültig
+	unsigned long	BAR0SizeBytes;
+	void*			pVABAR0;			//zeigt auf den Anfang des gemapped mem vom PCIDev (eg 0xffffc90017480000)
+
+	//> ~IRQ
+	bool					boIsIRQOpen;	//true<>IRQ ist open
+	struct tasklet_struct	IRQTasklet;		//~SWI worker
+	
+	//> CommonBuffer (AGEX2)
+	void* 		pVACommonBuffer;	//Virtuelleradresse	(eg: 0xffff8800d43dc000)
+	dma_addr_t 	pBACommonBuffer;	//(Phy)(PCI)Busadresse (eg. 0xd43dc000)
+
+} DEVICE_DATA, *PDEVICE_DATA;
+
+//Fast alles zusammen was zu diesem Module gehört, (Note: n PCIdevs für das Module, Module wird nur 1x geladen)
+typedef struct _MODULE_DATA
+{
+	DEVICE_DATA		Devs[MAX_DEVICE_COUNT];			//Infos/Context für je device, Index ist der Minor
+	bool			boIsMinorUsed[MAX_DEVICE_COUNT];//daher ist Devs[Minor] benutzt/frei?
+
+	dev_t 			FirstDeviceNumber;	//MAJOR(devNumber),MINOR(devNumber) (eg 240 , 0)
+	struct class	*pModuleClass;		// /sys/class/*
+
+} MODULE_DATA, *PMODULE_DATA;
 
 
-//Feld mit den DeviceIDs, UserMode fragt an welche frei sind
-extern bool _boIsDeviceIDUsed[MAX_IRQDEVICECOUNT];
-extern LONGTERM_IOREQUEST  _LongTermRequestList[MAX_LONG_TERM_IO_REQUEST];
-extern bool _boIsIRQOpen;
-extern unsigned long _BAR0_Len;
-extern u8 			_DevSubType;
-extern void* 		_pVA_CommonBuffer;
-extern dma_addr_t 	_pBA_CommonBuffer;
-
-extern char pBuildTime[];
-extern char pVersion[];
-
-extern struct tasklet_struct	_AGEXDrv_tasklet;
-extern struct semaphore 		_Driver_Sem;
-
-/*** Ioctl definitions siehe. "ioctl-number.txt" ***/
-//magic number
-#define AGEXDRV_IOC_MAGIC  '['
-
-//richtung ist aus UserSicht, size ist ehr der Type
-#define AGEXDRV_IOC_GET_VERSION 	_IOR(AGEXDRV_IOC_MAGIC, 0, IOCTLBUFFER)
-#define AGEXDRV_IOC_GET_BUILD_DATE 	_IOR(AGEXDRV_IOC_MAGIC, 1, IOCTLBUFFER)
-#define AGEXDRV_IOC_RELEASE_DEVICEID _IOWR(AGEXDRV_IOC_MAGIC, 2, u8)
-#define AGEXDRV_IOC_CREATE_DEVICEID _IOR(AGEXDRV_IOC_MAGIC, 3, u8)
-#define AGEXDRV_IOC_GET_SUBTYPE 	_IOR(AGEXDRV_IOC_MAGIC, 4, u8)
+//Global vars
+extern MODULE_DATA _ModuleData;
 
 
+/*** prototypes ***/
+/******************************************************************************************/
+/*LOCKED fns*/
+long Locked_startlongtermread(PDEVICE_DATA pDevData, const u32 DeviceID);
+long Locked_write(PDEVICE_DATA pDevData, const u8 __user * pToUserMem, const size_t BytesToWrite);
+long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, const u32 BufferSizeBytes);
 
-//max num (nur zum Testen)
-#define AGEXDRV_IOC_MAXNR 4
+/*File fns*/
+int AGEXDrv_open(struct inode *node, struct file *filp);
+ssize_t AGEXDrv_read (struct file *filp, char __user *buf, size_t count, loff_t *pos);
+ssize_t AGEXDrv_write (struct file *filp, const char __user *buf, size_t count,loff_t *pos);
+long AGEXDrv_unlocked_ioctl (struct file *filp, unsigned int cmd,unsigned long arg);
 
-//zeigt auf den Anfang des gemapped mem vom PCIDev
-extern void* _PCI_IOMEM_StartAdr;
+/* ~IRQ fns*/
+irqreturn_t AGEXDrv_interrupt(int irq, void *dev_id);
+void AGEXDrv_SwitchInterruptOn(PDEVICE_DATA pDevData, const bool boTurnOn);
+void AGEXDrv_tasklet(unsigned long unused);
+
+/* PCI fns*/
+int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id);
+void AGEXDrv_PCI_remove(struct pci_dev *pcidev);
+
+/*Module fns*/
+int AGEXDrv_init(void);
+void AGEXDrv_exit(void);
+void AGEXDrv_InitDrvData(PDEVICE_DATA pDat);
+
+
 
 #endif /* AGEXDRV_H_ */
 

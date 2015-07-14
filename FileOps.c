@@ -29,17 +29,39 @@
 //	File fns
 //<====================================>
 
+
+int AGEXDrv_open(struct inode *node, struct file *filp)
+{
+	int iMinor;
+	if( (node==NULL) || (filp==NULL) )
+		return -EINVAL; 
+	iMinor = iminor(node);
+
+	pr_devel(MODDEBUGOUTTEXT" open (Minor:%d)\n", iMinor);
+
+	//setzt ins "file" den Context
+	if(iMinor >= MAX_DEVICE_COUNT)
+		return -EINVAL;
+	filp->private_data = &_ModuleData.Devs[iMinor];
+
+	return 0;
+}
+
+
 //Note: alte ioctl war unter "big kernel lock"
 //http://lwn.net/Articles/119652/
 long AGEXDrv_unlocked_ioctl (struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	int err = 0;
 	long ret = 0;
+	PDEVICE_DATA pDevData = NULL;
 
 	//Note: beim 1. write bekommen wir ein CMD:1, Type 'T', Size: 0 <-> FIONBIO (linux/include/asm-i386/ioctls.h, line 41)
-	pr_devel("agexdrv: ioctl (CMD %d, MAGIC %c, size %d)\n",_IOC_NR(cmd), _IOC_TYPE(cmd), _IOC_SIZE(cmd));
+	pr_devel(MODDEBUGOUTTEXT" ioctl (CMD %d, MAGIC %c, size %d)\n",_IOC_NR(cmd), _IOC_TYPE(cmd), _IOC_SIZE(cmd));
 
 	/* Alles gut */
+	if( (filp==NULL) || (filp->private_data==NULL) ) return -EINVAL;
+	pDevData = (PDEVICE_DATA) filp->private_data;
 	//ist ist das CMD eins für uns?
 	if (_IOC_TYPE(cmd) != AGEXDRV_IOC_MAGIC) return -ENOTTY;
 	if (_IOC_NR(cmd) > AGEXDRV_IOC_MAXNR) return -ENOTTY;
@@ -55,14 +77,14 @@ long AGEXDrv_unlocked_ioctl (struct file *filp, unsigned int cmd, unsigned long 
 
 	/* jetzt die CMDs auswerten */
 	//warten (für immer auf die sem) wenn das prog abgeschossen wird, kommt sie zurück mit -EINTR
-	if( down_killable(&_Driver_Sem) != 0)
+	if( down_killable(&pDevData->DeviceSem) != 0)
 		return -EINTR;
 
 //----------------------------->
 	//hier wird das CMD ausgeführt
-	ret = Locked_ioctl(cmd, (u8 __user *) arg, _IOC_SIZE(cmd) );
+	ret = Locked_ioctl(pDevData, cmd, (u8 __user *) arg, _IOC_SIZE(cmd) );
 //<-----------------------------
-	up(&_Driver_Sem);
+	up(&pDevData->DeviceSem);
 
 
 	return ret;
@@ -74,6 +96,7 @@ ssize_t AGEXDrv_read (struct file *filp, char __user *buf, size_t count, loff_t 
 	long res;
 	unsigned long jiffiesTimeOut;
 	s8 Index=-1;
+	PDEVICE_DATA pDevData = NULL;
 
 	/*Wie es geht:
 	 * 1. (locked)
@@ -95,15 +118,17 @@ ssize_t AGEXDrv_read (struct file *filp, char __user *buf, size_t count, loff_t 
 	 *	- beide flags löschen
 	 */
 
-	pr_devel("agexdrv: read (%d Bytes)\n", (int)count);
+	pr_devel(MODDEBUGOUTTEXT" read (%d Bytes)\n", (int)count);
 
 	/* Alles gut? */
+	if( (filp==NULL) || (filp->private_data==NULL) ) return -EINVAL;
+	pDevData = (PDEVICE_DATA) filp->private_data;
 	//mem ok?
-	if( count > _BAR0_Len)
+	if( count > pDevData->BAR0SizeBytes)
 		return -EFBIG;
-	if(_PCI_IOMEM_StartAdr == NULL)
+	if(pDevData->pVABAR0 == NULL)
 		return -EFBIG;
-	if(_boIsIRQOpen == FALSE)
+	if(pDevData->boIsIRQOpen == FALSE)
 		return -EFAULT;
 	if(count < (2*4))		//min 2 DWords, 2. is the size
 		return -EFAULT;
@@ -128,23 +153,23 @@ ssize_t AGEXDrv_read (struct file *filp, char __user *buf, size_t count, loff_t 
 	if( (BytesToWrite+2*4) > count)
 		return -EFBIG;
 
-	pr_devel("agexdrv: read, devID %d, BytesToWrite %d\n",DeviceID,BytesToWrite );
+	pr_devel(MODDEBUGOUTTEXT" read, devID %d, BytesToWrite %d\n",DeviceID,BytesToWrite );
 
 	//warten (für immer auf die sem) wenn das prog abgeschossen wird, kommt sie zurück mit -EINTR
-	if( down_killable(&_Driver_Sem) != 0)
+	if( down_killable(&pDevData->DeviceSem) != 0)
 		return -EINTR;
 //----------------------------->
 	//freien eintrag suchen
 	Index = -1;
-	res = Locked_startlongtermread(DeviceID);
+	res = Locked_startlongtermread(pDevData, DeviceID);
 
 	/* wenn ok jetzt ins FPGA schreiben */
 	if(res >= 0){
 		Index = (s8)res;
-		res =  Locked_write(buf+2*4, BytesToWrite);
+		res =  Locked_write(pDevData, buf+2*4, BytesToWrite);
 	}
 //<-----------------------------
-	up(&_Driver_Sem);
+	up(&pDevData->DeviceSem);
 
 	if(Index <0 || Index > MAX_LONG_TERM_IO_REQUEST)	//nur um ganz sicher zu sein
 		return -EFAULT;
@@ -152,9 +177,9 @@ ssize_t AGEXDrv_read (struct file *filp, char __user *buf, size_t count, loff_t 
 		goto EXIT_READ;
 
 	/* warten auf Antwort */
-	//if( down_killable(&_LongTermRequestList[Index].WaitSem) != 0){
+	//if( down_killable(&LongTermRequestList[Index].WaitSem) != 0){
 	jiffiesTimeOut = msecs_to_jiffies(1*1000);
-	if( down_timeout(&_LongTermRequestList[Index].WaitSem,jiffiesTimeOut) != 0){
+	if( down_timeout(&pDevData->LongTermRequestList[Index].WaitSem,jiffiesTimeOut) != 0){
 		res = -EINTR;
 		goto EXIT_READ;
 	}
@@ -162,39 +187,42 @@ ssize_t AGEXDrv_read (struct file *filp, char __user *buf, size_t count, loff_t 
 
 	/* daten copy */
 	//zu viel für den user buf bzw. gültig?
-	if( 	(_LongTermRequestList[Index].IRQBuffer_anzBytes > count)
-		||	(_LongTermRequestList[Index].IRQBuffer_anzBytes > MAX_SUNPACKETSIZE)
-		||	(_LongTermRequestList[Index].IRQBuffer_anzBytes == 0) ){
+	if( 	(pDevData->LongTermRequestList[Index].IRQBuffer_anzBytes > count)
+		||	(pDevData->LongTermRequestList[Index].IRQBuffer_anzBytes > MAX_SUNPACKETSIZE)
+		||	(pDevData->LongTermRequestList[Index].IRQBuffer_anzBytes == 0) ){
 		res = -EFBIG;
 		goto EXIT_READ;
 	}
 	//copy
-	if( copy_to_user(buf, _LongTermRequestList[Index].IRQBuffer,_LongTermRequestList[Index].IRQBuffer_anzBytes ) != 0 ){
+	if( copy_to_user(buf, pDevData->LongTermRequestList[Index].IRQBuffer, pDevData->LongTermRequestList[Index].IRQBuffer_anzBytes ) != 0 ){
 		res = -EFAULT;
 		goto EXIT_READ;
 	}
 	else
-		res = _LongTermRequestList[Index].IRQBuffer_anzBytes;
+		res = pDevData->LongTermRequestList[Index].IRQBuffer_anzBytes;
 
 
 
 	//gibt den eintrag frei
 EXIT_READ:
-	_LongTermRequestList[Index].boIsInProcessUse = FALSE;
+	pDevData->LongTermRequestList[Index].boIsInProcessUse = FALSE;
 	return res;
 }
 
 ssize_t AGEXDrv_write (struct file *filp, const char __user *buf, size_t count,loff_t *pos)
 {
 	long res;
+	PDEVICE_DATA pDevData = NULL;
 
-	pr_devel("agexdrv: write (%d Bytes)\n", (int)count);
+	pr_devel(MODDEBUGOUTTEXT" write (%d Bytes)\n", (int)count);
 
 	/* Alles gut? */
+	if( (filp==NULL) || (filp->private_data==NULL) ) return -EINVAL;
+	pDevData = (PDEVICE_DATA) filp->private_data;
 	//mem ok?
-	if(count > _BAR0_Len)
+	if(count > pDevData->BAR0SizeBytes)
 		return -EFBIG;
-	if(_PCI_IOMEM_StartAdr == NULL)
+	if(pDevData->pVABAR0 == NULL)
 		return -EFBIG;
 
 	//dürfen wir den mem nutzen?
@@ -203,12 +231,12 @@ ssize_t AGEXDrv_write (struct file *filp, const char __user *buf, size_t count,l
 
 	/* jetzt kommt das schreiben */
 	//warten (für immer auf die sem) wenn das prog abgeschossen wird, kommt sie zurück mit -EINTR
-	if( down_killable(&_Driver_Sem) != 0)
+	if( down_killable(&pDevData->DeviceSem) != 0)
 		return -EINTR;
 //----------------------------->
-	res =  Locked_write(buf, count);
+	res =  Locked_write(pDevData, buf, count);
 //<-----------------------------
-		up(&_Driver_Sem);
+		up(&pDevData->DeviceSem);
 
 	return res;
 }
