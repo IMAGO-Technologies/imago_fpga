@@ -89,9 +89,10 @@ enum AGEX_DEVICE_SUBTYPE
 #define AGEXDRV_IOC_RELEASE_DEVICEID _IOWR(AGEXDRV_IOC_MAGIC, 2, u8)
 #define AGEXDRV_IOC_CREATE_DEVICEID _IOR(AGEXDRV_IOC_MAGIC, 3, u8)
 #define AGEXDRV_IOC_GET_SUBTYPE 	_IOR(AGEXDRV_IOC_MAGIC, 4, u8)
+#define AGEXDRV_IOC_ABORT_LONGTERM_READ _IOWR(AGEXDRV_IOC_MAGIC, 5, u8)
 
 //max num (nur zum Testen)
-#define AGEXDRV_IOC_MAXNR 4
+#define AGEXDRV_IOC_MAXNR 5
 
 
 //> Infos über die DeviceID bzw. LongTermRequest
@@ -129,15 +130,19 @@ enum AGEX_DEVICE_SUBTYPE
 //Fast alles zusammen was es über solch ein Request zu wissen gibt
 typedef struct _LONG_TERM_IO_REQUEST
 {
-	//> eintrag ist erst frei wenn beide flags false sind
+	//> eintrag ist erst frei wenn beide(boIsInFPGA, boIsInProcessUse) flags false sind
 	//true gibt an das der Eintrag im FPGA ist, wird nur vom tasklet gelöscht
 	bool boIsInFPGA;
 
-	//true gibt an das ein process den eintrag noch nutzt, wird nur vom process gleöcht
+	//true gibt an das ein process den eintrag noch nutzt, wird nur vom process gelöcht
 	bool boIsInProcessUse ;
 
 	//der Request selbst bzw der prozess
 	struct semaphore WaitSem;
+	
+	//die semaphore wurde signalisiert, aber nicht im ISR sondern durch den User(IOCTL) ==> Abbruch
+	//wird nur in Locked_startlongtermread() gelöscht
+	bool boAbortWaiting;
 
 	//ID um die Antwort wieder zu zuordnen
 	u8	DeviceID;

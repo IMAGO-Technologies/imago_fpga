@@ -159,7 +159,7 @@ void AGEXDrv_InitDrvData(PDEVICE_DATA pDat)
 	#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
 		sema_init(&pDat->DeviceSem,1);		//1<>frei
 	#else
-		init_MUTEX_UNLOCKED( &pDat->DeviceSem);
+		init_MUTEX( &pDat->DeviceSem);
 	#endif
 
 	for(i=0;i<MAX_IRQDEVICECOUNT;i++)

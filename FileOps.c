@@ -92,8 +92,8 @@ long AGEXDrv_unlocked_ioctl (struct file *filp, unsigned int cmd, unsigned long 
 
 ssize_t AGEXDrv_read (struct file *filp, char __user *buf, size_t count, loff_t *pos)
 {
-	u32 BytesToWrite, DeviceID;
-	long res;
+	u32 TimeOut_ms, BytesToWrite, DeviceID;
+	long res;	
 	unsigned long jiffiesTimeOut;
 	s8 Index=-1;
 	PDEVICE_DATA pDevData = NULL;
@@ -141,19 +141,22 @@ ssize_t AGEXDrv_read (struct file *filp, char __user *buf, size_t count, loff_t 
 	/* freien eintrag suchen */
 	//0. DWord <> DevID
 	//1. DWord <> anzBytesToWrite
-	//2. DWord <> Header0
-	//3. DWord <> Header1
-	//4. DWord <> Data
-	//5..n. DWord <> DummyDWords
+	//2. DWord <> TimeOut_ms (-1 <> für immer)
+	//3. DWord <> Header0
+	//4. DWord <> Header1
+	//5. DWord <> Data
+	//6..n. DWord <> DummyDWords
 	//args lesen
-	if( get_user(DeviceID, buf) != 0)
+	if( get_user(DeviceID, (u32*)buf) != 0)
 		return -EFAULT;
-	if( get_user(BytesToWrite, buf+4) != 0)
+	if( get_user(BytesToWrite, (u32*)(buf+1*4) ) != 0)
 		return -EFAULT;
-	if( (BytesToWrite+2*4) > count)
+	if( get_user(TimeOut_ms, (u32*)(buf+2*4) ) != 0)
+		return -EFAULT;	
+	if( (BytesToWrite+3*4) > count)
 		return -EFBIG;
 
-	pr_devel(MODDEBUGOUTTEXT" read, devID %d, BytesToWrite %d\n",DeviceID,BytesToWrite );
+	pr_devel(MODDEBUGOUTTEXT" read, devID %d, BytesToWrite %d, TimeOut 0x%x\n",DeviceID,BytesToWrite,TimeOut_ms);
 
 	//warten (für immer auf die sem) wenn das prog abgeschossen wird, kommt sie zurück mit -EINTR
 	if( down_killable(&pDevData->DeviceSem) != 0)
@@ -166,7 +169,7 @@ ssize_t AGEXDrv_read (struct file *filp, char __user *buf, size_t count, loff_t 
 	/* wenn ok jetzt ins FPGA schreiben */
 	if(res >= 0){
 		Index = (s8)res;
-		res =  Locked_write(pDevData, buf+2*4, BytesToWrite);
+		res =  Locked_write(pDevData, buf+3*4, BytesToWrite);
 	}
 //<-----------------------------
 	up(&pDevData->DeviceSem);
@@ -177,14 +180,25 @@ ssize_t AGEXDrv_read (struct file *filp, char __user *buf, size_t count, loff_t 
 		goto EXIT_READ;
 
 	/* warten auf Antwort */
-	//if( down_killable(&LongTermRequestList[Index].WaitSem) != 0){
-	jiffiesTimeOut = msecs_to_jiffies(1*1000);
-	if( down_timeout(&pDevData->LongTermRequestList[Index].WaitSem,jiffiesTimeOut) != 0){
+	// aufwachen durch Signal, up vom SWI, oder User [Abort], bzw TimeOut
+	if( TimeOut_ms == 0xFFFFFFFF )
+	{
+		if( down_interruptible(&pDevData->LongTermRequestList[Index].WaitSem) != 0)
+			{res = -EINTR;goto EXIT_READ;}
+	}
+	else
+	{
+		jiffiesTimeOut = msecs_to_jiffies(TimeOut_ms);
+		if( down_timeout(&pDevData->LongTermRequestList[Index].WaitSem,jiffiesTimeOut) != 0)
+			{res = -EINTR;goto EXIT_READ;}
+	}
+
+	//abort durch user?
+	if(pDevData->LongTermRequestList[Index].boAbortWaiting){
 		res = -EINTR;
 		goto EXIT_READ;
 	}
-
-
+	
 	/* daten copy */
 	//zu viel für den user buf bzw. gültig?
 	if( 	(pDevData->LongTermRequestList[Index].IRQBuffer_anzBytes > count)
@@ -206,6 +220,7 @@ ssize_t AGEXDrv_read (struct file *filp, char __user *buf, size_t count, loff_t 
 	//gibt den eintrag frei
 EXIT_READ:
 	pDevData->LongTermRequestList[Index].boIsInProcessUse = FALSE;
+	pr_devel(MODDEBUGOUTTEXT" read, result %ld\n", res);
 	return res;
 }
 

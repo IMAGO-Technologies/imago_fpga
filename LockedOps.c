@@ -50,13 +50,14 @@ long Locked_startlongtermread(PDEVICE_DATA pDevData, const u32 DeviceID)
 			&& 	(pDevData->LongTermRequestList[index].boIsInProcessUse == FALSE))
 		{
 			//init des eintrags
-			pDevData->LongTermRequestList[index].IRQBuffer_anzBytes =0;
-			pDevData->LongTermRequestList[index].DeviceID = DeviceID;
-			while( down_trylock(&pDevData->LongTermRequestList[index].WaitSem) == 0){}		//die sem runter zählen bis sie blocked
+			pDevData->LongTermRequestList[index].IRQBuffer_anzBytes = 0;
+			pDevData->LongTermRequestList[index].DeviceID			= DeviceID;
+			pDevData->LongTermRequestList[index].boAbortWaiting		= FALSE;
+			while( down_trylock(&pDevData->LongTermRequestList[index].WaitSem) == 0){}		//die sem runter zählen bis sie blocked, SWI & Abort setzen es
 
 			//Eintrag wird genutzt
-			pDevData->LongTermRequestList[index].boIsInProcessUse= TRUE;
-			pDevData->LongTermRequestList[index].boIsInFPGA		= TRUE;		//vor dem Write setzen, kann ja sein das gleich nach dem write ein IRQ kommt
+			pDevData->LongTermRequestList[index].boIsInProcessUse	= TRUE;
+			pDevData->LongTermRequestList[index].boIsInFPGA			= TRUE;		//vor dem Write setzen, kann ja sein das gleich nach dem write ein IRQ kommt
 
 			return index;
 		}
@@ -280,6 +281,41 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 			break;
 
 
+		/* Wenn zur DeviceID ein LONGTERM_IOREQUEST läuft, sem posten. flag setzen*/
+		/**********************************************************************/
+		case AGEXDRV_IOC_ABORT_LONGTERM_READ:
+			if( BufferSizeBytes != 1){
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n");
+				result = -EFBIG;
+			}
+			else
+			{
+				u8 DeviceID;
+				u32 index;
+
+				//DevId lesen
+				if( get_user(DeviceID,pToUserMem) != 0){
+					printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n");
+					result = -EFAULT;
+					break;
+				}
+
+				//jetzt laufende Einträge zur ID suchen
+				for(index=0; index<MAX_LONG_TERM_IO_REQUEST; index++)
+				{
+					if(		(pDevData->LongTermRequestList[index].boIsInFPGA == TRUE) && (pDevData->LongTermRequestList[index].boIsInProcessUse == TRUE) 
+						&&	(pDevData->LongTermRequestList[index].DeviceID == DeviceID) )
+					{
+						//Process aufwecken
+						pr_debug(MODDEBUGOUTTEXT" Locked_ioctl> Abort LongRead = %d, DeviceID = %d\n", index, DeviceID);
+						pDevData->LongTermRequestList[index].boAbortWaiting = TRUE;
+						smp_mb();	//sicher ist sicher
+						up(&pDevData->LongTermRequestList[index].WaitSem);
+					}
+				}				
+			}
+
+			break;
 
 
 		//sollte nie sein (siehe oben bzw. ebene)
