@@ -52,17 +52,22 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 	pr_devel(MODDEBUGOUTTEXT" AGEXDrv_PCI_probe\n");
 
 
-	//>was sind wir AGEX(2)?
+	//>was sind wir?
 	/**********************************************************************/
-	if( (id->vendor == 0x1204) &&  (id->device == 0x0200) )		//Lattice
+	if( (id->vendor == 0x1204) &&  (id->device == 0x0200) )		//Lattice (AGE-X1)
 	{
 		tempDevSubType = SubType_AGEX;
 		pr_devel(MODDEBUGOUTTEXT" found AGE-X device\n");
 	}
-	else if((id->vendor == 0x1172) &&  (id->device == 0x0004) )	//Altera
+	else if((id->vendor == 0x1172) &&  (id->device == 0x0004) )	//Altera (AGE-X2)
 	{
 		tempDevSubType = SubType_AGEX2;
 		pr_devel(MODDEBUGOUTTEXT" found AGE-X2 device\n");
+	}
+	else if((id->vendor == 0x1172) &&  (id->device == 0xA6E4) )	//Altera (MVC0)
+	{
+		tempDevSubType = SubType_MVC0;
+		pr_devel(MODDEBUGOUTTEXT" found MVC0 device\n");
 	}
 	else
 	{
@@ -88,7 +93,8 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 	}
 	if(DevIndex==-1){
 		printk(KERN_WARNING MODDEBUGOUTTEXT" no free Minor-Number found!\n"); return -EINVAL;}
-
+	else
+		pr_devel(MODDEBUGOUTTEXT" use major/minor (%d:%d)\n", MAJOR(_ModuleData.Devs[DevIndex].DeviceNumber), MINOR(_ModuleData.Devs[DevIndex].DeviceNumber));
 
 	//>PCI device on(setzt Bits im PCI Config Mem)
 	/**********************************************************************/
@@ -128,7 +134,7 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 
 	//>DMA(Coherent) Buffer (AGEX2 only)
 	/**********************************************************************/
-	if(_ModuleData.Devs[DevIndex].DeviceSubType == SubType_AGEX2)
+	if( (_ModuleData.Devs[DevIndex].DeviceSubType==SubType_AGEX2) || (_ModuleData.Devs[DevIndex].DeviceSubType==SubType_MVC0))
 	{
 		//sagt das wir 32Bit können
 		//https://www.kernel.org/doc/Documentation/DMA-API-HOWTO.txt
@@ -175,7 +181,7 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 	//msi einschalten
 	//http://www.mjmwired.net/kernel/Documentation/MSI-HOWTO.txt
 	// "... to call this API before calling request_irq()..."
-	if(_ModuleData.Devs[DevIndex].DeviceSubType == SubType_AGEX2)
+	if( (_ModuleData.Devs[DevIndex].DeviceSubType == SubType_AGEX2) || (_ModuleData.Devs[DevIndex].DeviceSubType==SubType_MVC0) ) 
 	{
 		if( pci_enable_msi(pcidev) != 0)
 			{printk(KERN_ERR MODDEBUGOUTTEXT"pci_enable_msi failed!\n"); return -EIO;}
@@ -191,7 +197,7 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 			) != 0)
 	{
 		printk(KERN_ERR MODDEBUGOUTTEXT" request_irq failed\n");
-		if(_ModuleData.Devs[DevIndex].DeviceSubType == SubType_AGEX2)
+		if( (_ModuleData.Devs[DevIndex].DeviceSubType == SubType_AGEX2) || (_ModuleData.Devs[DevIndex].DeviceSubType==SubType_MVC0) )
 			pci_disable_msi(pcidev);
 
 		_ModuleData.Devs[DevIndex].boIsIRQOpen = FALSE;
@@ -212,7 +218,7 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 	_ModuleData.Devs[DevIndex].Device.ops 	= &AGEXDrv_fops;	//notwendig in den quellen wird fops gesetzt?
 
 	//fügt ein device hinzu, nach der fn können FileFns genutzt werden
-	res = cdev_add(&_ModuleData.Devs[DevIndex].Device, _ModuleData.FirstDeviceNumber, 1/*wie viele ab startNum*/);
+	res = cdev_add(&_ModuleData.Devs[DevIndex].Device, _ModuleData.Devs[DevIndex].DeviceNumber, 1/*wie viele ab startNum*/);
 	if(res < 0)
 		printk(KERN_WARNING MODDEBUGOUTTEXT" can't add device!\n");
 	else
@@ -264,7 +270,7 @@ void AGEXDrv_PCI_remove(struct pci_dev *pcidev)
 	{
 		AGEXDrv_SwitchInterruptOn(pDevData, FALSE);
 		free_irq(pcidev->irq, pDevData);
-		if(pDevData->DeviceSubType == SubType_AGEX2)
+		if( (pDevData->DeviceSubType==SubType_AGEX2) || (pDevData->DeviceSubType==SubType_MVC0) )
 			pci_disable_msi(pcidev);
 	}
 	
@@ -280,7 +286,8 @@ void AGEXDrv_PCI_remove(struct pci_dev *pcidev)
 		release_mem_region( pci_resource_start(pcidev, 0), pci_resource_len(pcidev, 0) );
 	pDevData->boIsBAR0Requested = FALSE;
 
-	if( (pDevData->DeviceSubType == SubType_AGEX2) && (pDevData->pVACommonBuffer != NULL) )
+	if( 	( (pDevData->DeviceSubType==SubType_AGEX2) || (pDevData->DeviceSubType==SubType_MVC0) )
+		&& 	(pDevData->pVACommonBuffer != NULL) )
 		dma_free_coherent(&pcidev->dev, PAGE_SIZE, pDevData->pVACommonBuffer, pDevData->pBACommonBuffer);
 	pDevData->pVACommonBuffer = NULL;
 

@@ -40,8 +40,9 @@ MODULE_DATA _ModuleData;
 
 //für welche PCI IDs sind wir zuständi?
 static struct pci_device_id AGEXDrv_ids[] = {
-	{ PCI_DEVICE(0x1204/*VendorID (Lattice Semi)*/, 0x0200 /*DeviceID*/), },
-	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0x0004 /*DeviceID*/), },
+	{ PCI_DEVICE(0x1204/*VendorID (Lattice Semi)*/, 0x0200 /*DeviceID*/), },	/* AGE-X1 */
+	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0x0004 /*DeviceID*/), },			/* AGE-X2 */
+	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xA6E4 /*DeviceID*/), },			/* MVC0 */
 	{ 0, }
 };
 MODULE_DEVICE_TABLE(pci, AGEXDrv_ids);		//macht dem kernel bekannt was dieses modul für PCI devs kann

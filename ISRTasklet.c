@@ -41,7 +41,7 @@ void AGEXDrv_SwitchInterruptOn(PDEVICE_DATA pDevData, const bool boTurnOn)
 
 	/* CommonBuffer Adr setzen (nur gültig solange IRQon) & Init */
 	//hat nur eine AGEX2
-	if( boTurnOn && (pDevData->DeviceSubType == SubType_AGEX2) )
+	if( boTurnOn && ( (pDevData->DeviceSubType==SubType_AGEX2) || (pDevData->DeviceSubType==SubType_MVC0) ) )
 	{
 		//nur um ganz sicher zu sein
 		if( (pDevData->pVACommonBuffer == NULL) || (pDevData->pBACommonBuffer == 0) )
@@ -64,7 +64,7 @@ void AGEXDrv_SwitchInterruptOn(PDEVICE_DATA pDevData, const bool boTurnOn)
 		regVal = 0x0;
 
 	//wo kommt das On/Off Bit hin?
-	if(pDevData->DeviceSubType == SubType_AGEX2)
+	if( (pDevData->DeviceSubType==SubType_AGEX2) || (pDevData->DeviceSubType==SubType_MVC0) )
 		regAdr = ISR_ONOFF_OFFSET_AGEX2;
 	else
 		regAdr = ISR_ONOFF_OFFSET_AGEX;
@@ -89,7 +89,7 @@ irqreturn_t AGEXDrv_interrupt(int irq, void *dev_id)
 
 
 	/* liest das IRQ flag ein */
-	if(pDevData->DeviceSubType == SubType_AGEX2)
+	if( (pDevData->DeviceSubType==SubType_AGEX2) || (pDevData->DeviceSubType==SubType_MVC0) )
 	{
 		if( (pDevData->pVACommonBuffer == NULL) || (pDevData->pBACommonBuffer == 0) )
 			return IRQ_NONE;
@@ -145,7 +145,7 @@ void AGEXDrv_tasklet (unsigned long devIndex)
 	pDevData = &_ModuleData.Devs[devIndex];
 	if( (pDevData->pVABAR0 == NULL) || (pDevData->DeviceSubType == SubType_Invalid) )
 		return;
-	if(pDevData->DeviceSubType == SubType_AGEX2)
+	if( (pDevData->DeviceSubType==SubType_AGEX2) || (pDevData->DeviceSubType==SubType_MVC0) )
 	{
 		if( (pDevData->pVACommonBuffer == NULL) || (pDevData->pBACommonBuffer == 0) )
 			return;

@@ -22,7 +22,7 @@
 
 //> defines about the Module
 /******************************************************************************************/
-#define MODVERSION "1.1.5.0"
+#define MODVERSION "1.1.6.0"
 #define MODDATECODE __DATE__ " - " __TIME__
 #define MODLICENSE "GPL";
 #define MODDESCRIPTION "Kernel module for the VisionBox AGE-X PCI(e) devices";
@@ -74,7 +74,8 @@ enum AGEX_DEVICE_SUBTYPE
 {
 	SubType_Invalid = 0,
 	SubType_AGEX	= 1,
-	SubType_AGEX2	= 2
+	SubType_AGEX2	= 2,
+	SubType_MVC0	= 3
 };
 
 
