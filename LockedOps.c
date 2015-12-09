@@ -39,6 +39,8 @@ long Locked_startlongtermread(PDEVICE_DATA pDevData, const u32 DeviceID)
 		if(		( (pDevData->LongTermRequestList[index].boIsInFPGA == TRUE) || (pDevData->LongTermRequestList[index].boIsInProcessUse == TRUE) )
 			&&	(pDevData->LongTermRequestList[index].DeviceID == DeviceID) )
 		{
+			printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_startlongtermread> DeviceID is in use (index: %u, devId: %u, %d:%d)!\n", index, DeviceID,
+							pDevData->LongTermRequestList[index].boIsInFPGA, pDevData->LongTermRequestList[index].boIsInProcessUse);
 			return -EBUSY;
 		}
 	}

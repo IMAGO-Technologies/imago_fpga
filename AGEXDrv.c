@@ -175,8 +175,11 @@ void AGEXDrv_InitDrvData(PDEVICE_DATA pDat)
 #else
 		init_MUTEX_LOCKED( &pDat->LongTermRequestList[i].WaitSem);
 #endif
-		memset(pDat->LongTermRequestList[i].IRQBuffer,0, MAX_SUNPACKETSIZE); //nicht notwendig
+
+		//nicht notwendig...
+		memset(pDat->LongTermRequestList[i].IRQBuffer,0, MAX_SUNPACKETSIZE); 
 		pDat->LongTermRequestList[i].IRQBuffer_anzBytes = 0;
+		pDat->LongTermRequestList[i].DeviceID 			= MAX_IRQDEVICECOUNT; //nicht gültig, 0..<MAX_IRQDEVICECOUNT
 	}
 
 	pDat->boIsBAR0Requested = FALSE;

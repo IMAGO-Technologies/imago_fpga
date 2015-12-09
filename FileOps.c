@@ -174,10 +174,13 @@ ssize_t AGEXDrv_read (struct file *filp, char __user *buf, size_t count, loff_t 
 //<-----------------------------
 	up(&pDevData->DeviceSem);
 
+	if(res < 0){
+		printk(KERN_WARNING MODDEBUGOUTTEXT" read, Locked_startlongtermread() failed (%ld)!\n", res);
+		goto EXIT_READ;
+	}
 	if(Index <0 || Index > MAX_LONG_TERM_IO_REQUEST)	//nur um ganz sicher zu sein
 		return -EFAULT;
-	if(res < 0)
-		goto EXIT_READ;
+
 
 	/* warten auf Antwort */
 	// aufwachen durch Signal, up vom SWI, oder User [Abort], bzw TimeOut

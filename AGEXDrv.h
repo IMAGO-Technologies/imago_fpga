@@ -22,7 +22,7 @@
 
 //> defines about the Module
 /******************************************************************************************/
-#define MODVERSION "1.1.6.0"
+#define MODVERSION "1.1.6.1"
 #define MODDATECODE __DATE__ " - " __TIME__
 #define MODLICENSE "GPL";
 #define MODDESCRIPTION "Kernel module for the VisionBox AGE-X PCI(e) devices";
@@ -214,7 +214,7 @@ long AGEXDrv_unlocked_ioctl (struct file *filp, unsigned int cmd,unsigned long a
 /* ~IRQ fns*/
 irqreturn_t AGEXDrv_interrupt(int irq, void *dev_id);
 void AGEXDrv_SwitchInterruptOn(PDEVICE_DATA pDevData, const bool boTurnOn);
-void AGEXDrv_tasklet(unsigned long unused);
+void AGEXDrv_tasklet(unsigned long devIndex);
 
 /* PCI fns*/
 int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id);

@@ -224,6 +224,17 @@ void AGEXDrv_tasklet (unsigned long devIndex)
 					printk(KERN_WARNING MODDEBUGOUTTEXT" LongTerm buffer to small\n");
 				}
 
+				//Ungültige DeviceID setzen da sie gekommen ist (Eintrag an sich bleibt gültig)
+				//
+				//Note: - weil nach dem up(), es sein kann das der UserThread in Locked_startlongtermread() ist, vor dem 
+				// 		 der DPC, boIsInFPGA=false, gemacht hat, würde es zum Fehler kommen da die devID noch als benutzt markiert ist.
+				//		- erst boIsInFPGA, dann up() geht nicht, da falls ein Abort() kommt und dann ein Locked_startlongtermread()
+				//		 könnte es sein das der DPC danach ein up() macht
+				//		- frei ist der LongTermRequestList[] erst nach dem up() daher immer (!boIsInFPGA && !boIsInProcessUse) == frei
+				//		- nach down*()/Locked_startlongtermread() auf boIsInFPGA=false warten, extra taskwechsel und wie lange? bei viel DPC laod
+				//		- device SEM, im DPC geht nicht wegen DPC
+				pDevData->LongTermRequestList[index].DeviceID = MAX_IRQDEVICECOUNT;
+
 				//den process aufwecken
 				up(&pDevData->LongTermRequestList[index].WaitSem);
 
