@@ -22,7 +22,7 @@
 
 //> defines about the Module
 /******************************************************************************************/
-#define MODVERSION "1.1.6.1"
+#define MODVERSION "1.1.6.2"
 #define MODDATECODE __DATE__ " - " __TIME__
 #define MODLICENSE "GPL";
 #define MODDESCRIPTION "Kernel module for the VisionBox AGE-X PCI(e) devices";
@@ -96,7 +96,7 @@ enum AGEX_DEVICE_SUBTYPE
 #define AGEXDRV_IOC_MAXNR 5
 
 
-//> Infos über die DeviceID bzw. LongTermRequest
+//> Infos über die Device bzw. LongTermRequest
 /******************************************************************************************/
 //Wie viele devices können wir zugleich bedienen
 #define MAX_DEVICE_COUNT 4
@@ -174,6 +174,7 @@ typedef struct _DEVICE_DATA
 
 	//> ~IRQ
 	bool					boIsIRQOpen;	//true<>IRQ ist open
+	bool 					boIsDPCRunning;	//damit nur ein DPC zur Zeit l�uft&gequeued 
 	struct tasklet_struct	IRQTasklet;		//~SWI worker
 	
 	//> CommonBuffer (AGEX2)

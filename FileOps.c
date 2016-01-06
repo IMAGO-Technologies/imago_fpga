@@ -180,7 +180,7 @@ ssize_t AGEXDrv_read (struct file *filp, char __user *buf, size_t count, loff_t 
 	}
 	if(Index <0 || Index > MAX_LONG_TERM_IO_REQUEST)	//nur um ganz sicher zu sein
 		return -EFAULT;
-
+	pr_devel(MODDEBUGOUTTEXT" read, wait for request %d\n", Index);
 
 	/* warten auf Antwort */
 	// aufwachen durch Signal, up vom SWI, oder User [Abort], bzw TimeOut

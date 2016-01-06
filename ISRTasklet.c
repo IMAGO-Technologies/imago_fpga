@@ -48,12 +48,18 @@ void AGEXDrv_SwitchInterruptOn(PDEVICE_DATA pDevData, const bool boTurnOn)
 		  	return;
 
 		//das IRQ Flag lÃ¶schen (1 Word, 4 Word sind nur zu Sicherheit)
-		memset(pDevData->pVACommonBuffer,0, (2+3) + sizeof(u32));
+		memset(pDevData->pVACommonBuffer,0, (2+3) * sizeof(u32));
 		smp_mb();	//nop bei x86
 
 		//Adr ins FPGA setzen
 		iowrite32(pDevData->pBACommonBuffer, pDevData->pVABAR0 +ISR_COMMONBUFFER_ADR_AGEX2);
 	}
+
+
+	//der DPC ist/ muss durch sein
+	//(kann aber erst hier gesetzt werden da sonst race cond mit CommonBuffer Clear, IRQEnable und DPCFlag)
+	if(boTurnOn)
+		pDevData->boIsDPCRunning = FALSE;
 
 
 	/* IRQ enable flag */
@@ -87,6 +93,12 @@ irqreturn_t AGEXDrv_interrupt(int irq, void *dev_id)
 	if( (pDevData->pVABAR0 == NULL) || (pDevData->DeviceSubType == SubType_Invalid) )
 		return IRQ_NONE;
 
+	/* läuft der DPC noch 
+	 * (damit wir nicht bei fremd HWIs, nicht falsch weil doppelt<>Flag im CommonBuffer, denken er währe unser)
+	 * der DPC könnte noch laufen*/
+	if(pDevData->boIsDPCRunning==TRUE)
+		return IRQ_NONE;
+
 
 	/* liest das IRQ flag ein */
 	if( (pDevData->DeviceSubType==SubType_AGEX2) || (pDevData->DeviceSubType==SubType_MVC0) )
@@ -112,7 +124,13 @@ irqreturn_t AGEXDrv_interrupt(int irq, void *dev_id)
 		if(pDevData->DeviceSubType == SubType_AGEX)
 			AGEXDrv_SwitchInterruptOn(pDevData, FALSE);
 
-		// trigger the tasklet
+		//merken das gleich der DPC läuft
+		/* kann keine 2 HWIs zur gleichen Zeit geben, aber der 
+		 * DPC(eigentlich nicht da der auf der selben CPU ausgeführt wird)
+		 * könnte durch sein vor dem das die HWI durch ist*/
+		pDevData->boIsDPCRunning=TRUE;
+
+		// trigger the tasklet (sollte immer gehen)
 		tasklet_schedule(&pDevData->IRQTasklet);
 
 		return IRQ_HANDLED;
@@ -246,6 +264,9 @@ void AGEXDrv_tasklet (unsigned long devIndex)
 			//	das Paket fÃ¼r diese ID ist gekommen
 			pDevData->LongTermRequestList[index].boIsInFPGA = FALSE;
 
+			//eine Antwort für einen Thread
+			//Note: Wichtig! es kann sein das der UserThread mit >der< devID einen neues read gestartet hat 
+			break;
 		}//end if DeviceID == [index].DeviceID
 	}//end for MAX_LONG_TERM_IO_REQUEST
 
@@ -266,6 +287,8 @@ void AGEXDrv_tasklet (unsigned long devIndex)
 	/* Re-enable the interrupt */
 	/**********************************************************************/
 	AGEXDrv_SwitchInterruptOn(pDevData,TRUE);
+
+	pr_devel(MODDEBUGOUTTEXT" DPC done\n");
 
 	return;
 }

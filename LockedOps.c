@@ -23,7 +23,6 @@
 
 #include "AGEXDrv.h"
 
-
 //führt die sucht einen freien eintrag und belegt diesen, gibt >= 0 für OK sonst fehler code zurück,
 // -> Fehler, wenn eine Anfrage zur ID offen ist
 // -> Fehler, wenn kein Platz mehr ist
@@ -63,6 +62,10 @@ long Locked_startlongtermread(PDEVICE_DATA pDevData, const u32 DeviceID)
 
 			return index;
 		}
+
+		pr_devel(MODDEBUGOUTTEXT" Locked_startlongtermread> Item is in use (index: %u, %d:%d)!\n", index,
+							pDevData->LongTermRequestList[index].boIsInFPGA, pDevData->LongTermRequestList[index].boIsInProcessUse);
+
 	}
 
 
