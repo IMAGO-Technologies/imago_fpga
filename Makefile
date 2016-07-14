@@ -27,7 +27,7 @@ ccflags-y := $(DEBFLAGS) -Werror -Wall -Wextra -Wno-unused-parameter -Wno-date-t
 ifneq ($(KERNELRELEASE),)
 # call from kernel build system
 
-	agexpcidrv-objs := FileOps.o ISRTasklet.o LockedOps.o AGEXDrv.o PCI.o
+	agexpcidrv-objs := FileOps.o ISRTasklet.o LockedOps.o AGEXDrv.o PCI.o DMARead.o
 
 	obj-m	:= agexpcidrv.o
 

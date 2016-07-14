@@ -22,7 +22,7 @@
 
 //> defines about the Module
 /******************************************************************************************/
-#define MODVERSION "1.1.6.2"
+#define MODVERSION "1.1.7.0"
 #define MODDATECODE __DATE__ " - " __TIME__
 #define MODLICENSE "GPL";
 #define MODDESCRIPTION "Kernel module for the VisionBox AGE-X PCI(e) devices";
@@ -46,15 +46,20 @@
 
 #include <linux/types.h>	// fÃ¼r dev_t
 #include <asm/types.h>		// fÃ¼r u8, s8
+#include <linux/sched.h>	// für current (pointer to the current process)
+#include <linux/fs_struct.h>
 #include <linux/kdev_t.h>	// fÃ¼r MAJOR/MINOR
 #include <linux/cdev.h>		// fÃ¼r cdev_*
 #include <linux/device.h>	// fÃ¼r class_create
 #include <linux/fs.h>		// fÃ¼r alloc_chrdev_region /file_*
 #include <linux/semaphore.h>// fÃ¼r up/down ...
+#include <linux/kfifo.h>	// fÃ¼r kfifo_*
 #include <linux/pci.h>		// fÃ¼r pci*
 #include <linux/ioport.h>	// fÃ¼r _regio*
 #include <linux/interrupt.h>// fÃ¼r IRQ*
 #include <linux/dma-mapping.h>	//fÃ¼r dma_*
+#include <linux/scatterlist.h>	// sg_* ...
+#include <linux/delay.h>	// für usleep_range
 #if LINUX_VERSION_CODE != KERNEL_VERSION(2,6,32)
 	#include <asm/uaccess.h>	// fÃ¼r copy_to_user
 #else
@@ -75,7 +80,8 @@ enum AGEX_DEVICE_SUBTYPE
 	SubType_Invalid = 0,
 	SubType_AGEX	= 1,
 	SubType_AGEX2	= 2,
-	SubType_MVC0	= 3
+	SubType_MVC0	= 3,
+	SubType_AGEX2_CL= 4
 };
 
 
@@ -85,15 +91,21 @@ enum AGEX_DEVICE_SUBTYPE
 #define AGEXDRV_IOC_MAGIC  '['
 
 //richtung ist aus UserSicht, size ist ehr der Type
-#define AGEXDRV_IOC_GET_VERSION 	_IOR(AGEXDRV_IOC_MAGIC, 0, IOCTLBUFFER)
-#define AGEXDRV_IOC_GET_BUILD_DATE 	_IOR(AGEXDRV_IOC_MAGIC, 1, IOCTLBUFFER)
-#define AGEXDRV_IOC_RELEASE_DEVICEID _IOWR(AGEXDRV_IOC_MAGIC, 2, u8)
-#define AGEXDRV_IOC_CREATE_DEVICEID _IOR(AGEXDRV_IOC_MAGIC, 3, u8)
-#define AGEXDRV_IOC_GET_SUBTYPE 	_IOR(AGEXDRV_IOC_MAGIC, 4, u8)
-#define AGEXDRV_IOC_ABORT_LONGTERM_READ _IOWR(AGEXDRV_IOC_MAGIC, 5, u8)
+#define AGEXDRV_IOC_GET_VERSION 		_IOR(AGEXDRV_IOC_MAGIC, 0, IOCTLBUFFER)
+#define AGEXDRV_IOC_GET_BUILD_DATE 		_IOR(AGEXDRV_IOC_MAGIC, 1, IOCTLBUFFER)
+#define AGEXDRV_IOC_RELEASE_DEVICEID 	_IOW(AGEXDRV_IOC_MAGIC, 2, u8)
+#define AGEXDRV_IOC_CREATE_DEVICEID 	_IOR(AGEXDRV_IOC_MAGIC, 3, u8)
+#define AGEXDRV_IOC_GET_SUBTYPE 		_IOR(AGEXDRV_IOC_MAGIC, 4, u8)
+#define AGEXDRV_IOC_ABORT_LONGTERM_READ _IOW(AGEXDRV_IOC_MAGIC, 5, u8)
+
+#define AGEXDRV_IOC_DMAREAD_CONFIG			_IOW(AGEXDRV_IOC_MAGIC, 6, IOCTLBUFFER)
+#define AGEXDRV_IOC_DMAREAD_ADD_BUFFER		_IOW(AGEXDRV_IOC_MAGIC, 7, IOCTLBUFFER)
+#define AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER	_IOWR(AGEXDRV_IOC_MAGIC, 8, IOCTLBUFFER)
+#define AGEXDRV_IOC_DMAREAD_ABORT_DMA		_IOW(AGEXDRV_IOC_MAGIC, 9, u8)
+#define AGEXDRV_IOC_DMAREAD_ABORT_WAITER	_IOW(AGEXDRV_IOC_MAGIC, 10, u8)
 
 //max num (nur zum Testen)
-#define AGEXDRV_IOC_MAXNR 5
+#define AGEXDRV_IOC_MAXNR 10
 
 
 //> Infos Ã¼ber die Device bzw. LongTermRequest
@@ -116,6 +128,47 @@ enum AGEX_DEVICE_SUBTYPE
 //1 sagt das, dass device einen Interrupt angelegt hat
 #define ISR_AVAILABLE_OFFSET (1<<20)
 
+//wie viele DMAs kann es geben(sagt nichts darüber aus ob die HW so viele kann)
+//[DMA*TC<=28 Bits sonst reicht das FlagReg' im CommonBuffer nicht mehr]
+//[auch muss der CommonBuffer groß genug für die BufferZähler]
+//[beides sind im drv UINT8]
+#define MAX_DMA_READ_DMACHANNELS 	4	
+//wie viele DMATransaction pro DMAChannel
+#define MAX_DMA_READ_CHANNELTCS		6
+//wie viele SGs für ein Transfer einer TC einer DMA (größe hängt am Kernel, ab SG_MAX_SINGLE_ALLOC dann chained)
+#define MAX_DMA_READ_TCSGS			2048
+#if (MAX_DMA_READ_CHANNELTCS*MAX_DMA_READ_DMACHANNELS) > 28
+ #error MAX Bits 28 for DMARead!
+#endif
+
+#define DMA_READ_TC_SG_OFFSET 		0x40000
+#define DMA_READ_TC_TC2TC_SETPBYTES (16/*4 flags + 4 size(DWORDs) + 8 ptr(4k align) */) /*muss nDWORDs sein*/
+
+//die SGFlags
+#define DMA_READ_TC_SG_FLAG_START_TRANSACTION 	(0x09) /* Loest FIFO-Reset aus + Bildstart */
+#define DMA_READ_TC_SG_FLAG_START_TRANSFER 		(0x00) /* FPGA wertet einfach FIFO-empty Flag aus */
+#define DMA_READ_TC_SG_FLAG_END_TRANSACTION		(0x02) /* DescrData.Link */
+#define DMA_READ_TC_SG_FLAG_END_TRANSFER 		(0x04) /* DescrData.EnableIRQ */
+#define DMA_READ_TC_SG_FLAG_ERROR 				(0x10 | DMA_READ_TC_SG_FLAG_END_TRANSACTION | DMA_READ_TC_SG_FLAG_END_TRANSFER)
+
+
+
+//Anzahl der Elemente im .Jobs_ToTo, .Jobs_Done FIFO
+#define MAX_DMA_READ_JOBFIFO_SIZE	32
+
+
+//2xDWORD, 		IRQFlags
+//2xDWORD, 		IRQPaket, Header0/Header1
+//128xDWORD, 	IRQPaket, Daten	
+//DMAs*TCsx8,	DMABuffer Zähler (UINT16)
+#define HOST_BUFFER_SIZE ((4*(2+2+128))+(MAX_DMA_READ_DMACHANNELS*MAX_DMA_READ_CHANNELTCS*8)) 
+#define HOST_BUFFER_DMAREAD_COUNTER_OFFSET (4*(2+2+128))
+
+
+//für DMA_READ_* brauchen wir eine PageSize von 4k 
+#if PAGE_SIZE!=4096
+ #error PageSize must be 4096!
+#endif
 
 
 /*** structs ***/
@@ -128,6 +181,7 @@ enum AGEX_DEVICE_SUBTYPE
  * -> ein Process wartet auf eine DeviceID
  * -> die DLL hat eine ID belegt
 */
+
 //Fast alles zusammen was es Ã¼ber solch ein Request zu wissen gibt
 typedef struct _LONG_TERM_IO_REQUEST
 {
@@ -153,34 +207,96 @@ typedef struct _LONG_TERM_IO_REQUEST
 	u8	IRQBuffer_anzBytes;
 }  LONGTERM_IOREQUEST, *PLONGTERM_IOREQUEST;
 
-//Fast alle Infos zu seinen PCI(e) Device zusammen, das Module wird ja nur 1x pro System geladen
+
+
+//Fast alles zusammen für ein UserBuffer für eine DMA (Read)
+typedef struct _DMA_READ_JOB
+{
+	//UserBuffer
+ 	uintptr_t 	pVMUser;			//NULL ptr, dann ein DummyJob vom Abort
+	size_t 		anzBytesToTransfer;
+
+	//Status (nur gültig/gesetzt) wenn in .Jobs_Done)
+	bool		boIsOk;				//ohne Fehler übertragen
+	u16 		BufferCounter; 		//laufender Zähler, FPGA zählt
+}  DMA_READ_JOB, *PDMA_READ_JOB;
+
+//Fast alles zusammen für ein DMA (Read) TC 
+typedef struct _DMA_READ_TC
+{
+	bool 			boIsUsed;		//1<>Rest ist der struct gültig bzw. die boIsxxx
+
+	//der Job(UserBuffer)
+	DMA_READ_JOB	Job;
+
+	//Pinned UserBuffer
+	bool			boIsPageListValid;	//1<>PageListe wurde angelegt 
+	bool 			boIsPinned;			//1<>UserMem ist gepinned
+	struct page **	ppPageList;
+	u32				anzPagesPinned;
+
+	//SGListe
+	bool 			boIsSGValid;	//1<>sgTable wurde angelegt 
+	bool 			boIsSGMapped;	//1<>wurde gemapped
+	struct sg_table SGTable;	
+	u32				anzSGItemsMapped;
+	struct scatterlist *pSGNext;	//Nächste Element was gesendet werden kann, kann aber auch sg_is_last()==true sein oder NULL für last+1
+}  DMA_READ_TC, *PDMA_READ_TC;
+
+//Fast alles zusammen für einen DMA (Read) Channel
+typedef struct _DMA_READ_CHANNEL
+{
+	DECLARE_KFIFO(Jobs_ToDo, DMA_READ_JOB, MAX_DMA_READ_JOBFIFO_SIZE);	//sind nicht einer DMA/TC zugewiesen (auch nicht gewesen)
+	DECLARE_KFIFO(Jobs_Done, DMA_READ_JOB, MAX_DMA_READ_JOBFIFO_SIZE);	//sind nicht mehr einer DMA/TC zugewiesen (kann aber auch abgebrochen worden sein)
+
+	struct semaphore WaitSem;									// der WaitRequest, es ist im Jobs_Done was drin, im AbortFall ist es ein DummyJob
+
+	DMA_READ_TC		TCs[MAX_DMA_READ_CHANNELTCS];				//liste der möglichen TCs
+}  DMA_READ_CHANNEL, *PDMA_READ_CHANNEL;
+
+
+
+//Fast alle Infos zu seinen PCI(e) Device zusammen
 typedef struct _DEVICE_DATA
 {		
 	//> Device	
+	//***************************************************************/
 	bool			boIsDeviceOpen;	//true <> Device ist valid
-	struct cdev		Device;			//das KernelObj vom Module	
+	struct cdev		DeviceCDev;		//das KernelObj vom Module	
+	struct device*	pDeviceDevice;	//pcidev->dev
 	u8 				DeviceSubType;	//was sind wir AGEX, AGEX2... <> AGEX_DEVICE_SUBTYPE	
 	struct semaphore DeviceSem;		//lock fÃ¼r ein Device (diese struct & common buffer)
 	dev_t			DeviceNumber;	//Nummer von CHAR device
 
 	//> IDs/MetaInfos fÃ¼r ein read	
+	//***************************************************************/
 	bool				boIsDeviceIDUsed[MAX_IRQDEVICECOUNT];	//Feld mit den DeviceIDs, UserMode fragt an, welche frei sind
 	LONGTERM_IOREQUEST  LongTermRequestList[MAX_LONG_TERM_IO_REQUEST];
 
 	//> BAR0
+	//***************************************************************/
 	bool			boIsBAR0Requested;	//ist die Bar0 gÃ¼ltig
 	unsigned long	BAR0SizeBytes;
 	void*			pVABAR0;			//zeigt auf den Anfang des gemapped mem vom PCIDev (eg 0xffffc90017480000)
 
 	//> ~IRQ
+	//***************************************************************/
 	bool					boIsIRQOpen;	//true<>IRQ ist open
 	bool 					boIsDPCRunning;	//damit nur ein DPC zur Zeit läuft&gequeued 
 	struct tasklet_struct	IRQTasklet;		//~SWI worker
 	
-	//> CommonBuffer (AGEX2)
-	void* 		pVACommonBuffer;	//Virtuelleradresse	(eg: 0xffff8800d43dc000)
-	dma_addr_t 	pBACommonBuffer;	//(Phy)(PCI)Busadresse (eg. 0xd43dc000)
+	//> CommonBuffer (AGEX2/4...)
+	//***************************************************************/
+	void* 					pVACommonBuffer;	//Virtuelleradresse	(eg: 0xffff8800d43dc000)
+	dma_addr_t 				pBACommonBuffer;	//(Phy)(PCI)Busadresse (eg. 0xd43dc000)
 
+	//> DMA (AGEX2 CL, VCXM)
+	//***************************************************************/
+	u8						DMARead_anzChannels;//wie viele Channel gibt es?
+	u8						DMARead_anzTCs;		//wie viele TCs pro Channel?
+	u16  					DMARead_anzSGs;		//wie viele Scatter/Gather Pairs pro TC 
+	struct semaphore		DMARead_SpinLock;	//Lock für DMAStructs/und DMAUnit im FPGA
+	DMA_READ_CHANNEL		DMARead_Channels[MAX_DMA_READ_DMACHANNELS];	//Params für alle möglichen DMAChannels	
 } DEVICE_DATA, *PDEVICE_DATA;
 
 //Fast alles zusammen was zu diesem Module gehÃ¶rt, (Note: n PCIdevs fÃ¼r das Module, Module wird nur 1x geladen)
@@ -220,6 +336,14 @@ void AGEXDrv_tasklet(unsigned long devIndex);
 /* PCI fns*/
 int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id);
 void AGEXDrv_PCI_remove(struct pci_dev *pcidev);
+
+/* DMA fns */
+void AGEXDrv_DMARead_StartDMA(PDEVICE_DATA pDevData);
+void AGEXDrv_DMARead_DPC(PDEVICE_DATA pDevData, const u32 isDoneReg, const u32 isOkReg, const u16* pBufferCounters);
+void AGEXDrv_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC);
+void AGEXDrv_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA);
+void AGEXDrv_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData,  const u32 iDMA);
+
 
 /*Module fns*/
 int AGEXDrv_init(void);

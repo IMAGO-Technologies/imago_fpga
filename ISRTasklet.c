@@ -22,6 +22,9 @@
 
 #include "AGEXDrv.h"
 
+//wird mit FPGA-IRQ Off im IRQ-Tasklet aufgerufen, kümmert sich um das SUN-Paket, pDevData ist gültig
+static void InterruptTaskletSun(PDEVICE_DATA pDevData);
+
 
 //<====================================>
 //	IRQ fns
@@ -40,8 +43,8 @@ void AGEXDrv_SwitchInterruptOn(PDEVICE_DATA pDevData, const bool boTurnOn)
 		return;
 
 	/* CommonBuffer Adr setzen (nur gÃ¼ltig solange IRQon) & Init */
-	//hat nur eine AGEX2
-	if( boTurnOn && ( (pDevData->DeviceSubType==SubType_AGEX2) || (pDevData->DeviceSubType==SubType_MVC0) ) )
+	//hat nur eine AGEX2(CL), MVC0
+	if( boTurnOn && ( (pDevData->DeviceSubType==SubType_AGEX2) || (pDevData->DeviceSubType==SubType_AGEX2_CL) || (pDevData->DeviceSubType==SubType_MVC0) ) )
 	{
 		//nur um ganz sicher zu sein
 		if( (pDevData->pVACommonBuffer == NULL) || (pDevData->pBACommonBuffer == 0) )
@@ -70,7 +73,7 @@ void AGEXDrv_SwitchInterruptOn(PDEVICE_DATA pDevData, const bool boTurnOn)
 		regVal = 0x0;
 
 	//wo kommt das On/Off Bit hin?
-	if( (pDevData->DeviceSubType==SubType_AGEX2) || (pDevData->DeviceSubType==SubType_MVC0) )
+	if( (pDevData->DeviceSubType==SubType_AGEX2) || (pDevData->DeviceSubType==SubType_AGEX2_CL) || (pDevData->DeviceSubType==SubType_MVC0) )
 		regAdr = ISR_ONOFF_OFFSET_AGEX2;
 	else
 		regAdr = ISR_ONOFF_OFFSET_AGEX;
@@ -101,22 +104,27 @@ irqreturn_t AGEXDrv_interrupt(int irq, void *dev_id)
 
 
 	/* liest das IRQ flag ein */
-	if( (pDevData->DeviceSubType==SubType_AGEX2) || (pDevData->DeviceSubType==SubType_MVC0) )
+	if( (pDevData->DeviceSubType==SubType_AGEX2) || (pDevData->DeviceSubType==SubType_AGEX2_CL) || (pDevData->DeviceSubType==SubType_MVC0) )
 	{
 		if( (pDevData->pVACommonBuffer == NULL) || (pDevData->pBACommonBuffer == 0) )
 			return IRQ_NONE;
 
 		regVal = ((u32*)pDevData->pVACommonBuffer)[0];		//das Bit steht in uns Drin
+
+		//bei AGEX2 nur 1. Bit (sicher ist sicher)
+		if( (pDevData->DeviceSubType == SubType_AGEX2) || (pDevData->DeviceSubType == SubType_MVC0) )
+			regVal &= 0x1;
 	}
 	else
 	{
 		//das Flag geht weg wenn FIFO leer oder IRQs off sind
 		regVal = ioread32(pDevData->pVABAR0 + ISR_AVAILABLE_OFFSET);
+		regVal &= 0x1;		//nur das 1. Bit ist das IRQFlag (sicher ist sicher)
 	}
 
 
 	/* ja, unser interrupt */
-	if(regVal & 0x1)
+	if(regVal != 0)
 	{
 		//INTs abschalten
 		//AGEX: IRQ geht weg wenn FIFO leer oder IRQs off sind
@@ -149,10 +157,12 @@ irqreturn_t AGEXDrv_interrupt(int irq, void *dev_id)
 //SWI bzw. DPC Achtung hat keinen process context
 void AGEXDrv_tasklet (unsigned long devIndex)
 {
-	u32 regVal, fifoLevel, header0, header1;
-	u16 deviceID, wordCount, index;
 	PDEVICE_DATA pDevData = NULL;
-	bool boPacketDataDone = FALSE;
+	bool		boIsSunIRQ 		= FALSE;
+	bool		boIsDMAReadIRQ 	= FALSE;
+
+	u32 		DMARead_isDone = 0, DMARead_isOK = 0;
+	u16			DMARead_BufferCounters[MAX_DMA_READ_DMACHANNELS*MAX_DMA_READ_CHANNELTCS];
 
 	pr_devel(MODDEBUGOUTTEXT" AGEXDrv_tasklet (Minor:%lu)\n", devIndex);
 
@@ -163,11 +173,86 @@ void AGEXDrv_tasklet (unsigned long devIndex)
 	pDevData = &_ModuleData.Devs[devIndex];
 	if( (pDevData->pVABAR0 == NULL) || (pDevData->DeviceSubType == SubType_Invalid) )
 		return;
-	if( (pDevData->DeviceSubType==SubType_AGEX2) || (pDevData->DeviceSubType==SubType_MVC0) )
+	if( (pDevData->DeviceSubType==SubType_AGEX2) || (pDevData->DeviceSubType==SubType_AGEX2_CL) || (pDevData->DeviceSubType==SubType_MVC0) )
 	{
 		if( (pDevData->pVACommonBuffer == NULL) || (pDevData->pBACommonBuffer == 0) )
 			return;
 	}
+
+
+	/* Was für ein IRQ? SUN und/oder DMA (bei AGEX gibt es nur SUN)*/
+	/**********************************************************************/
+	if (pDevData->DeviceSubType==SubType_AGEX)
+		boIsSunIRQ = TRUE;
+
+	if( (pDevData->DeviceSubType==SubType_AGEX2) || (pDevData->DeviceSubType==SubType_AGEX2_CL) || (pDevData->DeviceSubType==SubType_MVC0) )
+	{
+		u32 IRQReg_A = ((u32*)pDevData->pVACommonBuffer)[0];
+		u32 IRQReg_B = ((u32*)pDevData->pVACommonBuffer)[1];
+
+		if(	(IRQReg_A & 0x1) == 1 )
+			boIsSunIRQ = TRUE;
+
+		if (pDevData->DeviceSubType==SubType_AGEX2_CL)
+		{
+			s32 i;
+			u32 DMAMask;
+
+			//Bit [3-0] sind reserved, Rest können für ReadDMAs sein
+			DMAMask = pDevData->DMARead_anzChannels * pDevData->DMARead_anzTCs;
+			DMAMask = (DMAMask > 28) ? (28) : (DMAMask);	//kann eigentlich nicht sein... 
+			DMAMask = (1 << DMAMask)-1;
+
+			DMARead_isDone = (IRQReg_A >> 4)	& DMAMask;
+			DMARead_isOK =  (~(IRQReg_B >> 4))	& DMAMask & DMARead_isDone; 
+
+			//nach den IRQFlags, CPUPaket kommt ein BufferZähler
+			for(i = 0; i< (pDevData->DMARead_anzChannels+pDevData->DMARead_anzTCs); i++)
+			{
+				u8*	pCommonBuffer = (u8*)pDevData->pVACommonBuffer;
+				pCommonBuffer += HOST_BUFFER_DMAREAD_COUNTER_OFFSET;
+				pCommonBuffer += i*8;	//je 8Byte
+				DMARead_BufferCounters[i] = *((u16*)pCommonBuffer);
+			}
+
+			//IRQ?
+			if(DMARead_isDone != 0)
+				boIsDMAReadIRQ = TRUE;
+		}
+
+	}
+
+
+	/* die IRQs behandeln */
+	/**********************************************************************/
+	//SUNIRQ 
+	if(boIsSunIRQ)
+		InterruptTaskletSun(pDevData);
+
+	//DMA (Read)
+	// da wir eine copy der IRQFlags haben könnten die IRQs eigentlich wieder on sein
+	// bringt aber nur was wenn wir einen extra tasklet hätten
+	if(boIsDMAReadIRQ)
+		AGEXDrv_DMARead_DPC(pDevData, DMARead_isDone, DMARead_isOK, DMARead_BufferCounters);
+
+
+
+	/* Re-enable the interrupt */
+	/**********************************************************************/
+	AGEXDrv_SwitchInterruptOn(pDevData,TRUE);
+
+	pr_devel(MODDEBUGOUTTEXT" DPC done\n");
+
+	return;
+}
+
+//wird mit FPGA-IRQ Off im IRQ-Tasklet aufgerufen, kümmert sich um das SUN-Paket, pDevData ist gültig
+void InterruptTaskletSun(PDEVICE_DATA pDevData)
+{
+	u32 regVal, fifoLevel, header0, header1;
+	u16 deviceID, wordCount, index;
+
+	bool boPacketDataDone = FALSE;
 
 
 	/* vom FPGA den PaketKopf einlesen/auswerten */
@@ -282,13 +367,6 @@ void AGEXDrv_tasklet (unsigned long devIndex)
 		for (i=0; i<wordCount; i++)
 			dummy = ioread32(pDevData->pVABAR0);
 	}
-
-
-	/* Re-enable the interrupt */
-	/**********************************************************************/
-	AGEXDrv_SwitchInterruptOn(pDevData,TRUE);
-
-	pr_devel(MODDEBUGOUTTEXT" DPC done\n");
 
 	return;
 }

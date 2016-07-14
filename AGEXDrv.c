@@ -43,6 +43,7 @@ static struct pci_device_id AGEXDrv_ids[] = {
 	{ PCI_DEVICE(0x1204/*VendorID (Lattice Semi)*/, 0x0200 /*DeviceID*/), },	/* AGE-X1 */
 	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0x0004 /*DeviceID*/), },			/* AGE-X2 */
 	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xA6E4 /*DeviceID*/), },			/* MVC0 */
+	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0x0010 /*DeviceID*/), },			/* AGEX2-CL */
 	{ 0, }
 };
 MODULE_DEVICE_TABLE(pci, AGEXDrv_ids);		//macht dem kernel bekannt was dieses modul fÃ¼r PCI devs kann
@@ -151,11 +152,14 @@ void AGEXDrv_exit(void)
 //setzt alle Felder auf definierte Werte
 void AGEXDrv_InitDrvData(PDEVICE_DATA pDat)
 {
-	int i;
+	int i, iChannel, iTC;
 
-	memset(pDat, 0, sizeof(DEVICE_DATA));
+	//Note: darf nicht wegen  SG... 
+	//memset(pDat, 0, sizeof(DEVICE_DATA));
 
+	/* Module */
 	pDat->boIsDeviceOpen	= FALSE;
+	pDat->pDeviceDevice		= NULL;
 	pDat->DeviceSubType		= SubType_Invalid;
 	#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
 		sema_init(&pDat->DeviceSem,1);		//1<>frei
@@ -163,6 +167,8 @@ void AGEXDrv_InitDrvData(PDEVICE_DATA pDat)
 		init_MUTEX( &pDat->DeviceSem);
 	#endif
 
+		
+	/* SUN */
 	for(i=0;i<MAX_IRQDEVICECOUNT;i++)
 		pDat->boIsDeviceIDUsed[i] = FALSE;
 
@@ -188,4 +194,53 @@ void AGEXDrv_InitDrvData(PDEVICE_DATA pDat)
 	pDat->pBACommonBuffer	= 0;
 	pDat->boIsIRQOpen		= FALSE;
 	pDat->boIsDPCRunning	= FALSE;
+
+
+	/* DMA */
+	//Note: 
+	//	- da wir hier noch nicht wissen ob wie überhaupt eine DMA haben immer init
+	// 	- auch alle möglichen DMAChannels/TCs initen da wir noch nicht wissen wie viele wir haben werden
+	pDat->DMARead_anzChannels	= 0;
+	pDat->DMARead_anzTCs		= 0;
+	pDat->DMARead_anzSGs		= 0;
+	#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
+		sema_init(&pDat->DMARead_SpinLock,1);		//1<>frei
+	#else
+		init_MUTEX( &pDat->DMARead_SpinLock);
+	#endif
+	for(iChannel = 0; iChannel < MAX_DMA_READ_DMACHANNELS; iChannel++)
+	{
+		PDMA_READ_CHANNEL pChannel = pDat->DMARead_Channels+iChannel;
+
+		INIT_KFIFO(pChannel->Jobs_ToDo);
+		INIT_KFIFO(pChannel->Jobs_Done);
+		#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
+			sema_init(&pChannel->WaitSem,0);		//1<>frei
+		#else
+			init_MUTEX_LOCKED( &pChannel->WaitSem);
+		#endif
+
+		for(iTC = 0; iTC < MAX_DMA_READ_CHANNELTCS; iTC++)
+		{
+			PDMA_READ_TC pTC = pChannel->TCs+iTC;
+
+			pTC->boIsUsed 					= FALSE;			
+			pTC->Job.pVMUser				= 0;
+			pTC->Job.anzBytesToTransfer 	= 0;
+			pTC->Job.boIsOk					= FALSE;
+			pTC->Job.BufferCounter			= 0;
+
+			pTC->boIsPageListValid			= FALSE;
+			pTC->boIsPinned					= FALSE;
+			pTC->ppPageList					= NULL;
+			pTC->anzPagesPinned				= 0;
+
+			pTC->boIsSGValid				= FALSE;
+			pTC->boIsSGMapped				= FALSE;
+			//pTC->SGTable;	wird später bei/in sg_alloc_table() gemacht
+			pTC->anzSGItemsMapped			= 0;
+			pTC->pSGNext					= NULL;
+		}//for TCs
+	}//for DMAChannesl
 }
+

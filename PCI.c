@@ -18,7 +18,6 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  *
- * -> module (un)load, read & write & IO, PCI probe/remove, IRQ(ISR)
  *
  */
 
@@ -87,6 +86,7 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 			AGEXDrv_InitDrvData(&_ModuleData.Devs[DevIndex]);			
 			_ModuleData.Devs[DevIndex].DeviceSubType= tempDevSubType;
 			_ModuleData.Devs[DevIndex].DeviceNumber = MKDEV(MAJOR(_ModuleData.FirstDeviceNumber), DevIndex);
+			_ModuleData.Devs[DevIndex].pDeviceDevice = &pcidev->dev;
 			pci_set_drvdata(pcidev, &_ModuleData.Devs[DevIndex]);				//damit wir im AGEXDrv_PCI_remove() wissen welches def freigebene werden soll
 			break;
 		}
@@ -132,19 +132,23 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 	_ModuleData.Devs[DevIndex].BAR0SizeBytes = bar0_len;
 
 
-	//>DMA(Coherent) Buffer (AGEX2 only)
+	//>DMA(Coherent) Buffer (nicht AGEX1)
 	/**********************************************************************/
-	if( (_ModuleData.Devs[DevIndex].DeviceSubType==SubType_AGEX2) || (_ModuleData.Devs[DevIndex].DeviceSubType==SubType_MVC0))
+	if( (_ModuleData.Devs[DevIndex].DeviceSubType==SubType_AGEX2) || (_ModuleData.Devs[DevIndex].DeviceSubType==SubType_AGEX2_CL) || (_ModuleData.Devs[DevIndex].DeviceSubType==SubType_MVC0))
 	{
-		//sagt das wir 32Bit können
+		u8 MaxDAMAddressSize = 32;
+		if(_ModuleData.Devs[DevIndex].DeviceSubType==SubType_AGEX2_CL)
+			MaxDAMAddressSize = 64;
+
+		//sagt das wir xxBit können
 		//https://www.kernel.org/doc/Documentation/DMA-API-HOWTO.txt
 		// "...By default, the kernel assumes that your device can address the full 32-bits...
 		//  ... It is good style to do this even if your device holds the default setting ..."
-		if( dma_set_mask(&pcidev->dev, DMA_BIT_MASK(32) ) != 0)
+		if( dma_set_mask(&pcidev->dev, DMA_BIT_MASK(MaxDAMAddressSize) ) != 0)
 			{printk(KERN_ERR MODDEBUGOUTTEXT" dma_set_mask failed!\n"); return -EIO;}
 		//ab 2.6.34
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,34)
-		if( dma_set_coherent_mask(&pcidev->dev, DMA_BIT_MASK(32) ) != 0)
+		if( dma_set_coherent_mask(&pcidev->dev, DMA_BIT_MASK(MaxDAMAddressSize) ) != 0)
 			{printk(KERN_ERR MODDEBUGOUTTEXT" dma_set_coherent_mask failed!\n"); return -EIO;}
 #endif
 
@@ -181,7 +185,7 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 	//msi einschalten
 	//http://www.mjmwired.net/kernel/Documentation/MSI-HOWTO.txt
 	// "... to call this API before calling request_irq()..."
-	if( (_ModuleData.Devs[DevIndex].DeviceSubType == SubType_AGEX2) || (_ModuleData.Devs[DevIndex].DeviceSubType==SubType_MVC0) ) 
+	if( (_ModuleData.Devs[DevIndex].DeviceSubType == SubType_AGEX2) || (_ModuleData.Devs[DevIndex].DeviceSubType==SubType_AGEX2_CL) || (_ModuleData.Devs[DevIndex].DeviceSubType==SubType_MVC0) ) 
 	{
 		if( pci_enable_msi(pcidev) != 0)
 			{printk(KERN_ERR MODDEBUGOUTTEXT"pci_enable_msi failed!\n"); return -EIO;}
@@ -197,7 +201,7 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 			) != 0)
 	{
 		printk(KERN_ERR MODDEBUGOUTTEXT" request_irq failed\n");
-		if( (_ModuleData.Devs[DevIndex].DeviceSubType == SubType_AGEX2) || (_ModuleData.Devs[DevIndex].DeviceSubType==SubType_MVC0) )
+		if( (_ModuleData.Devs[DevIndex].DeviceSubType == SubType_AGEX2) || (_ModuleData.Devs[DevIndex].DeviceSubType==SubType_AGEX2_CL) || (_ModuleData.Devs[DevIndex].DeviceSubType==SubType_MVC0) )
 			pci_disable_msi(pcidev);
 
 		_ModuleData.Devs[DevIndex].boIsIRQOpen = FALSE;
@@ -213,12 +217,12 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 
 	//>dev init & fügt das es hinzu
 	/**********************************************************************/
-	cdev_init(&_ModuleData.Devs[DevIndex].Device, &AGEXDrv_fops);
-	_ModuleData.Devs[DevIndex].Device.owner = THIS_MODULE;
-	_ModuleData.Devs[DevIndex].Device.ops 	= &AGEXDrv_fops;	//notwendig in den quellen wird fops gesetzt?
+	cdev_init(&_ModuleData.Devs[DevIndex].DeviceCDev, &AGEXDrv_fops);
+	_ModuleData.Devs[DevIndex].DeviceCDev.owner = THIS_MODULE;
+	_ModuleData.Devs[DevIndex].DeviceCDev.ops 	= &AGEXDrv_fops;	//notwendig in den quellen wird fops gesetzt?
 
 	//fügt ein device hinzu, nach der fn können FileFns genutzt werden
-	res = cdev_add(&_ModuleData.Devs[DevIndex].Device, _ModuleData.Devs[DevIndex].DeviceNumber, 1/*wie viele ab startNum*/);
+	res = cdev_add(&_ModuleData.Devs[DevIndex].DeviceCDev, _ModuleData.Devs[DevIndex].DeviceNumber, 1/*wie viele ab startNum*/);
 	if(res < 0)
 		printk(KERN_WARNING MODDEBUGOUTTEXT" can't add device!\n");
 	else
@@ -259,18 +263,29 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 //wird aufgerufen wenn das PCIdev removed wird
 void AGEXDrv_PCI_remove(struct pci_dev *pcidev)
 {
+	//Note: wenn PCI_remove() aufgerufen wird, 
+	// darf kein UserThread mehr im Teiber sein bzw. noch reinspringen weil sonst... bum 	
+	u32 i;
 	PDEVICE_DATA pDevData = (PDEVICE_DATA)pci_get_drvdata(pcidev);
 	pr_devel(MODDEBUGOUTTEXT" AGEXDrv_PCI_remove (%d:%d)\n", MAJOR(pDevData->DeviceNumber), MINOR(pDevData->DeviceNumber));
 
 	if(pDevData == NULL){
 		printk(KERN_WARNING MODDEBUGOUTTEXT" device pointer is zero!\n"); return;}
 
+	//DMA (versuchen) aufzur�umen
+	// - devs die keine DMA haben, da ist DMARead_anzXXX=0 
+	for(i = 0; i < pDevData->DMARead_anzChannels; i++)
+	{
+		AGEXDrv_DMARead_Abort_DMAChannel(pDevData, i);
+		AGEXDrv_DMARead_Abort_DMAWaiter(pDevData, i);
+	}
+
 	//IRQ zuückgeben
 	if(pDevData->boIsIRQOpen)
 	{
 		AGEXDrv_SwitchInterruptOn(pDevData, FALSE);
 		free_irq(pcidev->irq, pDevData);
-		if( (pDevData->DeviceSubType==SubType_AGEX2) || (pDevData->DeviceSubType==SubType_MVC0) )
+		if( (pDevData->DeviceSubType==SubType_AGEX2) || (pDevData->DeviceSubType==SubType_AGEX2_CL) || (pDevData->DeviceSubType==SubType_MVC0) )
 			pci_disable_msi(pcidev);
 	}
 	
@@ -286,7 +301,7 @@ void AGEXDrv_PCI_remove(struct pci_dev *pcidev)
 		release_mem_region( pci_resource_start(pcidev, 0), pci_resource_len(pcidev, 0) );
 	pDevData->boIsBAR0Requested = FALSE;
 
-	if( 	( (pDevData->DeviceSubType==SubType_AGEX2) || (pDevData->DeviceSubType==SubType_MVC0) )
+	if( 	( (pDevData->DeviceSubType==SubType_AGEX2) || (pDevData->DeviceSubType==SubType_AGEX2_CL) || (pDevData->DeviceSubType==SubType_MVC0) )
 		&& 	(pDevData->pVACommonBuffer != NULL) )
 		dma_free_coherent(&pcidev->dev, PAGE_SIZE, pDevData->pVACommonBuffer, pDevData->pBACommonBuffer);
 	pDevData->pVACommonBuffer = NULL;
@@ -300,8 +315,9 @@ void AGEXDrv_PCI_remove(struct pci_dev *pcidev)
 
 	//device löschen
 	if(pDevData->boIsDeviceOpen)
-		cdev_del(&pDevData->Device);
+		cdev_del(&pDevData->DeviceCDev);
 	pDevData->boIsDeviceOpen = FALSE;
+
 }
 
 
