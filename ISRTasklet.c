@@ -50,12 +50,17 @@ void AGEXDrv_SwitchInterruptOn(PDEVICE_DATA pDevData, const bool boTurnOn)
 		if( (pDevData->pVACommonBuffer == NULL) || (pDevData->pBACommonBuffer == 0) )
 		  	return;
 
-		//das IRQ Flag lÃ¶schen (1 Word, 4 Word sind nur zu Sicherheit)
+		//> das IRQ Flag löschen (2 Word [Flags], 3 Word [Header0/Header1/Data[0]] sind nur zu Sicherheit)
 		memset(pDevData->pVACommonBuffer,0, (2+3) * sizeof(u32));
 		smp_mb();	//nop bei x86
 
-		//Adr ins FPGA setzen
-		iowrite32(pDevData->pBACommonBuffer, pDevData->pVABAR0 +ISR_COMMONBUFFER_ADR_AGEX2);
+		//> Adr ins FPGA setzen
+		//(low 32Bit)
+		iowrite32( (pDevData->pBACommonBuffer & 0xFFFFFFFF), pDevData->pVABAR0 + ISR_COMMONBUFFER_ADR_AGEX2);
+		
+		//(high 32Bit)
+		if(pDevData->DeviceSubType==SubType_AGEX2_CL)
+			iowrite32( (pDevData->pBACommonBuffer >> 32), pDevData->pVABAR0 + ISR_COMMONBUFFER_ADR_AGEX2 +4);
 	}
 
 
@@ -88,6 +93,8 @@ irqreturn_t AGEXDrv_interrupt(int irq, void *dev_id)
 {
 	u32 regVal;
 	PDEVICE_DATA pDevData = NULL;
+
+pr_devel(MODDEBUGOUTTEXT" AGEXDrv_interrupt (IRQ:%d, devptr:%p)\n", irq, dev_id);
 
 	/* war der int von uns? reg lesen  */
 	if( dev_id == NULL )

@@ -23,10 +23,9 @@
 
 #include "AGEXDrv.h"
 
-static bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC);
 static void AGEXDrv_DMARead_EndDMA(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC, const bool boIsOk, const u16 BufferCounter);
 static u8* AGEXDrv_DMARead_GetSGAdr(PDEVICE_DATA pDevData,const u32 iDMA, const u32 iTC);
-	
+
 
 
 /****************************************
@@ -35,39 +34,45 @@ static u8* AGEXDrv_DMARead_GetSGAdr(PDEVICE_DATA pDevData,const u32 iDMA, const 
  *
 ****************************************/
 
-
-//mapped und pinned den "Job<>UserBuffer", TC struct ist beim return(min die Flags gültig) wickelt aber beim Fehler nicht rückab
-bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC)
+//Init und mapped/pinned den "Job<>UserBuffer", struct ist beim return(min die Flags gültig) wickelt daher beim Fehler nichts rück ab (kann nicht als DPC laufen)
+bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob, uintptr_t pVMUser, u64 anzBytesToTransfer)
 {
-	PDMA_READ_TC 	tmpTC 			= pDevData->DMARead_Channels[iDMA].TCs + iTC;
-	u32				anzPagesToMap	= tmpTC->Job.anzBytesToTransfer / PAGE_SIZE;
+	u32				anzPagesToMap	= (anzBytesToTransfer + PAGE_SIZE-1) / PAGE_SIZE;
 	int 			anzPagesPinned	= -1;
-	struct scatterlist *ptmpSGList	= NULL;
-	u32 			iSG				= 0;
+
 	int 			anzMappedSGs	= -1;
 
-	pr_devel(MODDEBUGOUTTEXT" MappUserBuffer> (%d[Bytes], %d[Pages] @ 0x%p)\n", (int)tmpTC->Job.anzBytesToTransfer, anzPagesToMap, (void*)tmpTC->Job.pVMUser);
+	pr_devel(MODDEBUGOUTTEXT" MappUserBuffer> (%d[Bytes], %d[Pages] @ 0x%p)\n", (int)anzBytesToTransfer, anzPagesToMap, (void*)pVMUser);
 
-	//Valid?
-	if( 	((tmpTC->Job.anzBytesToTransfer & (~PAGE_MASK)) != 0)
-		|| 	(tmpTC->Job.anzBytesToTransfer < PAGE_SIZE) )
- 		{printk(KERN_WARNING MODDEBUGOUTTEXT "MappUserBuffer> page size is wrong!\n"); return FALSE;}
-	if( (tmpTC->Job.pVMUser & (PAGE_SIZE-1) ) != 0)
- 		{printk(KERN_WARNING MODDEBUGOUTTEXT "MappUserBuffer> page pointer is wrong aligned!\n"); return FALSE;}
 
 	//init der Flags(da hier kein cleanUp gemacht wird)
-	tmpTC->boIsPageListValid 	= FALSE;
-	tmpTC->boIsPinned			= FALSE;
-	tmpTC->boIsSGValid			= FALSE;
-	tmpTC->boIsSGMapped			= FALSE;
+	pJob->pVMUser 				= (uintptr_t) pVMUser;
+	pJob->anzBytesToTransfer 	= anzBytesToTransfer;
 
+	pJob->boIsOk				= false;/* don't care, da nur gültig wenn in .Jobs_Done */
+	pJob->BufferCounter			= 0;	/* don't care, da nur gültig wenn in .Jobs_Done */
+
+	pJob->boIsPageListValid 	= FALSE;
+	pJob->boIsPinned			= FALSE;
+	pJob->boIsSGValid			= FALSE;
+	pJob->boIsSGMapped			= FALSE;
+
+
+	//Valid? (hier kein Test ob "Offset=0 & size n * PAGES_SIZE" nur wichtig fürs alloc
+	if( (pDevData==NULL) || (pJob==NULL) )
+ 		{printk(KERN_ERR MODDEBUGOUTTEXT "MappUserBuffer> invalid args!\n"); return FALSE;}
+	if( 	((pJob->anzBytesToTransfer & 0x3) != 0)
+		|| 	(pJob->anzBytesToTransfer <= 4) )
+ 		{printk(KERN_WARNING MODDEBUGOUTTEXT "MappUserBuffer> byte count is wrong!\n"); return FALSE;}
+	if( (pJob->pVMUser & (PAGE_SIZE-1) ) != 0)
+ 		{printk(KERN_WARNING MODDEBUGOUTTEXT "MappUserBuffer> page pointer is wrong aligned!\n"); return FALSE;}
 
 
 	//> User Buffer Pinnen
 	/**********************************************************************/
 	//speicher für die PageList
-	tmpTC->ppPageList = kmalloc(anzPagesToMap*sizeof(struct page*), GFP_KERNEL);
-	if( tmpTC->ppPageList == NULL )
+	pJob->ppPageList = kmalloc(anzPagesToMap*sizeof(struct page*), GFP_KERNEL);
+	if( pJob->ppPageList == NULL )
  		{printk(KERN_WARNING MODDEBUGOUTTEXT "MappUserBuffer> too many pages!\n"); return FALSE;}
 
 	//pinnen
@@ -78,19 +83,19 @@ bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, const u32 iDMA, const 
 	anzPagesPinned = get_user_pages(
 		current, 		/* task_struct, wo sollen die 'page faults' hin */
 		current->mm,	/* mm_struct, in welcher VMA der virtuelle Speicher zu finden ist */
-		tmpTC->Job.pVMUser,	/* UserMode Pointer, muss page-aligned sein */
+		pJob->pVMUser,	/* UserMode Pointer, muss page-aligned sein */
 		anzPagesToMap,	/* anz Pages */
 		TRUE,			/* 1<>write&read, 0<> readOnly (für den fn caller [module]) */
 		FALSE,			/* kein force, daher aus ein ReadOnly wird kein RW, 'LDD3 driver should always 0 here' */
-		tmpTC->ppPageList, /* NULL, oder PointerFeld zu den Pages welches anzPages/Pointer halten kann, gefüllte anz ist result */
+		pJob->ppPageList, /* NULL, oder PointerFeld zu den Pages welches anzPages/Pointer halten kann, gefüllte anz ist result */
 		NULL);			/* NULL, oder PointerFeld zu den VMAs welche anzPages/Pointer haltern kann */
 //<-----------------------------
 	up_read(&current->mm->mmap_sem);
 
 	if(anzPagesPinned <= 0)
  		{printk(KERN_WARNING MODDEBUGOUTTEXT "MappUserBuffer> get_user_pages() failed!\n"); return FALSE;}
-	tmpTC->boIsPinned 		= TRUE;
-	tmpTC->anzPagesPinned 	= anzPagesPinned;
+	pJob->boIsPinned 		= TRUE;
+	pJob->anzPagesPinned 	= anzPagesPinned;
 	if(anzPagesPinned != anzPagesToMap)
  		{printk(KERN_WARNING MODDEBUGOUTTEXT "MappUserBuffer> get_user_pages() failed %d from %d pinned!\n", anzPagesPinned, anzPagesToMap); return FALSE;}
 
@@ -107,32 +112,53 @@ bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, const u32 iDMA, const 
 	//aber ab =>3.6 gibt es "sg_alloc_table_from_pages()" was es macht
 	//http://lists.freedesktop.org/archives/dri-devel/2012-April/021962.html	
 	// "...All contiguous chunks of the pages are merged into a single sg nodes."
-
+	//
+	//http://askubuntu.com/questions/318315/how-can-i-temporarily-disable-aslr-address-space-layout-randomization
+	//"/proc/sys/kernel/randomize_va_space" kann eingestellt werden ob Speicher zusammenhängen darf (0=off,2=on), bei 3.16.7 (max 16k[on], ?64[off])
+	//
 	//- init des "Headers" <> sg_table, und alloced n pages für je m scatterlists 
 	// wird mehr als eine page gebraucht SG_MAX_SINGLE_ALLOC wird in struct scatterlist.page_link
 	// das bit 0 gesetzt, dann ist es eine Pointer auf die nÃ¤chste page 
 	// daher nicht selbst durchlaufen
 	//siehe: http://lwn.net/Articles/256368/ (The chained scatterlist API)
-	if(0 != sg_alloc_table(	&tmpTC->SGTable	/*header*/, 
+#if LINUX_VERSION_CODE > KERNEL_VERSION(3,6,0)
+	if( 0 != sg_alloc_table_from_pages(	&pJob->SGTable,				/*header*/
+										pJob->ppPageList,			/*pointer to page array*/
+										anzPagesPinned,				/*number of pages in page array*/
+										0, 							/*buffer offset*/
+										pJob->anzBytesToTransfer	/*buffer size [bytes]*/,
+										GFP_KERNEL))				/*wie wird gealloc*/
+		{printk(KERN_WARNING MODDEBUGOUTTEXT "MappUserBuffer> sg_alloc_table() failed!\n"); return FALSE;}	
+	pJob->boIsSGValid 	= TRUE;
+	pJob->pSGNext		= pJob->SGTable.sgl;
+#else
+{
+	struct scatterlist *ptmpSGList	= NULL;
+	u32 anztmpBytes = pJob->anzBytesToTransfer;
+	u32	iSG							= 0;
+	if(0 != sg_alloc_table(	&pJob->SGTable	/*header*/, 
 							anzPagesPinned 	/*für wie viele Einträge*/, 
 							GFP_KERNEL))	/*wie wird die page gealloc*/
 		{printk(KERN_WARNING MODDEBUGOUTTEXT "MappUserBuffer> sg_alloc_table() failed!\n"); return FALSE;}	
-	tmpTC->boIsSGValid 	= TRUE;
-	tmpTC->pSGNext		= tmpTC->SGTable.sgl;
+	pJob->boIsSGValid 	= TRUE;
+	pJob->pSGNext		= pJob->SGTable.sgl;
 
 	//- jetzt die Pages adden (macht nix mit den daten/pages)
-	ptmpSGList = tmpTC->SGTable.sgl;
+	ptmpSGList = pJob->SGTable.sgl;
 	for(iSG=0; iSG<anzPagesPinned; iSG++)
 	{
+		u32 tmp = MIN(anztmpBytes, PAGE_SIZE);		
+		anztmpBytes -= tmp;
 		sg_set_page(ptmpSGList,				/*an diese Stelle wird die Page eingetragen*/
-					tmpTC->ppPageList[iSG]	/*Pointer zur page struct*/,
-					PAGE_SIZE,				/*anzBytes der daten*/
+					pJob->ppPageList[iSG]	/*Pointer zur page struct*/,
+					tmp,					/*anzBytes der daten*/
 					0);						/*Offset*/
 		//Achtung! >nicht< einfach sgTable.sgl[Index] oder pSGList++
 		//da sie gechained sein könnten
 		ptmpSGList = sg_next(ptmpSGList);
 	}
-
+}
+#endif	
 
 
 	//> in den PCI/BUS AdrRaum mappen
@@ -146,15 +172,15 @@ bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, const u32 iDMA, const 
 	// geben (ohne IOMMU) einfach die phys adr zurÃ¼ck, ARM kÃ¼mmert sich um CACHE (x86 nicht notwendig)
 	// bei fehlern machen sie alles rÃ¼ckgÃ¤ngig
 	anzMappedSGs = dma_map_sg(pDevData->pDeviceDevice,	/*struct device pointer*/	
-								tmpTC->SGTable.sgl,		/*struct scatterlist (Anfang)*/
-								anzPagesPinned, 		/* anz der Buffers*/
+								pJob->SGTable.sgl,		/*struct scatterlist (Anfang)*/
+								pJob->SGTable.nents,	/*anz der Buffers*/
 								DMA_FROM_DEVICE); 		/*die Richtung wichtig fÃ¼r cache & bounce buffer*/
 	if( anzMappedSGs <=0)
  		{printk(KERN_WARNING MODDEBUGOUTTEXT "MappUserBuffer> dma_map_sg() failed!\n"); return FALSE;}
-	tmpTC->boIsSGMapped = TRUE;
-	tmpTC->anzSGItemsMapped	= anzMappedSGs;
-	if(anzPagesPinned != anzMappedSGs)
- 		{printk(KERN_WARNING MODDEBUGOUTTEXT "MappUserBuffer> dma_map_sg() failed %d from %d mapped!\n", anzMappedSGs, anzPagesPinned); return FALSE;}
+	pJob->boIsSGMapped = TRUE;
+	pJob->anzSGItemsMapped	= anzMappedSGs;
+	if(pJob->SGTable.nents != anzMappedSGs)
+ 		{printk(KERN_WARNING MODDEBUGOUTTEXT "MappUserBuffer> dma_map_sg() failed %d from %d mapped!\n", anzMappedSGs, pJob->SGTable.nents); return FALSE;}
 
 	pr_devel(MODDEBUGOUTTEXT" mapped done\n");
 
@@ -162,23 +188,20 @@ bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, const u32 iDMA, const 
 }
 
 
-// beendet eine DMA, egal ob mit oder ohne Fehler, ob gelaufen oder nicht (läuft auch aus DPC)
-// Achtung! es können nur Teile einer TC gültig sein
+
+// Macht einen CleanUp des Jobs
+// Achtung! 
+// 	> es können nur Teile eines Jobs gültig sein
+//  > darf nicht in einem DPC laufen! (set_page_dirty_lock())
 // - unmapping/pinnen 
 // - TC/Job freigeben
-// - Job in .Jobs_Done
-// - SemPosten
-void AGEXDrv_DMARead_EndDMA(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC, const bool boIsOk, const u16 BufferCounter)
+void AGEXDrv_DMARead_UnMapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob)
 {
-	PDMA_READ_TC 	tmpTC 			= pDevData->DMARead_Channels[iDMA].TCs + iTC;
+
 	u32 			iPage			= 0;
-	DMA_READ_JOB 	tmpJob;
-
-	pr_devel(MODDEBUGOUTTEXT" AGEXDrv_DMARead_EndDMA> DMA: %d, TC: %d, Res: %d, Seq: %d\n",
-				   	iDMA, iTC, boIsOk, BufferCounter);
-	if(tmpTC->boIsUsed == FALSE)
- 		{printk(KERN_WARNING MODDEBUGOUTTEXT " AGEXDrv_DMARead_EndDMA> invalid TC!\n"); return;}
-
+	pr_devel(MODDEBUGOUTTEXT" AGEXDrv_DMARead_UnMapUserBuffer\n");
+	if( (pDevData==NULL) || (pJob==NULL) )
+ 		{printk(KERN_ERR MODDEBUGOUTTEXT "UnMapUserBuffer> invalid args!\n"); return;}
 
 	//unmapping/pinnen 
 	/**********************************************************************/
@@ -196,25 +219,25 @@ void AGEXDrv_DMARead_EndDMA(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC
 	// 	__iommu_unmap_sg() kÃ¼mmert sich um den cache
 	//https://www.kernel.org/doc/Documentation/DMA-API.txt
 	// "All the parameters must be the same as those and passed in to the scatter/gather mapping API."
-	if(tmpTC->boIsSGMapped)
+	if(pJob->boIsSGMapped)
 	{
 		dma_unmap_sg(pDevData->pDeviceDevice,	/*struct device pointer*/
-				tmpTC->SGTable.sgl,				/*struct scatterlist (Anfang)*/
-				tmpTC->anzPagesPinned,			/*nents, items of the list*/
+				pJob->SGTable.sgl,				/*struct scatterlist (Anfang)*/
+				pJob->SGTable.nents,			/*nents, items of the list*/
 				DMA_FROM_DEVICE);				/*Richtung der DMA*/
 	}
-	tmpTC->boIsSGMapped = FALSE;
+	pJob->boIsSGMapped = FALSE;
 
 	//- freen der scatterlisten
-	if(tmpTC->boIsSGValid)
-		sg_free_table(&tmpTC->SGTable);
-	tmpTC->boIsSGValid = FALSE;
+	if(pJob->boIsSGValid)
+		sg_free_table(&pJob->SGTable);
+	pJob->boIsSGValid = FALSE;
 
 	//- unpinn Pages
-	if(tmpTC->boIsPinned)
+	if(pJob->boIsPinned)
 	{
 		//über alle Pages gehen	
-		for(iPage=0; iPage < tmpTC->anzPagesPinned; iPage++)
+		for(iPage=0; iPage < pJob->anzPagesPinned; iPage++)
 		{
 			//die Page als verÃ¤ndert marken
 			//https://www.kernel.org/doc/htmldocs/kernel-api/API-get-user-pages.html
@@ -236,26 +259,39 @@ void AGEXDrv_DMARead_EndDMA(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC
 			// "... Regardless of whether the pages have been changed, they must be freed from the
 			//	page cache, or they stay there forever. ..."
 			//
-			if(!PageReserved(tmpTC->ppPageList[iPage]))
+			if(!PageReserved(pJob->ppPageList[iPage]))
 			{
 				//macht lock_page, set_page_dirty, unlock_page
-				set_page_dirty_lock(tmpTC->ppPageList[iPage] );
+				set_page_dirty_lock(pJob->ppPageList[iPage] );
 			}	
 
 			//page_cache_release() ist ein define auf put_page()
-			put_page( tmpTC->ppPageList[iPage] );		
+			put_page( pJob->ppPageList[iPage] );		
 		}
 	}
-	tmpTC->boIsPinned = FALSE;
+	pJob->boIsPinned = FALSE;
 
 
 	//- freen der page liste
-	if(tmpTC->boIsPageListValid)
-		kfree( tmpTC->ppPageList );
-	tmpTC->boIsPageListValid = FALSE;
+	if(pJob->boIsPageListValid)
+		kfree( pJob->ppPageList );
+	pJob->boIsPageListValid = FALSE;
+}
 
 
-	//TC/Job freigeben,  Job copy und Status eintragen 
+// beendet eine DMA, egal ob mit oder ohne Fehler, ob gelaufen oder nicht (läuft auch aus DPC)
+void AGEXDrv_DMARead_EndDMA(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC, const bool boIsOk, const u16 BufferCounter)
+{	
+	PDMA_READ_TC 	tmpTC 			= pDevData->DMARead_Channels[iDMA].TCs + iTC;
+	DMA_READ_JOB 	tmpJob;
+
+	pr_devel(MODDEBUGOUTTEXT" AGEXDrv_DMARead_EndDMA> DMA: %d, TC: %d, Res: %d, Seq: %d\n",
+				   	iDMA, iTC, boIsOk, BufferCounter);
+	if(tmpTC->boIsUsed == FALSE)
+ 		{printk(KERN_WARNING MODDEBUGOUTTEXT " AGEXDrv_DMARead_EndDMA> invalid TC!\n"); return;}
+
+
+	//TC freigeben,  Job copy und Status eintragen 
 	/**********************************************************************/
 	tmpJob = tmpTC->Job;
 	tmpJob.boIsOk			= boIsOk;
@@ -322,31 +358,32 @@ void AGEXDrv_DMARead_StartDMA(PDEVICE_DATA pDevData)
 			
 		//> gibt es Buffer & TC
 		//noch unbenutzten Buffer?
+		pr_devel(MODDEBUGOUTTEXT" - .Jobs_ToDo %d (iDMA: %d)\n", kfifo_len( &pDevData->DMARead_Channels[iDMA].Jobs_ToDo), iDMA);
 		boHasBuffer = ( kfifo_len( &pDevData->DMARead_Channels[iDMA].Jobs_ToDo)>=1) ? (TRUE) : (FALSE);
 	
 		//freien TC?
 		boHasTC = FALSE;
 		for(iTC = 0; iTC < pDevData->DMARead_anzTCs; iTC++)
 		{
-			if( &pDevData->DMARead_Channels[iDMA].TCs[iTC].boIsUsed == FALSE){
+			if(pDevData->DMARead_Channels[iDMA].TCs[iTC].boIsUsed == FALSE){
 			  boHasTC = TRUE; break;}
 		}
 
-		//> wenn ja dann TC/Job init
+		//> wenn ja dann TC init
 		boIsTCInitDone = FALSE;
 		if( boHasBuffer && boHasTC )
-		{
-			
+		{				
 			PDMA_READ_TC tmpTC 	= pDevData->DMARead_Channels[iDMA].TCs + iTC;
 			DMA_READ_JOB tmpJob;
+
 			if( kfifo_get(&pDevData->DMARead_Channels[iDMA].Jobs_ToDo, &tmpJob) == 1) /*sicher ist sicher*/
 			{
-				//sturct belegen & init in AGEXDrv_DMARead_MapUserBuffer() (sicher ist sicher)
-				tmpTC->boIsUsed 				= TRUE;
-
-				tmpTC->Job.pVMUser 				= tmpJob.pVMUser;
-				tmpTC->Job.anzBytesToTransfer	= tmpJob.anzBytesToTransfer;
+				//struct belegen 
+				tmpTC->boIsUsed	= TRUE;
+				tmpTC->Job		= tmpJob;
 				
+				pr_devel(MODDEBUGOUTTEXT" - Job for (iDMA: %d, iTC: %d)\n", iDMA, iTC);
+
 				boIsTCInitDone = TRUE;
 			}//Job vorhanden
 		}//Buffer&TC gefunden
@@ -356,22 +393,17 @@ void AGEXDrv_DMARead_StartDMA(PDEVICE_DATA pDevData)
 
 
 
-		//> versuchen zu mappen (ohne DMAlock weil dauert)
+		//> starten
 		if(boIsTCInitDone)
 		{
-			if( FALSE == AGEXDrv_DMARead_MapUserBuffer(pDevData, iDMA, iTC) )
+			pr_devel(MODDEBUGOUTTEXT" - try to start\n");
+			if( down_killable(&pDevData->DMARead_SpinLock) != 0)
 				AGEXDrv_DMARead_EndDMA(pDevData, iDMA, iTC, FALSE/*boIsOk*/, 0 /*seq number don't care*/);
-			else
-			{	
-				//> starten
-				if( down_killable(&pDevData->DMARead_SpinLock) != 0)
-					AGEXDrv_DMARead_EndDMA(pDevData, iDMA, iTC, FALSE/*boIsOk*/, 0 /*seq number don't care*/);
 //---------------------------------------------------------->
-				else
-					AGEXDrv_DMARead_StartNextTransfer_Locked(pDevData, iDMA, iTC);
+			else
+				AGEXDrv_DMARead_StartNextTransfer_Locked(pDevData, iDMA, iTC);
 //<----------------------------------------------------------
 				up(&pDevData->DMARead_SpinLock);					
-			}
 		}		
 	}//for DMAs
 
@@ -389,25 +421,26 @@ void AGEXDrv_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 i
 {
 	u32 			iSG 	= 0;
 	PDMA_READ_TC 	tmpTC 	= pDevData->DMARead_Channels[iDMA].TCs + iTC;
+	PDMA_READ_JOB 	pJob	= &tmpTC->Job;
 
 	pr_devel(MODDEBUGOUTTEXT" AGEXDrv_DMARead_StartNextTransfer_Locked> DMA: %d, TC: %d\n",	iDMA, iTC);
 
 
 	//> alles gut (sicher ist sicher) kann aber nichts machen
 	if( (iDMA>=pDevData->DMARead_anzChannels) || (iTC>=pDevData->DMARead_anzTCs) ||
-	   	!tmpTC->boIsUsed || !tmpTC->boIsSGValid || !tmpTC->boIsSGMapped || (tmpTC->anzSGItemsMapped==0) || (tmpTC->pSGNext==NULL) ){
-			printk(KERN_ERR MODDEBUGOUTTEXT" AGEXDrv_DMARead_StartNextTransfer_Locked> Invalid context!");return;
+	   	!tmpTC->boIsUsed || !pJob->boIsSGValid || !pJob->boIsSGMapped || (pJob->anzSGItemsMapped==0) || (pJob->pSGNext==NULL) ){
+			printk(KERN_ERR MODDEBUGOUTTEXT" AGEXDrv_DMARead_StartNextTransfer_Locked> Invalid context!\n");return;
 	}
 
 
 	//> die SGs ins FPGA schreiben
 	/***********************************************************************/
 	//pro Transfer können max ... SGs übertragen werden
-	for (iSG=0; ((iSG < pDevData->DMARead_anzSGs) && (tmpTC->pSGNext!=NULL)); iSG++) 
+	for (iSG=0; ((iSG < pDevData->DMARead_anzSGs) && (pJob->pSGNext!=NULL)); iSG++) 
 	{
 		u8* 		adrSG, WordIndex;
-		u32			sg_length	= sg_dma_len(tmpTC->pSGNext);
-		dma_addr_t  sg_address	= sg_dma_address(tmpTC->pSGNext);
+		u32			sg_length	= sg_dma_len(pJob->pSGNext);
+		dma_addr_t  sg_address	= sg_dma_address(pJob->pSGNext);
 			
 
 		//> SG zusammenbauen
@@ -415,13 +448,13 @@ void AGEXDrv_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 i
 
 		//Flag 	(1DWord)
 		tempSG[0] = 0; 
-		if(tmpTC->pSGNext == tmpTC->SGTable.sgl)//1. SG Element über alles
+		if(pJob->pSGNext == pJob->SGTable.sgl)//1. SG Element über alles
 			tempSG[0] |= DMA_READ_TC_SG_FLAG_START_TRANSACTION; 
 
 		if(iSG == 0)							//1. SG Element
 			tempSG[0] |= DMA_READ_TC_SG_FLAG_START_TRANSFER; 
 
-		if( sg_is_last(tmpTC->pSGNext )	)		//letzte SG Element über alles (somit auch IRQ auslösen)
+		if( sg_is_last(pJob->pSGNext )	)		//letzte SG Element über alles (somit auch IRQ auslösen)
 			tempSG[0] |= (DMA_READ_TC_SG_FLAG_END_TRANSACTION + DMA_READ_TC_SG_FLAG_END_TRANSFER);
 
 		if(iSG == (pDevData->DMARead_anzSGs-1))	//letzte SG Element, mehr geht nicht ins FPGA FIFO (mit dem SG darf es dann ein IRQ geben)
@@ -439,7 +472,7 @@ void AGEXDrv_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 i
 		if(		((sg_length & 0x3) != 0)
 		 	|| 	((sg_address & (PAGE_SIZE-1)) != 0) )
 		{
-			printk(KERN_ERR MODDEBUGOUTTEXT" AGEXDrv_DMARead_StartNextTransfer_Locked> Invalid alignment!");
+			printk(KERN_ERR MODDEBUGOUTTEXT" AGEXDrv_DMARead_StartNextTransfer_Locked> Invalid alignment!\n");
 
 			//sollt nie vorkommen und wenn ist es das letzte SG Element (size geht nicht auf)
 			iSG = pDevData->DMARead_anzSGs;				//das Kaputte Element soll das letzte sein
@@ -448,7 +481,7 @@ void AGEXDrv_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 i
 	
 
 		//> nächstes SGElement
-		tmpTC->pSGNext =  sg_next(tmpTC->pSGNext);	//wenn es sg_is_last() dann gibt die fn NULL zurück, nutzen wir auch zum SicherheitsTest im DPC
+		pJob->pSGNext =  sg_next(pJob->pSGNext);	//wenn es sg_is_last() dann gibt die fn NULL zurück, nutzen wir auch zum SicherheitsTest im DPC
 	
 
 		//> ins FPGA schreiben
@@ -466,7 +499,7 @@ void AGEXDrv_DMARead_DPC(PDEVICE_DATA pDevData, const u32 isDoneReg, const u32 i
 {
 	u8 iDMA, iTC, BitShift;
 
-	pr_devel(MODDEBUGOUTTEXT" AGEXDrv_DMARead_DPC> isDoneReg: 0x%08X, isOkReg: 0x%08X", isDoneReg, isOkReg);
+	pr_devel(MODDEBUGOUTTEXT" AGEXDrv_DMARead_DPC> isDoneReg: 0x%08X, isOkReg: 0x%08X\n", isDoneReg, isOkReg);
 
 
 
@@ -492,26 +525,26 @@ void AGEXDrv_DMARead_DPC(PDEVICE_DATA pDevData, const u32 isDoneReg, const u32 i
 				//haben wir sie auch gestartet? (können nix machen wenn nicht)
 				if( !isUsed )
 				{
-					printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_DMARead_DPC>  DMA IRQ without DMA! DMA: %d, TC: %d", iDMA, iTC);
+					printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_DMARead_DPC>  DMA IRQ without DMA! DMA: %d, TC: %d\n", iDMA, iTC);
 				}
 				else
 				{
 					//FPGA hat sie abgebrochen oder wir durch IOctrl)
 					if( !isOk )
 					{
-						pr_devel(MODDEBUGOUTTEXT" - AgeXDMAReadDPC: DMA IRQ for a broken DMA!");
+						pr_devel(MODDEBUGOUTTEXT" - AgeXDMAReadDPC: DMA IRQ for a broken DMA!\n");
 						AGEXDrv_DMARead_EndDMA(pDevData, iDMA, iTC, FALSE /*boIsOk*/, 0 /*don't care*/);
 					}
 					//isDone && isOK && isUsed
 					else 
 					{
 						//DMA oder nur Transfer durch?
-						if( pDevData->DMARead_Channels[iDMA].TCs[iTC].pSGNext == NULL)	//DMA & Transfer durch
+						if( pDevData->DMARead_Channels[iDMA].TCs[iTC].Job.pSGNext == NULL)	//DMA & Transfer durch
 							AGEXDrv_DMARead_EndDMA(pDevData, iDMA, iTC, TRUE /*boIsOk*/, pBufferCounters[BitShift]);
 						else
 						{	//nur der Transfer durch, nächsten starten
 							if( down_killable(&pDevData->DMARead_SpinLock) != 0)
-								printk(KERN_ERR MODDEBUGOUTTEXT" AGEXDrv_DMARead_DPC> DMALock failed!");
+								printk(KERN_ERR MODDEBUGOUTTEXT" AGEXDrv_DMARead_DPC> DMALock failed!\n");
 //---------------------------------------------------------->
 							else
 								AGEXDrv_DMARead_StartNextTransfer_Locked(pDevData, iDMA, iTC);
@@ -553,13 +586,14 @@ void AGEXDrv_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA)
 
 
 	//> alle Buffers aus .Jobs_ToDo() .Jobs_Done() adden mit FehlerFlag und .WaitSem posten für jeden verschobenen Buffer
-	while( kfifo_get(&pDevData->DMARead_Channels[iDMA].Jobs_ToDo, &tmpJob) != 1)
+	while( kfifo_get(&pDevData->DMARead_Channels[iDMA].Jobs_ToDo, &tmpJob) == 1)
 	{
 		tmpJob.boIsOk	= FALSE;
 
 		//adden (sollte immer passen)
-		if( kfifo_put(&pDevData->DMARead_Channels[iDMA].Jobs_Done, tmpJob) == 0)
-			printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_DMARead_Abort_DMAChannel> can't add Buffer to Jobs_Done, BufferLost\n");
+		if( kfifo_put(&pDevData->DMARead_Channels[iDMA].Jobs_Done, tmpJob) == 0){
+			printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_DMARead_Abort_DMAChannel> can't add Buffer to Jobs_Done, BufferLost\n"); break;
+		}
 
 		//thread wecken
 		up(&pDevData->DMARead_Channels[iDMA].WaitSem);
@@ -606,6 +640,7 @@ void AGEXDrv_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA)
 void AGEXDrv_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData,  const u32 iDMA)
 {
 	u8 iTryLoop, iFIFOLoop;
+	const u8 MaxTryLoop = 10; /*max Waiter die abgebrochen werden können*/
 
 	//Note: - sem hat kein FIFO verhalten
 	//		- der sem Zähler gibt die anz von buffern in .Jobs_Done wieder
@@ -626,7 +661,7 @@ void AGEXDrv_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData,  const u32 iDMA)
 
 	pr_devel(MODDEBUGOUTTEXT" AGEXDrv_DMARead_Abort_DMAWaiter> DMA: %d\n",iDMA);
 
-	for(iTryLoop=0; iTryLoop<10/*max Waiter die abgebrochen werden können*/; iTryLoop++)
+	for(iTryLoop=0; iTryLoop<MaxTryLoop; iTryLoop++)
 	{
 
 		//> DummyBild adden (sollte immer gehen)
@@ -634,12 +669,16 @@ void AGEXDrv_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData,  const u32 iDMA)
 		memset(&tmpJob, 0, sizeof(tmpJob));	/* wegen warning */
 		tmpJob.pVMUser 				= (uintptr_t) NULL;
 		tmpJob.boIsOk				= FALSE;
+		tmpJob.boIsPageListValid 	= FALSE;
+		tmpJob.boIsPinned			= FALSE;
+		tmpJob.boIsSGValid			= FALSE;
+		tmpJob.boIsSGMapped			= FALSE;
 
 		//adden
 		down(&pDevData->DMARead_SpinLock);
 //----------------------------->
 		if( kfifo_put(&pDevData->DMARead_Channels[iDMA].Jobs_Done, tmpJob) == 0)
-			printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_DMARead_Abort_DMAWaiter> can't add dummyBuffer\n");
+			printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_DMARead_Abort_DMAWaiter> can't add dummyBuffer(iDMA: %d, i: %d)\n", iDMA, iTryLoop);
 //<-----------------------------
 		up(&pDevData->DMARead_SpinLock);
 
@@ -660,13 +699,14 @@ void AGEXDrv_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData,  const u32 iDMA)
 			{
 				down(&pDevData->DMARead_SpinLock);
 //---------------------------------------------------------->
-				if( kfifo_get(&pDevData->DMARead_Channels[iDMA].Jobs_Done, &tmpJob) != 1) 
+				if( kfifo_get(&pDevData->DMARead_Channels[iDMA].Jobs_Done, &tmpJob) == 1) 
 				{
 					//dummyBuffer? => fertig
 					if(tmpJob.pVMUser == 0 /*NULL*/)
 					{
-						iFIFOLoop=MAX_DMA_READ_JOBFIFO_SIZE;
 						pr_devel(MODDEBUGOUTTEXT" - found dummyBuffer [%d:%d]\n",iTryLoop,iFIFOLoop);
+						iFIFOLoop=MAX_DMA_READ_JOBFIFO_SIZE;
+						iTryLoop=MaxTryLoop;
 					}
 					else
 					{

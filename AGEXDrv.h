@@ -74,6 +74,11 @@ typedef u8 IOCTLBUFFER[128];
 #define FALSE 0
 #define TRUE 1
 
+#define MIN(x,y) (x < y ? x : y)
+#define MAX(x,y) (x > y ? x : y)
+
+
+
 //AGEX<>AGEX2<>Invalid
 enum AGEX_DEVICE_SUBTYPE
 {
@@ -90,13 +95,14 @@ enum AGEX_DEVICE_SUBTYPE
 //magic number
 #define AGEXDRV_IOC_MAGIC  '['
 
-//richtung ist aus UserSicht, size ist ehr der Type
-#define AGEXDRV_IOC_GET_VERSION 		_IOR(AGEXDRV_IOC_MAGIC, 0, IOCTLBUFFER)
-#define AGEXDRV_IOC_GET_BUILD_DATE 		_IOR(AGEXDRV_IOC_MAGIC, 1, IOCTLBUFFER)
-#define AGEXDRV_IOC_RELEASE_DEVICEID 	_IOW(AGEXDRV_IOC_MAGIC, 2, u8)
-#define AGEXDRV_IOC_CREATE_DEVICEID 	_IOR(AGEXDRV_IOC_MAGIC, 3, u8)
-#define AGEXDRV_IOC_GET_SUBTYPE 		_IOR(AGEXDRV_IOC_MAGIC, 4, u8)
-#define AGEXDRV_IOC_ABORT_LONGTERM_READ _IOW(AGEXDRV_IOC_MAGIC, 5, u8)
+//richtung ist aus UserSicht, size ist ehr der Type 
+//(Achtung! alteDefs nicht ändern wegen alte libs)
+#define AGEXDRV_IOC_GET_VERSION 			_IOR(AGEXDRV_IOC_MAGIC, 0, IOCTLBUFFER)
+#define AGEXDRV_IOC_GET_BUILD_DATE 			_IOR(AGEXDRV_IOC_MAGIC, 1, IOCTLBUFFER)
+#define AGEXDRV_IOC_RELEASE_DEVICEID 		_IOWR(AGEXDRV_IOC_MAGIC, 2, u8)
+#define AGEXDRV_IOC_CREATE_DEVICEID 		_IOR(AGEXDRV_IOC_MAGIC, 3, u8)
+#define AGEXDRV_IOC_GET_SUBTYPE 			_IOR(AGEXDRV_IOC_MAGIC, 4, u8)
+#define AGEXDRV_IOC_ABORT_LONGTERM_READ 	_IOWR(AGEXDRV_IOC_MAGIC, 5, u8)
 
 #define AGEXDRV_IOC_DMAREAD_CONFIG			_IOW(AGEXDRV_IOC_MAGIC, 6, IOCTLBUFFER)
 #define AGEXDRV_IOC_DMAREAD_ADD_BUFFER		_IOW(AGEXDRV_IOC_MAGIC, 7, IOCTLBUFFER)
@@ -219,15 +225,6 @@ typedef struct _DMA_READ_JOB
 	//Status (nur gültig/gesetzt) wenn in .Jobs_Done)
 	bool		boIsOk;				//ohne Fehler übertragen
 	u16 		BufferCounter; 		//laufender Zähler, FPGA zählt
-}  DMA_READ_JOB, *PDMA_READ_JOB;
-
-//Fast alles zusammen für ein DMA (Read) TC 
-typedef struct _DMA_READ_TC
-{
-	bool 			boIsUsed;		//1<>Rest ist der struct gültig bzw. die boIsxxx
-
-	//der Job(UserBuffer)
-	DMA_READ_JOB	Job;
 
 	//Pinned UserBuffer
 	bool			boIsPageListValid;	//1<>PageListe wurde angelegt 
@@ -241,6 +238,15 @@ typedef struct _DMA_READ_TC
 	struct sg_table SGTable;	
 	u32				anzSGItemsMapped;
 	struct scatterlist *pSGNext;	//Nächste Element was gesendet werden kann, kann aber auch sg_is_last()==true sein oder NULL für last+1
+}  DMA_READ_JOB, *PDMA_READ_JOB;
+
+//Fast alles zusammen für ein DMA (Read) TC 
+typedef struct _DMA_READ_TC
+{
+	bool 			boIsUsed;		//1<>Rest ist der struct gültig bzw. die boIsxxx
+
+	//der Job(UserBuffer)
+	DMA_READ_JOB	Job;
 }  DMA_READ_TC, *PDMA_READ_TC;
 
 //Fast alles zusammen für einen DMA (Read) Channel
@@ -341,6 +347,10 @@ void AGEXDrv_PCI_remove(struct pci_dev *pcidev);
 void AGEXDrv_DMARead_StartDMA(PDEVICE_DATA pDevData);
 void AGEXDrv_DMARead_DPC(PDEVICE_DATA pDevData, const u32 isDoneReg, const u32 isOkReg, const u16* pBufferCounters);
 void AGEXDrv_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC);
+
+bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob, uintptr_t pVMUser, u64 anzBytesToTransfer);
+void AGEXDrv_DMARead_UnMapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob);
+
 void AGEXDrv_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA);
 void AGEXDrv_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData,  const u32 iDMA);
 

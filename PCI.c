@@ -63,6 +63,11 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 		tempDevSubType = SubType_AGEX2;
 		pr_devel(MODDEBUGOUTTEXT" found AGE-X2 device\n");
 	}
+	else if((id->vendor == 0x1172) &&  (id->device == 0x0010) )	//Altera (AGE-X2-CL)
+	{
+		tempDevSubType = SubType_AGEX2_CL;
+		pr_devel(MODDEBUGOUTTEXT" found AGE-X2-CL device\n");
+	}
 	else if((id->vendor == 0x1172) &&  (id->device == 0xA6E4) )	//Altera (MVC0)
 	{
 		tempDevSubType = SubType_MVC0;

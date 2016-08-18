@@ -224,22 +224,7 @@ void AGEXDrv_InitDrvData(PDEVICE_DATA pDat)
 		{
 			PDMA_READ_TC pTC = pChannel->TCs+iTC;
 
-			pTC->boIsUsed 					= FALSE;			
-			pTC->Job.pVMUser				= 0;
-			pTC->Job.anzBytesToTransfer 	= 0;
-			pTC->Job.boIsOk					= FALSE;
-			pTC->Job.BufferCounter			= 0;
-
-			pTC->boIsPageListValid			= FALSE;
-			pTC->boIsPinned					= FALSE;
-			pTC->ppPageList					= NULL;
-			pTC->anzPagesPinned				= 0;
-
-			pTC->boIsSGValid				= FALSE;
-			pTC->boIsSGMapped				= FALSE;
-			//pTC->SGTable;	wird später bei/in sg_alloc_table() gemacht
-			pTC->anzSGItemsMapped			= 0;
-			pTC->pSGNext					= NULL;
+			pTC->boIsUsed 					= FALSE;
 		}//for TCs
 	}//for DMAChannesl
 }
