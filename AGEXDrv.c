@@ -44,6 +44,7 @@ static struct pci_device_id AGEXDrv_ids[] = {
 	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0x0004 /*DeviceID*/), },			/* AGE-X2 */
 	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xA6E4 /*DeviceID*/), },			/* MVC0 */
 	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0x0010 /*DeviceID*/), },			/* AGEX2-CL */
+	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0x0005 /*DeviceID*/), },			/* VCXM */
 	{ 0, }
 };
 MODULE_DEVICE_TABLE(pci, AGEXDrv_ids);		//macht dem kernel bekannt was dieses modul für PCI devs kann
@@ -78,6 +79,18 @@ int AGEXDrv_init(void)
 	int res,i;
 
 	pr_devel(MODDEBUGOUTTEXT " enter init\n");
+
+	//im sicher zu sein das bei einem 64Bit Build auch dieses Define gesetzt war...
+#ifdef CONFIG_64BIT 
+	if(	sizeof(void*) != sizeof(u64) ){
+		printk(KERN_ERR MODDEBUGOUTTEXT" invalid 64Bit Build!\n");	return -EINVAL;
+	}
+#else	
+	if(	sizeof(void*) != sizeof(u32) ){
+		printk(KERN_ERR MODDEBUGOUTTEXT" invalid 64Bit Build!\n");	return -EINVAL;
+	}
+#endif
+
 
 	/* init member */
 	/**********************************************************************/

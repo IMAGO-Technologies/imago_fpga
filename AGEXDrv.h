@@ -22,7 +22,7 @@
 
 //> defines about the Module
 /******************************************************************************************/
-#define MODVERSION "1.1.7.0"
+#define MODVERSION "1.1.7.1"
 #define MODDATECODE __DATE__ " - " __TIME__
 #define MODLICENSE "GPL";
 #define MODDESCRIPTION "Kernel module for the VisionBox AGE-X PCI(e) devices";
@@ -78,7 +78,6 @@ typedef u8 IOCTLBUFFER[128];
 #define MAX(x,y) (x > y ? x : y)
 
 
-
 //AGEX<>AGEX2<>Invalid
 enum AGEX_DEVICE_SUBTYPE
 {
@@ -86,8 +85,17 @@ enum AGEX_DEVICE_SUBTYPE
 	SubType_AGEX	= 1,
 	SubType_AGEX2	= 2,
 	SubType_MVC0	= 3,
-	SubType_AGEX2_CL= 4
+	SubType_AGEX2_CL= 4,
+	SubType_VCXM	= 5
 };
+
+
+//Device kann MSIX, CommonBuffer im PC-Mem
+#define IS_TYPEWITH_COMMONBUFFER(DevType) ( (DevType==SubType_AGEX2) || (DevType==SubType_MVC0) || (DevType==SubType_AGEX2_CL) || (DevType==SubType_VCXM) )
+//Device kann 64Bit Adressen
+#define IS_TYPEWITH_PCI64BIT(DevType) ( (DevType==SubType_AGEX2_CL) )
+//Device kann DMAReads (Device schreibt in PC-Mem)
+#define IS_TYPEWITH_DMA2HOST(DevType) ( (DevType==SubType_AGEX2_CL) || (DevType==SubType_VCXM) )
 
 
 //> Ioctl definitions siehe. "ioctl-number.txt"

@@ -44,7 +44,7 @@ void AGEXDrv_SwitchInterruptOn(PDEVICE_DATA pDevData, const bool boTurnOn)
 
 	/* CommonBuffer Adr setzen (nur gültig solange IRQon) & Init */
 	//hat nur eine AGEX2(CL), MVC0
-	if( boTurnOn && ( (pDevData->DeviceSubType==SubType_AGEX2) || (pDevData->DeviceSubType==SubType_AGEX2_CL) || (pDevData->DeviceSubType==SubType_MVC0) ) )
+	if( boTurnOn && IS_TYPEWITH_COMMONBUFFER(pDevData->DeviceSubType) )
 	{
 		//nur um ganz sicher zu sein
 		if( (pDevData->pVACommonBuffer == NULL) || (pDevData->pBACommonBuffer == 0) )
@@ -57,10 +57,12 @@ void AGEXDrv_SwitchInterruptOn(PDEVICE_DATA pDevData, const bool boTurnOn)
 		//> Adr ins FPGA setzen
 		//(low 32Bit)
 		iowrite32( (pDevData->pBACommonBuffer & 0xFFFFFFFF), pDevData->pVABAR0 + ISR_COMMONBUFFER_ADR_AGEX2);
-		
+
+#ifdef CONFIG_64BIT		
 		//(high 32Bit)
-		if(pDevData->DeviceSubType==SubType_AGEX2_CL)
+		if( IS_TYPEWITH_PCI64BIT(pDevData->DeviceSubType) )
 			iowrite32( (pDevData->pBACommonBuffer >> 32), pDevData->pVABAR0 + ISR_COMMONBUFFER_ADR_AGEX2 +4);
+#endif		
 	}
 
 
@@ -78,7 +80,7 @@ void AGEXDrv_SwitchInterruptOn(PDEVICE_DATA pDevData, const bool boTurnOn)
 		regVal = 0x0;
 
 	//wo kommt das On/Off Bit hin?
-	if( (pDevData->DeviceSubType==SubType_AGEX2) || (pDevData->DeviceSubType==SubType_AGEX2_CL) || (pDevData->DeviceSubType==SubType_MVC0) )
+	if( IS_TYPEWITH_COMMONBUFFER(pDevData->DeviceSubType) )
 		regAdr = ISR_ONOFF_OFFSET_AGEX2;
 	else
 		regAdr = ISR_ONOFF_OFFSET_AGEX;
@@ -111,15 +113,15 @@ pr_devel(MODDEBUGOUTTEXT" AGEXDrv_interrupt (IRQ:%d, devptr:%p)\n", irq, dev_id)
 
 
 	/* liest das IRQ flag ein */
-	if( (pDevData->DeviceSubType==SubType_AGEX2) || (pDevData->DeviceSubType==SubType_AGEX2_CL) || (pDevData->DeviceSubType==SubType_MVC0) )
+	if( IS_TYPEWITH_COMMONBUFFER(pDevData->DeviceSubType) )
 	{
 		if( (pDevData->pVACommonBuffer == NULL) || (pDevData->pBACommonBuffer == 0) )
 			return IRQ_NONE;
 
 		regVal = ((u32*)pDevData->pVACommonBuffer)[0];		//das Bit steht in uns Drin
 
-		//bei AGEX2 nur 1. Bit (sicher ist sicher)
-		if( (pDevData->DeviceSubType == SubType_AGEX2) || (pDevData->DeviceSubType == SubType_MVC0) )
+		//bei nicht DMA nur 1. Bit (sicher ist sicher)
+		if( !IS_TYPEWITH_DMA2HOST(pDevData->DeviceSubType) )
 			regVal &= 0x1;
 	}
 	else
@@ -135,8 +137,8 @@ pr_devel(MODDEBUGOUTTEXT" AGEXDrv_interrupt (IRQ:%d, devptr:%p)\n", irq, dev_id)
 	{
 		//INTs abschalten
 		//AGEX: IRQ geht weg wenn FIFO leer oder IRQs off sind
-		//AGEX2: automatisch
-		if(pDevData->DeviceSubType == SubType_AGEX)
+		//AGEX2...: automatisch
+		if( !IS_TYPEWITH_COMMONBUFFER(pDevData->DeviceSubType) )
 			AGEXDrv_SwitchInterruptOn(pDevData, FALSE);
 
 		//merken das gleich der DPC l�uft
@@ -180,7 +182,7 @@ void AGEXDrv_tasklet (unsigned long devIndex)
 	pDevData = &_ModuleData.Devs[devIndex];
 	if( (pDevData->pVABAR0 == NULL) || (pDevData->DeviceSubType == SubType_Invalid) )
 		return;
-	if( (pDevData->DeviceSubType==SubType_AGEX2) || (pDevData->DeviceSubType==SubType_AGEX2_CL) || (pDevData->DeviceSubType==SubType_MVC0) )
+	if( IS_TYPEWITH_COMMONBUFFER(pDevData->DeviceSubType) )
 	{
 		if( (pDevData->pVACommonBuffer == NULL) || (pDevData->pBACommonBuffer == 0) )
 			return;
@@ -192,7 +194,7 @@ void AGEXDrv_tasklet (unsigned long devIndex)
 	if (pDevData->DeviceSubType==SubType_AGEX)
 		boIsSunIRQ = TRUE;
 
-	if( (pDevData->DeviceSubType==SubType_AGEX2) || (pDevData->DeviceSubType==SubType_AGEX2_CL) || (pDevData->DeviceSubType==SubType_MVC0) )
+	if( IS_TYPEWITH_COMMONBUFFER(pDevData->DeviceSubType) )
 	{
 		u32 IRQReg_A = ((u32*)pDevData->pVACommonBuffer)[0];
 		u32 IRQReg_B = ((u32*)pDevData->pVACommonBuffer)[1];
@@ -200,7 +202,7 @@ void AGEXDrv_tasklet (unsigned long devIndex)
 		if(	(IRQReg_A & 0x1) == 1 )
 			boIsSunIRQ = TRUE;
 
-		if (pDevData->DeviceSubType==SubType_AGEX2_CL)
+		if ( IS_TYPEWITH_DMA2HOST(pDevData->DeviceSubType) )
 		{
 			s32 i;
 			u32 DMAMask;
@@ -266,7 +268,7 @@ void InterruptTaskletSun(PDEVICE_DATA pDevData)
 	/**********************************************************************/
 	// FIFO-Fuellstand einlesen (AGEX hat ein FIFO)
 	// bei AGEX2 steht an Pos 3 Header0 im CommonBuffer das Paket hat daher keine größe
-	if(pDevData->DeviceSubType == SubType_AGEX)
+	if( !IS_TYPEWITH_COMMONBUFFER(pDevData->DeviceSubType) )
 	{
 		// FIFO-Fuellstand einlesen
 		regVal = ioread32(pDevData->pVABAR0 + ISR_AVAILABLE_OFFSET);
@@ -283,7 +285,7 @@ void InterruptTaskletSun(PDEVICE_DATA pDevData)
 	}
 
 	// Header0 und Header1 einlesen
-	if(pDevData->DeviceSubType == SubType_AGEX)
+	if( !IS_TYPEWITH_COMMONBUFFER(pDevData->DeviceSubType) )
 	{
 		header0 = ioread32(pDevData->pVABAR0);
 		header1 = ioread32(pDevData->pVABAR0);
@@ -317,7 +319,7 @@ void InterruptTaskletSun(PDEVICE_DATA pDevData)
 				//wenns in den Buffer passt, Daten einlesen
 				if(MAX_SUNPACKETSIZE >= 4*wordCount+8) // Paket mit Header0/1
 				{
-					if(pDevData->DeviceSubType == SubType_AGEX)
+					if( !IS_TYPEWITH_COMMONBUFFER(pDevData->DeviceSubType))
 					{
 						pDevData->LongTermRequestList[index].IRQBuffer[0] = header0;
 						pDevData->LongTermRequestList[index].IRQBuffer[1] = header1;
@@ -367,7 +369,7 @@ void InterruptTaskletSun(PDEVICE_DATA pDevData)
 	/* Immer! egal ob sie einer will oder nicht die daten weglesen */
 	/**********************************************************************/
 	//Nur bei der AGEX, bei der AGEX2 wird beim IRQenablen der Buffer ungültig gemacht
-	if (!boPacketDataDone && (pDevData->DeviceSubType == SubType_AGEX) )
+	if (!boPacketDataDone && ( !IS_TYPEWITH_COMMONBUFFER(pDevData->DeviceSubType)) )
 	{
 		u16 i;
 		volatile u32 dummy;

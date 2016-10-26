@@ -321,7 +321,7 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 			if( BufferSizeBytes < (3*2) ){
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n"); result = -EFBIG;
 			}
-			else if( pDevData->DeviceSubType!=SubType_AGEX2_CL)
+			else if( !IS_TYPEWITH_DMA2HOST(pDevData->DeviceSubType) )
 			{				
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> No DMA support!\n");	result = -EFAULT;
 			}
@@ -367,7 +367,7 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 			if( BufferSizeBytes < (1+2*sizeof(u64) )){
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n"); result = -EFBIG;
 			}
-			else if( pDevData->DeviceSubType!=SubType_AGEX2_CL)
+			else if( !IS_TYPEWITH_DMA2HOST(pDevData->DeviceSubType) )
 			{				
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> No DMA support!\n");	result = -EFAULT;
 			}
@@ -457,7 +457,7 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 			if( BufferSizeBytes < ( 1 + sizeof(u16) +  sizeof(u64))){
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n"); result = -EFBIG;
 			}
-			else if( pDevData->DeviceSubType!=SubType_AGEX2_CL)
+			else if( !IS_TYPEWITH_DMA2HOST(pDevData->DeviceSubType) )
 			{				
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> No DMA support!\n");	result = -EFAULT;
 			}
@@ -553,7 +553,7 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 			if( BufferSizeBytes < (1) ){
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n"); result = -EFBIG;
 			}
-			else if( pDevData->DeviceSubType!=SubType_AGEX2_CL)
+			else if( !IS_TYPEWITH_DMA2HOST(pDevData->DeviceSubType) )
 			{				
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> No DMA support!\n");	result = -EFAULT;
 			}

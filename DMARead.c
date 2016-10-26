@@ -96,7 +96,7 @@ bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob, ui
  		{printk(KERN_WARNING MODDEBUGOUTTEXT "MappUserBuffer> get_user_pages() failed!\n"); return FALSE;}
 	pJob->boIsPinned 		= TRUE;
 	pJob->anzPagesPinned 	= anzPagesPinned;
-	if(anzPagesPinned != anzPagesToMap)
+	if( ((u32)anzPagesPinned) != anzPagesToMap)
  		{printk(KERN_WARNING MODDEBUGOUTTEXT "MappUserBuffer> get_user_pages() failed %d from %d pinned!\n", anzPagesPinned, anzPagesToMap); return FALSE;}
 
 
@@ -179,7 +179,7 @@ bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob, ui
  		{printk(KERN_WARNING MODDEBUGOUTTEXT "MappUserBuffer> dma_map_sg() failed!\n"); return FALSE;}
 	pJob->boIsSGMapped = TRUE;
 	pJob->anzSGItemsMapped	= anzMappedSGs;
-	if(pJob->SGTable.nents != anzMappedSGs)
+	if(pJob->SGTable.nents != ((u32)anzMappedSGs))
  		{printk(KERN_WARNING MODDEBUGOUTTEXT "MappUserBuffer> dma_map_sg() failed %d from %d mapped!\n", anzMappedSGs, pJob->SGTable.nents); return FALSE;}
 
 	pr_devel(MODDEBUGOUTTEXT" mapped done\n");
@@ -419,7 +419,7 @@ void AGEXDrv_DMARead_StartDMA(PDEVICE_DATA pDevData)
 // - wird mit DMALock aufgerufen
 void AGEXDrv_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC)
 {
-	u32 			iSG 	= 0;
+	s32 			iSG 	= 0;
 	PDMA_READ_TC 	tmpTC 	= pDevData->DMARead_Channels[iDMA].TCs + iTC;
 	PDMA_READ_JOB 	pJob	= &tmpTC->Job;
 
@@ -465,7 +465,11 @@ void AGEXDrv_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 i
 
 		//Adr	(2DWord)
 		tempSG[2] = sg_address & 0xFFFFFFFF;//LowPart;
+#ifdef CONFIG_64BIT			
 		tempSG[3] = sg_address >> 32;		//HighPart;
+#else
+		tempSG[3] = 0;						//HighPart;				
+#endif		
 			
 
 		//> stimmt die Ausrichtung? (adr und size) 
@@ -485,7 +489,7 @@ void AGEXDrv_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 i
 	
 
 		//> ins FPGA schreiben
-		pr_devel(MODDEBUGOUTTEXT" - DMA SGs> i: %d > 0x%llx, Bytes %d\n", iSG, sg_address, sg_length);
+		pr_devel(MODDEBUGOUTTEXT" - DMA SGs> i: %d > 0x%llx, Bytes %d\n", iSG, (u64) sg_address, sg_length);
 		adrSG = AGEXDrv_DMARead_GetSGAdr(pDevData, iDMA, iTC);	
 		for(WordIndex=0; WordIndex < (DMA_READ_TC_TC2TC_SETPBYTES/4); WordIndex++)
 			iowrite32( tempSG[WordIndex], adrSG + WordIndex*4 );
