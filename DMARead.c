@@ -302,13 +302,12 @@ void AGEXDrv_DMARead_EndDMA(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC
 
 	//Job in .Jobs_Done (unter lock)
 	/**********************************************************************/
-	if( down_killable(&pDevData->DMARead_SpinLock) != 0)
-		return;
+	spin_lock_bh(&pDevData->DMARead_SpinLock);
 //---------------------------------------------------------->
 	if( kfifo_put(&pDevData->DMARead_Channels[iDMA].Jobs_Done, tmpJob) == 0){
 		printk(KERN_ERR MODDEBUGOUTTEXT " AGEXDrv_DMARead_EndDMA> kfifo_put failed!\n");}	//sollte nie sein weil Test ob Platz ist, ist im 'AGEXDRV_IOC_DMAREAD_ADD_BUFFER'
 //<----------------------------------------------------------
-	up(&pDevData->DMARead_SpinLock);
+	spin_unlock_bh(&pDevData->DMARead_SpinLock);
 
 
 	//SEM posten
@@ -352,8 +351,7 @@ void AGEXDrv_DMARead_StartDMA(PDEVICE_DATA pDevData)
 		bool boHasBuffer, boHasTC, boIsTCInitDone;
 
 
-		if( down_killable(&pDevData->DMARead_SpinLock) != 0)
-			return;
+		spin_lock_bh(&pDevData->DMARead_SpinLock);
 //---------------------------------------------------------->
 			
 		//> gibt es Buffer & TC
@@ -389,7 +387,7 @@ void AGEXDrv_DMARead_StartDMA(PDEVICE_DATA pDevData)
 		}//Buffer&TC gefunden
 
 //<----------------------------------------------------------
-		up(&pDevData->DMARead_SpinLock);
+		spin_unlock_bh(&pDevData->DMARead_SpinLock);
 
 
 
@@ -397,13 +395,11 @@ void AGEXDrv_DMARead_StartDMA(PDEVICE_DATA pDevData)
 		if(boIsTCInitDone)
 		{
 			pr_devel(MODDEBUGOUTTEXT" - try to start\n");
-			if( down_killable(&pDevData->DMARead_SpinLock) != 0)
-				AGEXDrv_DMARead_EndDMA(pDevData, iDMA, iTC, FALSE/*boIsOk*/, 0 /*seq number don't care*/);
+			spin_lock_bh(&pDevData->DMARead_SpinLock);
 //---------------------------------------------------------->
-			else
-				AGEXDrv_DMARead_StartNextTransfer_Locked(pDevData, iDMA, iTC);
+			AGEXDrv_DMARead_StartNextTransfer_Locked(pDevData, iDMA, iTC);
 //<----------------------------------------------------------
-				up(&pDevData->DMARead_SpinLock);					
+			spin_unlock_bh(&pDevData->DMARead_SpinLock);
 		}		
 	}//for DMAs
 
@@ -547,13 +543,11 @@ void AGEXDrv_DMARead_DPC(PDEVICE_DATA pDevData, const u32 isDoneReg, const u32 i
 							AGEXDrv_DMARead_EndDMA(pDevData, iDMA, iTC, TRUE /*boIsOk*/, pBufferCounters[BitShift]);
 						else
 						{	//nur der Transfer durch, nächsten starten
-							if( down_killable(&pDevData->DMARead_SpinLock) != 0)
-								printk(KERN_ERR MODDEBUGOUTTEXT" AGEXDrv_DMARead_DPC> DMALock failed!\n");
+							spin_lock_bh(&pDevData->DMARead_SpinLock);
 //---------------------------------------------------------->
-							else
-								AGEXDrv_DMARead_StartNextTransfer_Locked(pDevData, iDMA, iTC);
+							AGEXDrv_DMARead_StartNextTransfer_Locked(pDevData, iDMA, iTC);
 //<----------------------------------------------------------
-							up(&pDevData->DMARead_SpinLock);
+							spin_unlock_bh(&pDevData->DMARead_SpinLock);
 						}
 
 					}//if ok
@@ -585,10 +579,8 @@ void AGEXDrv_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA)
 	
 	pr_devel(MODDEBUGOUTTEXT" AGEXDrv_DMARead_Abort_DMAChannel> DMA: %d\n",iDMA);
 
-	down(&pDevData->DMARead_SpinLock);
+	spin_lock_bh(&pDevData->DMARead_SpinLock);
 //----------------------------->
-
-
 	//> alle Buffers aus .Jobs_ToDo() .Jobs_Done() adden mit FehlerFlag und .WaitSem posten für jeden verschobenen Buffer
 	while( kfifo_get(&pDevData->DMARead_Channels[iDMA].Jobs_ToDo, &tmpJob) == 1)
 	{
@@ -632,10 +624,8 @@ void AGEXDrv_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA)
 				iowrite32( tempSG[WordIndex], adrSG + WordIndex*4 );
 		}//if boIsUsed					
 	}//for iTC
-
-
 //<-----------------------------
-	up(&pDevData->DMARead_SpinLock);	
+	spin_unlock_bh(&pDevData->DMARead_SpinLock);
 }
 
 
@@ -679,12 +669,12 @@ void AGEXDrv_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData,  const u32 iDMA)
 		tmpJob.boIsSGMapped			= FALSE;
 
 		//adden
-		down(&pDevData->DMARead_SpinLock);
+		spin_lock_bh(&pDevData->DMARead_SpinLock);
 //----------------------------->
 		if( kfifo_put(&pDevData->DMARead_Channels[iDMA].Jobs_Done, tmpJob) == 0)
 			printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_DMARead_Abort_DMAWaiter> can't add dummyBuffer(iDMA: %d, i: %d)\n", iDMA, iTryLoop);
 //<-----------------------------
-		up(&pDevData->DMARead_SpinLock);
+		spin_unlock_bh(&pDevData->DMARead_SpinLock);
 
 		//thread wecken
 		up(&pDevData->DMARead_Channels[iDMA].WaitSem);
@@ -701,7 +691,7 @@ void AGEXDrv_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData,  const u32 iDMA)
 			//> versuchen (dummy/echtes)Bild zu lesen 
 			if(down_trylock(&pDevData->DMARead_Channels[iDMA].WaitSem) == 0)
 			{
-				down(&pDevData->DMARead_SpinLock);
+				spin_lock_bh(&pDevData->DMARead_SpinLock);
 //---------------------------------------------------------->
 				if( kfifo_get(&pDevData->DMARead_Channels[iDMA].Jobs_Done, &tmpJob) == 1) 
 				{
@@ -726,7 +716,7 @@ void AGEXDrv_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData,  const u32 iDMA)
 				else
 					printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_DMARead_Abort_DMAWaiter>DMARead wake up, without buffer!\n");
 //<----------------------------------------------------------
-				up(&pDevData->DMARead_SpinLock);	
+				spin_unlock_bh(&pDevData->DMARead_SpinLock);	
 			}
 			else
 			{

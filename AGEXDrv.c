@@ -216,11 +216,7 @@ void AGEXDrv_InitDrvData(PDEVICE_DATA pDat)
 	pDat->DMARead_anzChannels	= 0;
 	pDat->DMARead_anzTCs		= 0;
 	pDat->DMARead_anzSGs		= 0;
-	#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
-		sema_init(&pDat->DMARead_SpinLock,1);		//1<>frei
-	#else
-		init_MUTEX( &pDat->DMARead_SpinLock);
-	#endif
+	spin_lock_init(&pDat->DMARead_SpinLock);
 	for(iChannel = 0; iChannel < MAX_DMA_READ_DMACHANNELS; iChannel++)
 	{
 		PDMA_READ_CHANNEL pChannel = pDat->DMARead_Channels+iChannel;

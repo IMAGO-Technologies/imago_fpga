@@ -59,6 +59,7 @@
 #include <linux/interrupt.h>// fÃ¼r IRQ*
 #include <linux/dma-mapping.h>	//fÃ¼r dma_*
 #include <linux/scatterlist.h>	// sg_* ...
+#include <linux/spinlock.h>	// spin_* ...
 #include <linux/delay.h>	// für usleep_range
 #if LINUX_VERSION_CODE != KERNEL_VERSION(2,6,32)
 	#include <asm/uaccess.h>	// fÃ¼r copy_to_user
@@ -309,7 +310,7 @@ typedef struct _DEVICE_DATA
 	u8						DMARead_anzChannels;//wie viele Channel gibt es?
 	u8						DMARead_anzTCs;		//wie viele TCs pro Channel?
 	u16  					DMARead_anzSGs;		//wie viele Scatter/Gather Pairs pro TC 
-	struct semaphore		DMARead_SpinLock;	//Lock für DMAStructs/und DMAUnit im FPGA
+	spinlock_t				DMARead_SpinLock;	//Lock für DMAStructs/und DMAUnit im FPGA
 	DMA_READ_CHANNEL		DMARead_Channels[MAX_DMA_READ_DMACHANNELS];	//Params für alle möglichen DMAChannels	
 } DEVICE_DATA, *PDEVICE_DATA;
 

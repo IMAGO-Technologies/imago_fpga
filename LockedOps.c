@@ -402,43 +402,36 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 
 
 				//> Job adden
-				if( down_killable(&pDevData->DMARead_SpinLock) == 0)
-				{
+				spin_lock_bh(&pDevData->DMARead_SpinLock);
 //----------------------------->
-					//noch Platz? (.Jobs_ToDo)
-					if( kfifo_avail( &pDevData->DMARead_Channels[iDMAChannel].Jobs_ToDo) < 1){
-						printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> JobToDoBuffer is full\n"); result = -ENOMEM;}
-					else
-					{
-						//noch Platz? (.Jobs_Done), es müssen passen
-						// - alle (möglichen) laufenden
-						// - da beim AbortBuffer alle Jobs aus .Jobs_ToDo nach .Jobs_Done verschoben werden +1
-						// - da beim AbortWaiter ein dummyBuffer hinzugefügt wird +1
-						//
-						u64 SizeNeeded = kfifo_len( &pDevData->DMARead_Channels[iDMAChannel].Jobs_ToDo);
-						SizeNeeded += pDevData->DMARead_anzTCs + 1 + 1;
-						if( kfifo_avail( &pDevData->DMARead_Channels[iDMAChannel].Jobs_Done) < SizeNeeded){
-							printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> JobDoneBuffer is too full\n"); result = -ENOMEM;}
-						else
-						{
-							//job adden
-							if( kfifo_put(&pDevData->DMARead_Channels[iDMAChannel].Jobs_ToDo, tmpJob) == 0){
-								printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> can't add into JobToDoBuffer\n"); result = -ENOMEM;}
-						}
-					}
-//<-----------------------------
-					up(&pDevData->DMARead_SpinLock);
-
-
-					//wenn Fehler unmappen
-					if(result!=0)
-						AGEXDrv_DMARead_UnMapUserBuffer(pDevData, &tmpJob);
-
-				}//if lock ok
+				//noch Platz? (.Jobs_ToDo)
+				if( kfifo_avail( &pDevData->DMARead_Channels[iDMAChannel].Jobs_ToDo) < 1){
+					printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> JobToDoBuffer is full\n"); result = -ENOMEM;}
 				else
 				{
-					result = -EINTR; break;
+					//noch Platz? (.Jobs_Done), es müssen passen
+					// - alle (möglichen) laufenden
+					// - da beim AbortBuffer alle Jobs aus .Jobs_ToDo nach .Jobs_Done verschoben werden +1
+					// - da beim AbortWaiter ein dummyBuffer hinzugefügt wird +1
+					//
+					u64 SizeNeeded = kfifo_len( &pDevData->DMARead_Channels[iDMAChannel].Jobs_ToDo);
+					SizeNeeded += pDevData->DMARead_anzTCs + 1 + 1;
+					if( kfifo_avail( &pDevData->DMARead_Channels[iDMAChannel].Jobs_Done) < SizeNeeded){
+						printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> JobDoneBuffer is too full\n"); result = -ENOMEM;}
+					else
+					{
+						//job adden
+						if( kfifo_put(&pDevData->DMARead_Channels[iDMAChannel].Jobs_ToDo, tmpJob) == 0){
+							printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> can't add into JobToDoBuffer\n"); result = -ENOMEM;}
+					}
 				}
+//<-----------------------------
+				spin_unlock_bh(&pDevData->DMARead_SpinLock);
+
+
+				//wenn Fehler unmappen
+				if(result!=0)
+					AGEXDrv_DMARead_UnMapUserBuffer(pDevData, &tmpJob);
 
 				
 				//> Versucht neue DMAs(über alle Channels) zu starten
@@ -501,10 +494,8 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 				//> Buffer aus FIFO entnehmen (wenn warten erfolgreich war [könnte aber auch ein abort sein])
 				if(result == 0 )
 				{
-					if( down_killable(&pDevData->DMARead_SpinLock) != 0)
-						{result = -EINTR; break;}
+					spin_lock_bh(&pDevData->DMARead_SpinLock);
 //---------------------------------------------------------->
-
 					if( kfifo_len( &pDevData->DMARead_Channels[iDMAChannel].Jobs_Done)>=1 )
 					{
 						if( kfifo_get(&pDevData->DMARead_Channels[iDMAChannel].Jobs_Done, &tmpJob) != 1) /*sicher ist sicher*/
@@ -512,9 +503,8 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 					}
 					else
 						pr_devel(MODDEBUGOUTTEXT" - DMARead wake up, without buffer!\n");
-
 //<----------------------------------------------------------
-					up(&pDevData->DMARead_SpinLock);	
+					spin_unlock_bh(&pDevData->DMARead_SpinLock);	
 				}
 
 		
