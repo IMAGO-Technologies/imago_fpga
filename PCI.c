@@ -78,6 +78,16 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 		tempDevSubType = SubType_VCXM;
 		pr_devel(MODDEBUGOUTTEXT" found VisionCam XM device\n");
 	}
+	else if((id->vendor == 0x1172) &&  (id->device == 0xCA72) )	//Altera (LeMans) 
+	{
+		tempDevSubType = SubType_LEMANS;
+		pr_devel(MODDEBUGOUTTEXT" found VisionBox LeMans device\n");
+	}
+	else if((id->vendor == 0x1172) &&  (id->device == 0xDECA) )	//Altera (PCIe-CL)
+	{
+		tempDevSubType = SubType_PCIE_CL;
+		pr_devel(MODDEBUGOUTTEXT" found PCIe-CL device\n");
+	}
 	else
 	{
 		printk(KERN_WARNING MODDEBUGOUTTEXT" unknowen device identifier (ven: 0x%x,  dev: 0x%x)\n", id->vendor, id->device);

@@ -22,7 +22,7 @@
 
 //> defines about the Module
 /******************************************************************************************/
-#define MODVERSION "1.1.7.1"
+#define MODVERSION "1.1.8.0"
 #define MODDATECODE __DATE__ " - " __TIME__
 #define MODLICENSE "GPL";
 #define MODDESCRIPTION "Kernel module for the VisionBox AGE-X PCI(e) devices";
@@ -87,16 +87,18 @@ enum AGEX_DEVICE_SUBTYPE
 	SubType_AGEX2	= 2,
 	SubType_MVC0	= 3,
 	SubType_AGEX2_CL= 4,
-	SubType_VCXM	= 5
+	SubType_VCXM	= 5,
+	SubType_LEMANS	= 6,
+   	SubType_PCIE_CL	= 7
 };
 
 
 //Device kann MSIX, CommonBuffer im PC-Mem
-#define IS_TYPEWITH_COMMONBUFFER(DevType) ( (DevType==SubType_AGEX2) || (DevType==SubType_MVC0) || (DevType==SubType_AGEX2_CL) || (DevType==SubType_VCXM) )
+#define IS_TYPEWITH_COMMONBUFFER(DevType) ( (DevType==SubType_AGEX2) || (DevType==SubType_MVC0) || (DevType==SubType_AGEX2_CL) || (DevType==SubType_VCXM) || (DevType==SubType_LEMANS) || (DevType==SubType_PCIE_CL))
 //Device kann 64Bit Adressen
-#define IS_TYPEWITH_PCI64BIT(DevType) ( (DevType==SubType_AGEX2_CL) )
+#define IS_TYPEWITH_PCI64BIT(DevType) ( (DevType==SubType_AGEX2_CL) || (DevType==SubType_PCIE_CL) )
 //Device kann DMAReads (Device schreibt in PC-Mem)
-#define IS_TYPEWITH_DMA2HOST(DevType) ( (DevType==SubType_AGEX2_CL) || (DevType==SubType_VCXM) )
+#define IS_TYPEWITH_DMA2HOST(DevType) ( (DevType==SubType_AGEX2_CL) || (DevType==SubType_VCXM) || (DevType==SubType_PCIE_CL) )
 
 
 //> Ioctl definitions siehe. "ioctl-number.txt"

@@ -74,6 +74,7 @@ bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob, ui
 	pJob->ppPageList = kmalloc(anzPagesToMap*sizeof(struct page*), GFP_KERNEL);
 	if( pJob->ppPageList == NULL )
  		{printk(KERN_WARNING MODDEBUGOUTTEXT "MappUserBuffer> too many pages!\n"); return FALSE;}
+	pJob->boIsPageListValid = TRUE;
 
 	//pinnen
 	//muss die SEM, für die VMAs fürr den aufrufenden conntext, halten
@@ -532,7 +533,7 @@ void AGEXDrv_DMARead_DPC(PDEVICE_DATA pDevData, const u32 isDoneReg, const u32 i
 					//FPGA hat sie abgebrochen oder wir durch IOctrl)
 					if( !isOk )
 					{
-						pr_devel(MODDEBUGOUTTEXT" - AgeXDMAReadDPC: DMA IRQ for a broken DMA!\n");
+						pr_devel(MODDEBUGOUTTEXT" - AgeXDMAReadDPC: DMA IRQ for a broken DMA!\n");						
 						AGEXDrv_DMARead_EndDMA(pDevData, iDMA, iTC, FALSE /*boIsOk*/, 0 /*don't care*/);
 					}
 					//isDone && isOK && isUsed
