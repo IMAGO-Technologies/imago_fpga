@@ -43,6 +43,12 @@ default:
 endif
 
 
+deploy:
+	make clean
+	make
+	strip --strip-debug agexpcidrv.ko
+	mv agexpcidrv.ko agexpcidrv_$(shell uname -r)_$(shell uname -m).ko
+
 
 clean:
 	rm -rf *.o *~ core .depend .*.cmd *.ko *.mod.c .tmp_versions modules.order Module.symvers
