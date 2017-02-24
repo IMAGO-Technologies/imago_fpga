@@ -50,8 +50,11 @@ void AGEXDrv_SwitchInterruptOn(PDEVICE_DATA pDevData, const bool boTurnOn)
 		if( (pDevData->pVACommonBuffer == NULL) || (pDevData->pBACommonBuffer == 0) )
 		  	return;
 
-		//> das IRQ Flag löschen (2 Word [Flags], 3 Word [Header0/Header1/Data[0]] sind nur zu Sicherheit)
-		memset(pDevData->pVACommonBuffer,0, (2+3) * sizeof(u32));
+		//> das IRQ Flag löschen (2 Word [Flags])
+		//ACHTUNG! die 3 Word [Header0/Header1/Data[0]] nicht überschreiben da alte VCXM/CL-PCIe FPGAs während ein DMA IRQ behandelt wurde
+		//	schon das SUNPaket in den CommonBuffer geschrieben haben, 
+		//	nach dem setzen des "IRQ-Enable Bits" im FPGA hat dieser dann das FLAG gesetzt und den MSI geschickt
+		memset(pDevData->pVACommonBuffer,0, 2 * sizeof(u32));
 		smp_mb();	//nop bei x86
 
 		//> Adr ins FPGA setzen
