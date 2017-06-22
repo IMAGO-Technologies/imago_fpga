@@ -397,7 +397,7 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 				//> Job erzeugen [hier ohne DMA lock] (auch mappen/pinnen...)
 				if( !AGEXDrv_DMARead_MapUserBuffer(pDevData, &tmpJob, (uintptr_t) UserPTR, anzBytesToDo) ){
 					AGEXDrv_DMARead_UnMapUserBuffer(pDevData, &tmpJob);
-					result = -EINTR; break;
+					result = -EINTR; printk(KERN_WARNING MODDEBUGOUTTEXT"Locked_ioctl> (AGEXDRV_IOC_DMAREAD_ADD_BUFFER), AGEXDrv_DMARead_MapUserBuffer() failed!\n"); break;
 				}
 
 
@@ -477,18 +477,25 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 //<......................................................................
 				// aufwachen durch Signal, up vom SWI, oder User [Abort], bzw TimeOut
 				if( TimeOut_ms == 0xFFFFFFFF )
-				{
+				{	
+					//Note: unterbrechbar(durch gdb), abbrechbar durch kill -9 & kill -15(term) 
+					//  noch ist nix passiert, Kernel darf den Aufruf wiederhohlen ohne den User zu benachrichtigen							
 					if( down_interruptible(&pDevData->DMARead_Channels[iDMAChannel].WaitSem) != 0)
-						{result  = -EINTR;}
+						{result = -ERESTARTSYS; pr_devel(MODDEBUGOUTTEXT" Locked_ioctl> (AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER), down_interruptible() failed!\n");}				
 				}
 				else
 				{
+					//Note: nicht unter(durch GDB) bzw. abbrechbar down_timeout() > __down_timeout() > __down_common(sem, TASK_UNINTERRUPTIBLE, timeout);
 					unsigned long jiffiesTimeOut = msecs_to_jiffies(TimeOut_ms);
-					if( down_timeout(&pDevData->DMARead_Channels[iDMAChannel].WaitSem,jiffiesTimeOut) != 0)
-						{result = -EINTR;}
+					int waitRes = down_timeout(&pDevData->DMARead_Channels[iDMAChannel].WaitSem,jiffiesTimeOut);
+					if( waitRes == (-ETIME))
+						{result = -ETIME; pr_devel(MODDEBUGOUTTEXT" Locked_ioctl> (AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER), down_timeout() timeout!\n");}
+					else if ( waitRes != 0)
+						{result = -EINTR; printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> (AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER), down_timeout() failed!\n");}
 				}
 				down(&pDevData->DeviceSem);
 //......................................................................>
+
 
 				
 				//> Buffer aus FIFO entnehmen (wenn warten erfolgreich war [könnte aber auch ein abort sein])
@@ -499,7 +506,7 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 					if( kfifo_len( &pDevData->DMARead_Channels[iDMAChannel].Jobs_Done)>=1 )
 					{
 						if( kfifo_get(&pDevData->DMARead_Channels[iDMAChannel].Jobs_Done, &tmpJob) != 1) /*sicher ist sicher*/
-							result = -EINTR;
+							{ result = -EINTR; printk(KERN_WARNING MODDEBUGOUTTEXT"Locked_ioctl> (AGEXDRV_IOC_DMAREAD_ADD_BUFFER), kfifo_get() failed!\n"); }
 					}
 					else
 						pr_devel(MODDEBUGOUTTEXT" - DMARead wake up, without buffer!\n");

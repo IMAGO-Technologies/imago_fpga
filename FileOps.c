@@ -61,7 +61,7 @@ long AGEXDrv_unlocked_ioctl (struct file *filp, unsigned int cmd, unsigned long 
 	/* Alles gut */
 	if( (filp==NULL) || (filp->private_data==NULL) ) return -EINVAL;
 	pDevData = (PDEVICE_DATA) filp->private_data;
-	//ist ist das CMD eins für uns?
+	//ist ist das CMD eins f�r uns?
 	if (_IOC_TYPE(cmd) != AGEXDRV_IOC_MAGIC) return -ENOTTY;
 	if (_IOC_NR(cmd) > AGEXDRV_IOC_MAXNR) return -ENOTTY;
 
@@ -75,12 +75,12 @@ long AGEXDrv_unlocked_ioctl (struct file *filp, unsigned int cmd, unsigned long 
 
 
 	/* jetzt die CMDs auswerten */
-	//warten (für immer auf die sem) wenn das prog abgeschossen wird, kommt sie zurück mit -EINTR
-	if( down_killable(&pDevData->DeviceSem) != 0)
-		return -EINTR;
-
+	//Note: unterbrechbar(durch gdb), abbrechbar durch kill -9 & kill -15(term) 
+	//  noch ist nix passiert, Kernel darf den Aufruf wiederhohlen ohne den User zu benachrichtigen
+	if( down_interruptible(&pDevData->DeviceSem) != 0)
+		{pr_devel(MODDEBUGOUTTEXT" AGEXDrv_unlocked_ioctl(), down_interruptible() failed!\n"); return -ERESTARTSYS;}
 //----------------------------->
-	//hier wird das CMD ausgeführt
+	//hier wird das CMD ausgef�hrt
 	ret = Locked_ioctl(pDevData, cmd, (u8 __user *) arg, _IOC_SIZE(cmd) );
 //<-----------------------------
 	up(&pDevData->DeviceSem);
@@ -93,7 +93,6 @@ ssize_t AGEXDrv_read (struct file *filp, char __user *buf, size_t count, loff_t 
 {
 	u32 TimeOut_ms, BytesToWrite, DeviceID;
 	long res;	
-	unsigned long jiffiesTimeOut;
 	s8 Index=-1;
 	PDEVICE_DATA pDevData = NULL;
 
@@ -157,9 +156,10 @@ ssize_t AGEXDrv_read (struct file *filp, char __user *buf, size_t count, loff_t 
 
 	pr_devel(MODDEBUGOUTTEXT" read, devID %d, BytesToWrite %d, TimeOut 0x%x\n",DeviceID,BytesToWrite,TimeOut_ms);
 
-	//warten (für immer auf die sem) wenn das prog abgeschossen wird, kommt sie zurück mit -EINTR
-	if( down_killable(&pDevData->DeviceSem) != 0)
-		return -EINTR;
+	//Note: unterbrechbar(durch gdb), abbrechbar durch kill -9 & kill -15(term) 
+	//  noch ist nix passiert, Kernel darf den Aufruf wiederhohlen ohne den User zu benachrichtigen	
+	if( down_interruptible(&pDevData->DeviceSem) != 0)	
+		{pr_devel(MODDEBUGOUTTEXT" AGEXDrv_read():down_interruptible('DeviceSem') failed!\n"); return -ERESTARTSYS;}
 //----------------------------->
 	//freien eintrag suchen
 	Index = -1;
@@ -181,18 +181,24 @@ ssize_t AGEXDrv_read (struct file *filp, char __user *buf, size_t count, loff_t 
 		return -EFAULT;
 	pr_devel(MODDEBUGOUTTEXT" read, wait for request %d\n", Index);
 
+
 	/* warten auf Antwort */
 	// aufwachen durch Signal, up vom SWI, oder User [Abort], bzw TimeOut
 	if( TimeOut_ms == 0xFFFFFFFF )
 	{
-		if( down_interruptible(&pDevData->LongTermRequestList[Index].WaitSem) != 0)
-			{res = -EINTR;goto EXIT_READ;}
+		//Note: nicht unterbrechbar(durch gdb), abbrechbar nur durch kill -9, nicht kill -15(term) 
+		if( down_killable(&pDevData->LongTermRequestList[Index].WaitSem) != 0)
+			{res = -EINTR; printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_read():down_killable('LongTermRequest') failed!\n"); goto EXIT_READ;}
 	}
 	else
 	{
-		jiffiesTimeOut = msecs_to_jiffies(TimeOut_ms);
-		if( down_timeout(&pDevData->LongTermRequestList[Index].WaitSem,jiffiesTimeOut) != 0)
-			{res = -EINTR;goto EXIT_READ;}
+		//Note: nicht unter(durch GDB) bzw. abbrechbar down_timeout() > __down_timeout() > __down_common(sem, TASK_UNINTERRUPTIBLE, timeout);
+		unsigned long jiffiesTimeOut = msecs_to_jiffies(TimeOut_ms);
+		int waitRes = down_timeout(&pDevData->LongTermRequestList[Index].WaitSem,jiffiesTimeOut);
+		if( waitRes == (-ETIME))
+			{res = -ETIME; pr_devel(MODDEBUGOUTTEXT" AGEXDrv_read> down_timeout(), timeout!\n"); goto EXIT_READ;}
+		else if ( waitRes != 0)
+			{res = -EINTR; printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_read> down_timeout(), failed!\n"); goto EXIT_READ;}
 	}
 
 	//abort durch user?
@@ -247,11 +253,12 @@ ssize_t AGEXDrv_write (struct file *filp, const char __user *buf, size_t count,l
 		return -EFAULT;
 
 	/* jetzt kommt das schreiben */
-	//warten (für immer auf die sem) wenn das prog abgeschossen wird, kommt sie zurück mit -EINTR
-	if( down_killable(&pDevData->DeviceSem) != 0)
-		return -EINTR;
+	//Note: unterbrechbar(durch gdb), abbrechbar durch kill -9 & kill -15(term) 
+	//  noch ist nix passiert, Kernel darf den Aufruf wiederhohlen ohne den User zu benachrichtigen
+	if( down_interruptible(&pDevData->DeviceSem) != 0)
+		{pr_devel(MODDEBUGOUTTEXT" AGEXDrv_write():down_interruptible('DeviceSem') failed!\n"); return -ERESTARTSYS;}
 //----------------------------->
-	res =  Locked_write(pDevData, buf, count);
+	res = Locked_write(pDevData, buf, count);
 //<-----------------------------
 		up(&pDevData->DeviceSem);
 

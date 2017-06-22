@@ -81,6 +81,27 @@ bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob, ui
 	// 'for read or write' ist eine 'rw_semaphore'
 	down_read(&current->mm->mmap_sem);
 //----------------------------->
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,9,0)
+// 4.8.17 >>> 4.9.0 (Oct 2016)
+//	Linux 4.9-rc2(https://lwn.net/Articles/704380/): Lorenzo Stoakes (10): 			mm: replace get_user_pages() write/force parameters with gup_flags
+//					http://lists.openwall.net/netdev/2016/10/13/1
+//					https://marc.info/?l=linux-mm&m=147585445805166
+//		bei 4.8.17 get_user_pages() 	> 	__get_user_pages_locked()  da wurde dann aus if(write) flags |= FOLL_WRITE
+//
+	anzPagesPinned = get_user_pages(pJob->pVMUser, anzPagesToMap, FOLL_WRITE, pJob->ppPageList, NULL);	
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(4,6,0)
+// 4.5.7 >>> 4.6.0 (Feb 2016)
+//	https://github.com/torvalds/linux/commit/d4edcf0d56958db0aca0196314ca38a5e730ea92#diff-c098b65a8bd8c7db23377b90578a62c1  
+//		Ingo Molnar  mm/gup: Switch all callers of get_user_pages() to not pass tsk/mm 
+//
+//		/mm/gup.c get_user_pages()
+//			"This is the same as get_user_pages_remote(), just with a
+//			 less-flexible calling convention where we assume that the task
+//			 and mm being operated on are the current task's."
+//	
+	anzPagesPinned = get_user_pages(pJob->pVMUser, anzPagesToMap, TRUE, FALSE, pJob->ppPageList, NULL);
+#else
 	anzPagesPinned = get_user_pages(
 		current, 		/* task_struct, wo sollen die 'page faults' hin */
 		current->mm,	/* mm_struct, in welcher VMA der virtuelle Speicher zu finden ist */
@@ -90,6 +111,7 @@ bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob, ui
 		FALSE,			/* kein force, daher aus ein ReadOnly wird kein RW, 'LDD3 driver should always 0 here' */
 		pJob->ppPageList, /* NULL, oder PointerFeld zu den Pages welches anzPages/Pointer halten kann, gefüllte anz ist result */
 		NULL);			/* NULL, oder PointerFeld zu den VMAs welche anzPages/Pointer haltern kann */
+#endif	
 //<-----------------------------
 	up_read(&current->mm->mmap_sem);
 

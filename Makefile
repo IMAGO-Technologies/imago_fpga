@@ -49,6 +49,11 @@ deploy:
 	strip --strip-debug agexpcidrv.ko
 	mv agexpcidrv.ko agexpcidrv_$(shell uname -r)_$(shell uname -m).ko
 
+devel:
+	make 
+	make install
+	rmmod agexpcidrv
+	modprobe agexpcidrv
 
 clean:
 	rm -rf *.o *~ core .depend .*.cmd *.ko *.mod.c .tmp_versions modules.order Module.symvers
@@ -56,5 +61,5 @@ clean:
 #default /lib/modules/$(KERNELRELEASE)/extra
 install:
 	make -C $(KERNELDIR) M=$(PWD) modules_install
-	depmod -a -q
+	depmod -a 
 
