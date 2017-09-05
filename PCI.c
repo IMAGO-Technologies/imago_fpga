@@ -88,6 +88,11 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 		tempDevSubType = SubType_PCIE_CL;
 		pr_devel(MODDEBUGOUTTEXT" found PCIe-CL device\n");
 	}
+	else if((id->vendor == 0x1172) &&  (id->device == 0xA6E5) )	//Altera (AGE-X5)
+	{
+		tempDevSubType = SubType_AGEX5;
+		pr_devel(MODDEBUGOUTTEXT" found AGE-X5 device\n");
+	}
 	else
 	{
 		printk(KERN_WARNING MODDEBUGOUTTEXT" unknowen device identifier (ven: 0x%x,  dev: 0x%x)\n", id->vendor, id->device);

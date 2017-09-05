@@ -329,6 +329,7 @@ void AGEXDrv_DMARead_EndDMA(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC
 //---------------------------------------------------------->
 	if( kfifo_put(&pDevData->DMARead_Channels[iDMA].Jobs_Done, tmpJob) == 0){
 		printk(KERN_ERR MODDEBUGOUTTEXT " AGEXDrv_DMARead_EndDMA> kfifo_put failed!\n");}	//sollte nie sein weil Test ob Platz ist, ist im 'AGEXDRV_IOC_DMAREAD_ADD_BUFFER'
+	pr_devel(MODDEBUGOUTTEXT" - Jobs_Done %d (iDMA: %d)\n", kfifo_len( &pDevData->DMARead_Channels[iDMA].Jobs_Done), iDMA);	
 //<----------------------------------------------------------
 	spin_unlock_bh(&pDevData->DMARead_SpinLock);
 
@@ -379,7 +380,7 @@ void AGEXDrv_DMARead_StartDMA(PDEVICE_DATA pDevData)
 			
 		//> gibt es Buffer & TC
 		//noch unbenutzten Buffer?
-		pr_devel(MODDEBUGOUTTEXT" - .Jobs_ToDo %d (iDMA: %d)\n", kfifo_len( &pDevData->DMARead_Channels[iDMA].Jobs_ToDo), iDMA);
+		pr_devel(MODDEBUGOUTTEXT" - Jobs_ToDo %d (iDMA: %d)\n", kfifo_len( &pDevData->DMARead_Channels[iDMA].Jobs_ToDo), iDMA);
 		boHasBuffer = ( kfifo_len( &pDevData->DMARead_Channels[iDMA].Jobs_ToDo)>=1) ? (TRUE) : (FALSE);
 	
 		//freien TC?
@@ -555,7 +556,7 @@ void AGEXDrv_DMARead_DPC(PDEVICE_DATA pDevData, const u32 isDoneReg, const u32 i
 					//FPGA hat sie abgebrochen oder wir durch IOctrl)
 					if( !isOk )
 					{
-						pr_devel(MODDEBUGOUTTEXT" - AgeXDMAReadDPC: DMA IRQ for a broken DMA!\n");						
+						pr_devel(MODDEBUGOUTTEXT" - AgeXDMAReadDPC: DMA IRQ for a broken DMA!\n");
 						AGEXDrv_DMARead_EndDMA(pDevData, iDMA, iTC, FALSE /*boIsOk*/, 0 /*don't care*/);
 					}
 					//isDone && isOK && isUsed
