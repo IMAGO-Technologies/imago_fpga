@@ -16,33 +16,25 @@
 
 ifeq ($(DEBUG),y)
   DEBFLAGS = -O -g -DDEBUG # "-O" is needed to expand inlines
+  $(info we use debug flags [${DEBFLAGS}])
 else
   DEBFLAGS = -O2  
 endif
 
 ccflags-y := $(DEBFLAGS) -Werror -Wall -Wextra -Wno-unused-parameter -Wno-date-time 
+agexpcidrv-objs := FileOps.o ISRTasklet.o LockedOps.o AGEXDrv.o PCI.o DMARead.o
+obj-m	:= agexpcidrv.o
 
-# If KERNELRELEASE is defined, we've been invoked from the
-# kernel build system and can use its language.
-ifneq ($(KERNELRELEASE),)
-# call from kernel build system
+# If KERNELDIR is defined, we've been invoked from the DKMS
+# otherwise we were called directly from the command line
+# '?=' has only an effect if the variable not defined
+KERNELDIR ?= /lib/modules/$(shell uname -r)/build
 
-	agexpcidrv-objs := FileOps.o ISRTasklet.o LockedOps.o AGEXDrv.o PCI.o DMARead.o
-
-	obj-m	:= agexpcidrv.o
-
-# Otherwise we were called directly from the command
-# line; invoke the kernel build system.
-else
-	KERNELDIR ?= /lib/modules/$(shell uname -r)/build
-	PWD       := $(shell pwd)
 
 default:
-	$(MAKE) -C $(KERNELDIR) M=$(PWD) modules
+	$(MAKE) -C $(KERNELDIR) M=$(PWD) modules 
 
-endif
-
-
+# create a file like 'agexpcidrv_4.9.0-6-amd64_x86_64.ko'
 deploy:
 	make clean
 	make

@@ -126,6 +126,12 @@ bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob, ui
 
 	//> SG(scatter/gather) Liste erzeugen
 	/**********************************************************************/
+	//Note:
+	// bis 1.1.9.0 (Anfang 2018) wurde sg_alloc_table_from_pages() [wenn möglich] benutzt 
+	//  * das zeitliche Verhalten ist nicht vorhersagbar (von alles 4k bis eine SG mit voller BildSize)
+	//  * wir haben aber nur 20Bit im FPGA für den WordCount eines SGElemnts [bei der Zeile kann es knapp werden]
+	//  * unter WIN32 kein Problem, da max 1MByte pro Transfer (n Transfers pro Bild) siehe WDF_DMA_ENABLER_CONFIG_INIT()
+	//
 	//https://www.kernel.org/doc/Documentation/DMA-API.txt
 	// "... The implementation is free to merge several consecutive sglist entries ..."
 	//http://www.gossamer-threads.com/lists/linux/kernel/977965
@@ -144,21 +150,21 @@ bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob, ui
 	// das bit 0 gesetzt, dann ist es eine Pointer auf die nÃ¤chste page 
 	// daher nicht selbst durchlaufen
 	//siehe: http://lwn.net/Articles/256368/ (The chained scatterlist API)
-#if LINUX_VERSION_CODE > KERNEL_VERSION(3,6,0)
-	if( 0 != sg_alloc_table_from_pages(	&pJob->SGTable,				/*header*/
-										pJob->ppPageList,			/*pointer to page array*/
-										anzPagesPinned,				/*number of pages in page array*/
-										0, 							/*buffer offset*/
-										pJob->anzBytesToTransfer	/*buffer size [bytes]*/,
-										GFP_KERNEL))				/*wie wird gealloc*/
-		{printk(KERN_WARNING MODDEBUGOUTTEXT "MappUserBuffer> sg_alloc_table() failed!\n"); return FALSE;}	
-	pJob->boIsSGValid 	= TRUE;
-	pJob->pSGNext		= pJob->SGTable.sgl;
-#else
+//#if LINUX_VERSION_CODE > KERNEL_VERSION(3,6,0)
+//	if( 0 != sg_alloc_table_from_pages(	&pJob->SGTable,				/*header*/
+//										pJob->ppPageList,			/*pointer to page array*/
+//										anzPagesPinned,				/*number of pages in page array*/
+//										0, 							/*buffer offset*/
+//										pJob->anzBytesToTransfer	/*buffer size [bytes]*/,
+//										GFP_KERNEL))				/*wie wird gealloc*/
+//		{printk(KERN_WARNING MODDEBUGOUTTEXT "MappUserBuffer> sg_alloc_table() failed!\n"); return FALSE;}	
+//	pJob->boIsSGValid 	= TRUE;
+//	pJob->pSGNext		= pJob->SGTable.sgl;
+//#else
 {
 	struct scatterlist *ptmpSGList	= NULL;
 	u32 anztmpBytes = pJob->anzBytesToTransfer;
-	u32	iSG							= 0;
+	s32	iSG							= 0;
 	if(0 != sg_alloc_table(	&pJob->SGTable	/*header*/, 
 							anzPagesPinned 	/*für wie viele Einträge*/, 
 							GFP_KERNEL))	/*wie wird die page gealloc*/
@@ -181,7 +187,7 @@ bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob, ui
 		ptmpSGList = sg_next(ptmpSGList);
 	}
 }
-#endif	
+//#endif	
 
 
 	//> in den PCI/BUS AdrRaum mappen
