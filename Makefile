@@ -18,7 +18,7 @@ ifeq ($(DEBUG),y)
   DEBFLAGS = -O -g -DDEBUG # "-O" is needed to expand inlines
   $(info we use debug flags [${DEBFLAGS}])
 else
-  DEBFLAGS = -O2  
+  DEBFLAGS = -O2 -Wno-sign-compare 
 endif
 
 ccflags-y := $(DEBFLAGS) -Werror -Wall -Wextra -Wno-unused-parameter -Wno-date-time 

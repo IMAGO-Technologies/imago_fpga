@@ -22,7 +22,7 @@
 
 //> defines about the Module
 /******************************************************************************************/
-#define MODVERSION "1.1.9.1"
+#define MODVERSION "1.1.9.2"
 #define MODDATECODE __DATE__ " - " __TIME__
 #define MODLICENSE "GPL";
 #define MODDESCRIPTION "Kernel module for the VisionBox AGE-X PCI(e) devices";
@@ -61,7 +61,9 @@
 #include <linux/scatterlist.h>	// sg_* ...
 #include <linux/spinlock.h>	// spin_* ...
 #include <linux/delay.h>	// f�r usleep_range
-#if LINUX_VERSION_CODE != KERNEL_VERSION(2,6,32)
+#if LINUX_VERSION_CODE == KERNEL_VERSION(2,6,32)
+	#include <linux/uaccess.h>	// für copy_to_user
+#elif LINUX_VERSION_CODE < KERNEL_VERSION(4,12,0)
 	#include <asm/uaccess.h>	// für copy_to_user
 #else
 	#include <linux/uaccess.h>	// für copy_to_user
