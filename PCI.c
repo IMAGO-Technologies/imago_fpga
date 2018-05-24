@@ -40,7 +40,7 @@ struct file_operations AGEXDrv_fops = {
 //	PCI fns
 //		wegen Hot-Plug gibt es CallBacks
 //<====================================>
-//wird aufgerufen wenn der kernel denkt das der treiber das PCIDev unterstÃ¼tzt, 0 ja <0 nein
+//wird aufgerufen wenn der kernel denkt das der treiber das PCIDev unterstützt, 0 ja <0 nein
 int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 {
 	u64 bar0_start,bar0_len;
@@ -132,7 +132,7 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 
 	//>BAR0
 	/**********************************************************************/
-	//das bar0 prÃ¼fen
+	//das bar0 prüfen
 	bar0_start = pci_resource_start(pcidev, 0);
 	bar0_len = pci_resource_len(pcidev, 0);
 	if ( !(pci_resource_flags(pcidev, 0) & IORESOURCE_MEM)){
@@ -151,7 +151,7 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 	else
 	{
 		_ModuleData.Devs[DevIndex].boIsBAR0Requested = TRUE;
-		_ModuleData.Devs[DevIndex].pVABAR0 = ioremap(bar0_start,bar0_len); //das setzen der adr zeigt auch an das wir (R/W) fns aufs device schreiben dÃ¼rfen
+		_ModuleData.Devs[DevIndex].pVABAR0 = ioremap(bar0_start,bar0_len); //das setzen der adr zeigt auch an das wir (R/W) fns aufs device schreiben dürfen
 		if(_ModuleData.Devs[DevIndex].pVABAR0 == NULL)
 			printk(KERN_ERR MODDEBUGOUTTEXT" ioremap failed!\n");
 		else
@@ -168,7 +168,7 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 		if( IS_TYPEWITH_PCI64BIT(_ModuleData.Devs[DevIndex].DeviceSubType) )
 			MaxDAMAddressSize = 64;
 
-		//sagt das wir xxBit kÃ¶nnen
+		//sagt das wir xxBit können
 		//https://www.kernel.org/doc/Documentation/DMA-API-HOWTO.txt
 		// "...By default, the kernel assumes that your device can address the full 32-bits...
 		//  ... It is good style to do this even if your device holds the default setting ..."
@@ -181,15 +181,15 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 #endif
 
 
-		//gibt speicher zurÃ¼ck ohne/mit cache off und auf Page ausgerichtet
+		//gibt speicher zurück ohne/mit cache off und auf Page ausgerichtet
 		// https://www.kernel.org/doc/Documentation/DMA-API.txt
 		// "... Consistent memory is memory for which a write by either the device or
 		//	the processor can immediately be read by the processor or device
 		//	without having to worry about caching effects..."
-		_ModuleData.Devs[DevIndex].pVACommonBuffer = dma_alloc_coherent(	&pcidev->dev,	/* fÃ¼r welches device */
-																			PAGE_SIZE,		/* grÃ¶ÃŸe in Bytes (wird eh min zu einer Page)*/
+		_ModuleData.Devs[DevIndex].pVACommonBuffer = dma_alloc_coherent(	&pcidev->dev,	/* für welches device */
+																			PAGE_SIZE,		/* größe in Bytes (wird eh min zu einer Page)*/
 																			&_ModuleData.Devs[DevIndex].pBACommonBuffer,
-																			GFP_KERNEL);	/* zone wird Ã¼ber die maske eingestellt, sonst nur noch ob GFP_ATOMIC)*/
+																			GFP_KERNEL);	/* zone wird über die maske eingestellt, sonst nur noch ob GFP_ATOMIC)*/
 		if(_ModuleData.Devs[DevIndex].pVACommonBuffer == 0)
 			{printk(KERN_ERR MODDEBUGOUTTEXT" dma_alloc_coherent failed!\n"); return -ENOMEM;}
 		else
@@ -204,6 +204,18 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 		memset(_ModuleData.Devs[DevIndex].pVACommonBuffer, 0 ,PAGE_SIZE);	//es gibt ab 3.2 dma_zalloc_coherent()
 	}
 
+
+	//>DMA2Host Buffer (also CL, VCXM ...)
+	/**********************************************************************/
+	if( IS_TYPEWITH_DMA2HOST(_ModuleData.Devs[DevIndex].DeviceSubType) )
+	{
+		//damit z.b dma_map_sg() (mit einer IOMMU) nicht zuviel zusammengefasst
+		// aber >nicht< für sg_alloc_table_from_pages()!
+		if( dma_set_max_seg_size(&pcidev->dev, DMA_READ_TC_SG_MAX_BYTECOUNT) != 0 )		
+			{printk(KERN_ERR MODDEBUGOUTTEXT" dma_set_max_seg_size failed!\n"); return -EIO;}
+	}
+
+	
 	
 	//>IRQ & tasklet
 	/**********************************************************************/
@@ -219,7 +231,7 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 			{printk(KERN_ERR MODDEBUGOUTTEXT"pci_enable_msi failed!\n"); return -EIO;}
 	}
 
-	//das gibt die (un)gemapped nummer zurÃ¼ck lspci zeigt die mapped an!
+	//das gibt die (un)gemapped nummer zurück lspci zeigt die mapped an!
 	//if(pci_read_config_byte(dev, PCI_INTERRUPT_LINE, &PCIIRQ_Number) ) {
 	if( request_irq(pcidev->irq,/* die IRQ nummer */
 			AGEXDrv_interrupt,	/* die IRQ fn */
@@ -244,13 +256,13 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 	}
 
 
-	//>dev init & fÃ¼gt das es hinzu
+	//>dev init & fügt das es hinzu
 	/**********************************************************************/
 	cdev_init(&_ModuleData.Devs[DevIndex].DeviceCDev, &AGEXDrv_fops);
 	_ModuleData.Devs[DevIndex].DeviceCDev.owner = THIS_MODULE;
 	_ModuleData.Devs[DevIndex].DeviceCDev.ops 	= &AGEXDrv_fops;	//notwendig in den quellen wird fops gesetzt?
 
-	//fÃ¼gt ein device hinzu, nach der fn kÃ¶nnen FileFns genutzt werden
+	//fügt ein device hinzu, nach der fn können FileFns genutzt werden
 	res = cdev_add(&_ModuleData.Devs[DevIndex].DeviceCDev, _ModuleData.Devs[DevIndex].DeviceNumber, 1/*wie viele ab startNum*/);
 	if(res < 0)
 		printk(KERN_WARNING MODDEBUGOUTTEXT" can't add device!\n");
@@ -309,7 +321,7 @@ void AGEXDrv_PCI_remove(struct pci_dev *pcidev)
 		AGEXDrv_DMARead_Abort_DMAWaiter(pDevData, i);
 	}
 
-	//IRQ zuÃ¼ckgeben
+	//IRQ zuückgeben
 	if(pDevData->boIsIRQOpen)
 	{
 		AGEXDrv_SwitchInterruptOn(pDevData, FALSE);
@@ -335,14 +347,14 @@ void AGEXDrv_PCI_remove(struct pci_dev *pcidev)
 		dma_free_coherent(&pcidev->dev, PAGE_SIZE, pDevData->pVACommonBuffer, pDevData->pBACommonBuffer);
 	pDevData->pVACommonBuffer = NULL;
 
-	//das pci_dev nicht mehr fÃ¼r PCI nutzen (bzw. setzt Bits im PCIConfigMem)??
+	//das pci_dev nicht mehr für PCI nutzen (bzw. setzt Bits im PCIConfigMem)??
 	pci_disable_device(pcidev);
 
-	//device in der sysfs class lÃ¶schen
+	//device in der sysfs class löschen
 	if(!IS_ERR(_ModuleData.pModuleClass))	
 		device_destroy(_ModuleData.pModuleClass, pDevData->DeviceNumber);
 
-	//device lÃ¶schen
+	//device löschen
 	if(pDevData->boIsDeviceOpen)
 		cdev_del(&pDevData->DeviceCDev);
 	pDevData->boIsDeviceOpen = FALSE;

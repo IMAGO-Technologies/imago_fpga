@@ -1,5 +1,6 @@
 # Comment/uncomment the following line to disable/enable debugging
 # or call make DEBUG=y default is DEBUG=n
+# and use 'tail -f /var/log/kern.log' for debug massages
 #DEBUG = y
 
 # Add your debugging flag (or not) to EXTRA_CLAGS
@@ -15,7 +16,7 @@
 #
 
 ifeq ($(DEBUG),y)
-  DEBFLAGS = -O -g -DDEBUG # "-O" is needed to expand inlines
+  DEBFLAGS = -O -g -DDEBUG #-Wno-sign-compare  # "-O" is needed to expand inlines
   $(info we use debug flags [${DEBFLAGS}])
 else
   DEBFLAGS = -O2 -Wno-sign-compare 
@@ -42,7 +43,8 @@ deploy:
 	mv agexpcidrv.ko agexpcidrv_$(shell uname -r)_$(shell uname -m).ko
 
 devel:
-	make 
+	clear
+	make -j`nproc` DEBUG=y
 	make install
 	rmmod agexpcidrv
 	modprobe agexpcidrv

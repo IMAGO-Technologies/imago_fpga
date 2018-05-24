@@ -163,6 +163,7 @@ enum AGEX_DEVICE_SUBTYPE
 
 #define DMA_READ_TC_SG_OFFSET 		0x40000
 #define DMA_READ_TC_TC2TC_SETPBYTES (16/*4 flags + 4 size(DWORDs) + 8 ptr(4k align) */) /*muss nDWORDs sein*/
+#define DMA_READ_TC_SG_MAX_BYTECOUNT ( (1<<22)-1 ) /* können max 20Bit DWord (1MByte) */
 
 //die SGFlags
 #define DMA_READ_TC_SG_FLAG_START_TRANSACTION 	(0x09) /* Loest FIFO-Reset aus + Bildstart */
@@ -250,8 +251,8 @@ typedef struct _DMA_READ_JOB
 	bool 			boIsSGValid;	//1<>sgTable wurde angelegt 
 	bool 			boIsSGMapped;	//1<>wurde gemapped
 	struct sg_table SGTable;	
-	u32				anzSGItemsMapped;
-	struct scatterlist *pSGNext;	//Nächste Element was gesendet werden kann, kann aber auch sg_is_last()==true sein oder NULL für last+1
+	u32				anzSGItemsLeft;	//wie viele SGs müssen noch übertragen werden, bzw. dem FPGA über geben
+	struct scatterlist *pSGNext;	//Nächste Element was gesendet werden kann, kann aber auch sg_is_last()==true sein oder NULL für last+1, es müssen aber nicht alle Element einer SGListe benutzt sein.
 }  DMA_READ_JOB, *PDMA_READ_JOB;
 
 //Fast alles zusammen für ein DMA (Read) TC 
