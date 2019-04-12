@@ -54,7 +54,9 @@
 #include <linux/fs.h>		// für alloc_chrdev_region /file_*
 #include <linux/semaphore.h>// für up/down ...
 #include <linux/kfifo.h>	// für kfifo_*
+#include <linux/of_device.h>		// für of*
 #include <linux/pci.h>		// für pci*
+#include <linux/spi/spi.h>		// für spi*
 #include <linux/ioport.h>	// für _regio*
 #include <linux/interrupt.h>// für IRQ*
 #include <linux/dma-mapping.h>	//für dma_*
@@ -81,27 +83,27 @@ typedef u8 IOCTLBUFFER[128];
 #define MAX(x,y) (x > y ? x : y)
 
 
-//AGEX<>AGEX2<>Invalid
+// Hardware-Typ Definitionen aus PCIDrv_Linux
 enum AGEX_DEVICE_SUBTYPE
 {
-	SubType_Invalid = 0,
-	SubType_AGEX	= 1,
-	SubType_AGEX2	= 2,
-	SubType_MVC0	= 3,
-	SubType_AGEX2_CL= 4,
-	SubType_VCXM	= 5,
-	SubType_LEMANS	= 6,
-   	SubType_PCIE_CL	= 7,
-	SubType_AGEX5	= 8
+	SubType_Invalid 	= 0,
+	SubType_AGEX		= 1,
+	SubType_AGEX2		= 2,
+	SubType_MVC0		= 3,
+	SubType_AGEX2_CL	= 4,
+	SubType_VCXM		= 5,
+	SubType_LEMANS		= 6,
+   	SubType_PCIE_CL		= 7,
+	SubType_AGEX5		= 8,
+	SubType_AGEX5_CL	= 9,
+	SubType_DAYTONA		= 10
 };
 
-
-//Device kann MSIX, CommonBuffer im PC-Mem
-#define IS_TYPEWITH_COMMONBUFFER(DevType) ( (DevType==SubType_AGEX2) || (DevType==SubType_MVC0) || (DevType==SubType_AGEX2_CL) || (DevType==SubType_VCXM) || (DevType==SubType_LEMANS) || (DevType==SubType_PCIE_CL) || (DevType==SubType_AGEX5))
-//Device kann 64Bit Adressen
-#define IS_TYPEWITH_PCI64BIT(DevType) ( (DevType==SubType_AGEX2_CL) || (DevType==SubType_PCIE_CL) )
-//Device kann DMAReads (Device schreibt in PC-Mem)
-#define IS_TYPEWITH_DMA2HOST(DevType) ( (DevType==SubType_AGEX2_CL) || (DevType==SubType_VCXM) || (DevType==SubType_PCIE_CL) )
+#define AGEXDRV_FLAG_COMMONBUFFER	0x01
+#define AGEXDRV_FLAG_PCI			0x02
+#define AGEXDRV_FLAG_PCI64BIT		0x04
+#define AGEXDRV_FLAG_DMA2HOST		0x08
+#define AGEXDRV_FLAG_SPI			0x10
 
 
 //> Ioctl definitions siehe. "ioctl-number.txt"
@@ -194,6 +196,11 @@ enum AGEX_DEVICE_SUBTYPE
 
 /*** structs ***/
 /******************************************************************************************/
+
+struct sAGEXDrv_device_info {
+	char *name;
+	u8 flags;
+};
 
 /*NOTE:
  * es gibt 3 Arten der Nutzung einer DeviceID
@@ -288,6 +295,7 @@ typedef struct _DEVICE_DATA
 	u8 				DeviceSubType;	//was sind wir AGEX, AGEX2... <> AGEX_DEVICE_SUBTYPE	
 	struct semaphore DeviceSem;		//lock für ein Device (diese struct & common buffer)
 	dev_t			DeviceNumber;	//Nummer von CHAR device
+	u8				flags;
 
 	//> IDs/MetaInfos für ein read	
 	//***************************************************************/
@@ -297,7 +305,7 @@ typedef struct _DEVICE_DATA
 	//> BAR0
 	//***************************************************************/
 	bool			boIsBAR0Requested;	//ist die Bar0 gültig
-	unsigned long	BAR0SizeBytes;
+//	unsigned long	BAR0SizeBytes;
 	void*			pVABAR0;			//zeigt auf den Anfang des gemapped mem vom PCIDev (eg 0xffffc90017480000)
 
 	//> ~IRQ
@@ -334,7 +342,8 @@ typedef struct _MODULE_DATA
 
 //Global vars
 extern MODULE_DATA _ModuleData;
-
+extern struct sAGEXDrv_device_info AGEXDrv_device_info[];
+extern struct spi_driver imago_spi_driver;
 
 /*** prototypes ***/
 /******************************************************************************************/
@@ -352,7 +361,7 @@ long AGEXDrv_unlocked_ioctl (struct file *filp, unsigned int cmd,unsigned long a
 /* ~IRQ fns*/
 irqreturn_t AGEXDrv_interrupt(int irq, void *dev_id);
 void AGEXDrv_SwitchInterruptOn(PDEVICE_DATA pDevData, const bool boTurnOn);
-void AGEXDrv_tasklet(unsigned long devIndex);
+void AGEXDrv_tasklet(unsigned long data);
 
 /* PCI fns*/
 int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id);
@@ -375,6 +384,35 @@ int AGEXDrv_init(void);
 void AGEXDrv_exit(void);
 void AGEXDrv_InitDrvData(PDEVICE_DATA pDat);
 
+
+//Device kann MSIX, CommonBuffer im PC-Mem
+static inline bool IS_TYPEWITH_COMMONBUFFER(DEVICE_DATA *pDeviceData)
+{
+	return ((pDeviceData->flags & AGEXDRV_FLAG_COMMONBUFFER) != 0);
+}
+
+//PCI
+static inline bool IS_TYPEWITH_PCI(DEVICE_DATA *pDeviceData)
+{
+	return ((pDeviceData->flags & AGEXDRV_FLAG_PCI) != 0);
+}
+
+//Device kann 64Bit Adressen
+static inline bool IS_TYPEWITH_PCI64BIT(DEVICE_DATA *pDeviceData)
+{
+	return ((pDeviceData->flags & AGEXDRV_FLAG_PCI64BIT) != 0);
+}
+
+//Device kann DMAReads (Device schreibt in PC-Mem)
+static inline bool IS_TYPEWITH_DMA2HOST(DEVICE_DATA *pDeviceData)
+{
+	return ((pDeviceData->flags & AGEXDRV_FLAG_DMA2HOST) != 0);
+}
+
+static inline bool IS_TYPEWITH_SPI(DEVICE_DATA *pDeviceData)
+{
+	return ((pDeviceData->flags & AGEXDRV_FLAG_SPI) != 0);
+}
 
 
 #endif /* AGEXDRV_H_ */

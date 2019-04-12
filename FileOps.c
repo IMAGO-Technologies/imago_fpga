@@ -93,7 +93,7 @@ ssize_t AGEXDrv_read (struct file *filp, char __user *buf, size_t count, loff_t 
 {
 	u32 TimeOut_ms, BytesToWrite, DeviceID;
 	long res;	
-	s8 Index=-1;
+	s8 Index = -1;
 	PDEVICE_DATA pDevData = NULL;
 
 	/*Wie es geht:
@@ -119,13 +119,10 @@ ssize_t AGEXDrv_read (struct file *filp, char __user *buf, size_t count, loff_t 
 	pr_devel(MODDEBUGOUTTEXT" read (%d Bytes)\n", (int)count);
 
 	/* Alles gut? */
-	if( (filp==NULL) || (filp->private_data==NULL) ) return -EINVAL;
+	if( (filp==NULL) || (filp->private_data==NULL) )
+		return -EINVAL;
 	pDevData = (PDEVICE_DATA) filp->private_data;
 	//mem ok?
-	if( count > pDevData->BAR0SizeBytes)
-		return -EFBIG;
-	if(pDevData->pVABAR0 == NULL)
-		return -EFBIG;
 	if(pDevData->boIsIRQOpen == FALSE)
 		return -EFAULT;
 	if(count < (2*4))		//min 2 DWords, 2. is the size
@@ -154,64 +151,70 @@ ssize_t AGEXDrv_read (struct file *filp, char __user *buf, size_t count, loff_t 
 	if( (BytesToWrite+3*4) > count)
 		return -EFBIG;
 
-	pr_devel(MODDEBUGOUTTEXT" read, devID %d, BytesToWrite %d, TimeOut 0x%x\n",DeviceID,BytesToWrite,TimeOut_ms);
+	pr_devel(MODDEBUGOUTTEXT" read, devID %d, BytesToWrite %d, TimeOut %u\n",DeviceID,BytesToWrite,TimeOut_ms);
 
 	//Note: unterbrechbar(durch gdb), abbrechbar durch kill -9 & kill -15(term) 
 	//  noch ist nix passiert, Kernel darf den Aufruf wiederhohlen ohne den User zu benachrichtigen	
-	if( down_interruptible(&pDevData->DeviceSem) != 0)	
-		{pr_devel(MODDEBUGOUTTEXT" AGEXDrv_read():down_interruptible('DeviceSem') failed!\n"); return -ERESTARTSYS;}
+	if (down_interruptible(&pDevData->DeviceSem) != 0) {
+		pr_devel(MODDEBUGOUTTEXT" AGEXDrv_read():down_interruptible('DeviceSem') failed!\n");
+		return -ERESTARTSYS;
+	}
 //----------------------------->
 	//freien eintrag suchen
-	Index = -1;
 	res = Locked_startlongtermread(pDevData, DeviceID);
-
-	/* wenn ok jetzt ins FPGA schreiben */
-	if(res >= 0){
-		Index = (s8)res;
-		res =  Locked_write(pDevData, buf+3*4, BytesToWrite);
-	}
-//<-----------------------------
-	up(&pDevData->DeviceSem);
-
-	if(res < 0){
+	if (res < 0) {
+		up(&pDevData->DeviceSem);
 		printk(KERN_WARNING MODDEBUGOUTTEXT" read, Locked_startlongtermread() failed (%ld)!\n", res);
 		goto EXIT_READ;
 	}
-	if(Index <0 || Index > MAX_LONG_TERM_IO_REQUEST)	//nur um ganz sicher zu sein
-		return -EFAULT;
+	Index = (s8)res;
+
+	/* Paket ins FPGA schreiben */
+	res =  Locked_write(pDevData, buf+3*4, BytesToWrite);
+	up(&pDevData->DeviceSem);
+
+	if (res < 0) {
+		printk(KERN_WARNING MODDEBUGOUTTEXT" read, Locked_write() failed (%ld)!\n", res);
+		goto EXIT_READ;
+	}
 	pr_devel(MODDEBUGOUTTEXT" read, wait for request %d\n", Index);
 
 
 	/* warten auf Antwort */
 	// aufwachen durch Signal, up vom SWI, oder User [Abort], bzw TimeOut
-	if( TimeOut_ms == 0xFFFFFFFF )
-	{
+	if (TimeOut_ms == 0xFFFFFFFF) {
 		//Note: nicht unterbrechbar(durch gdb), abbrechbar nur durch kill -9, nicht kill -15(term) 
-		if( down_killable(&pDevData->LongTermRequestList[Index].WaitSem) != 0)
-			{res = -EINTR; printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_read():down_killable('LongTermRequest') failed!\n"); goto EXIT_READ;}
-	}
-	else
-	{
+		if( down_killable(&pDevData->LongTermRequestList[Index].WaitSem) != 0) {
+			res = -EINTR;
+			printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_read():down_killable('LongTermRequest') failed!\n");
+			goto EXIT_READ;
+		}
+	} else {
 		//Note: nicht unter(durch GDB) bzw. abbrechbar down_timeout() > __down_timeout() > __down_common(sem, TASK_UNINTERRUPTIBLE, timeout);
 		unsigned long jiffiesTimeOut = msecs_to_jiffies(TimeOut_ms);
 		int waitRes = down_timeout(&pDevData->LongTermRequestList[Index].WaitSem,jiffiesTimeOut);
-		if( waitRes == (-ETIME))
-			{res = -ETIME; pr_devel(MODDEBUGOUTTEXT" AGEXDrv_read> down_timeout(), timeout!\n"); goto EXIT_READ;}
-		else if ( waitRes != 0)
-			{res = -EINTR; printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_read> down_timeout(), failed!\n"); goto EXIT_READ;}
+		if (waitRes == (-ETIME)) {
+			res = -ETIME;
+			pr_devel(MODDEBUGOUTTEXT" AGEXDrv_read> down_timeout(), timeout!\n");
+			goto EXIT_READ;
+		} else if (waitRes != 0) {
+			res = -EINTR;
+			printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_read> down_timeout(), failed!\n");
+			goto EXIT_READ;
+		}
 	}
 
 	//abort durch user?
-	if(pDevData->LongTermRequestList[Index].boAbortWaiting){
+	if (pDevData->LongTermRequestList[Index].boAbortWaiting) {
 		res = -EINTR;
 		goto EXIT_READ;
 	}
 	
 	/* daten copy */
 	//zu viel für den user buf bzw. gültig?
-	if( 	(pDevData->LongTermRequestList[Index].IRQBuffer_anzBytes > count)
+	if ( 	(pDevData->LongTermRequestList[Index].IRQBuffer_anzBytes > count)
 		||	(pDevData->LongTermRequestList[Index].IRQBuffer_anzBytes > MAX_SUNPACKETSIZE)
-		||	(pDevData->LongTermRequestList[Index].IRQBuffer_anzBytes == 0) ){
+		||	(pDevData->LongTermRequestList[Index].IRQBuffer_anzBytes == 0) ) {
 		res = -EFBIG;
 		goto EXIT_READ;
 	}
@@ -232,7 +235,7 @@ EXIT_READ:
 	return res;
 }
 
-ssize_t AGEXDrv_write (struct file *filp, const char __user *buf, size_t count,loff_t *pos)
+ssize_t AGEXDrv_write(struct file *filp, const char __user *buf, size_t count,loff_t *pos)
 {
 	long res;
 	PDEVICE_DATA pDevData = NULL;
@@ -240,27 +243,26 @@ ssize_t AGEXDrv_write (struct file *filp, const char __user *buf, size_t count,l
 	pr_devel(MODDEBUGOUTTEXT" write (%d Bytes)\n", (int)count);
 
 	/* Alles gut? */
-	if( (filp==NULL) || (filp->private_data==NULL) ) return -EINVAL;
+	if (filp == NULL || filp->private_data == NULL)
+		return -EINVAL;
 	pDevData = (PDEVICE_DATA) filp->private_data;
 	//mem ok?
-	if(count > pDevData->BAR0SizeBytes)
-		return -EFBIG;
-	if(pDevData->pVABAR0 == NULL)
-		return -EFBIG;
 
 	//dürfen wir den mem nutzen?
-	if( !access_ok(VERIFY_READ, buf, count) )
+	if (!access_ok(VERIFY_READ, buf, count))
 		return -EFAULT;
 
 	/* jetzt kommt das schreiben */
 	//Note: unterbrechbar(durch gdb), abbrechbar durch kill -9 & kill -15(term) 
 	//  noch ist nix passiert, Kernel darf den Aufruf wiederhohlen ohne den User zu benachrichtigen
-	if( down_interruptible(&pDevData->DeviceSem) != 0)
-		{pr_devel(MODDEBUGOUTTEXT" AGEXDrv_write():down_interruptible('DeviceSem') failed!\n"); return -ERESTARTSYS;}
+	if (down_interruptible(&pDevData->DeviceSem) != 0) {
+		pr_devel(MODDEBUGOUTTEXT" AGEXDrv_write():down_interruptible('DeviceSem') failed!\n");
+		return -ERESTARTSYS;
+	}
 //----------------------------->
 	res = Locked_write(pDevData, buf, count);
 //<-----------------------------
-		up(&pDevData->DeviceSem);
+	up(&pDevData->DeviceSem);
 
 	return res;
 }

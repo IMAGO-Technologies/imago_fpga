@@ -34,7 +34,38 @@ struct file_operations AGEXDrv_fops = {
 	.llseek = no_llseek,
 };
 
-
+struct sAGEXDrv_device_info AGEXDrv_device_info[] = {
+	[SubType_AGEX] = {
+		.name = "VisionBox AGE-X",
+		.flags = AGEXDRV_FLAG_PCI},
+	[SubType_AGEX2] = {
+		.name = "VisionBox AGE-X2",
+		.flags = AGEXDRV_FLAG_COMMONBUFFER},
+	[SubType_MVC0] = {
+		.name = "Machine Vision Controller",
+		.flags = AGEXDRV_FLAG_COMMONBUFFER},
+	[SubType_AGEX2_CL] = {
+		.name = "VisionBox AGE-X2 CL",
+		.flags = AGEXDRV_FLAG_COMMONBUFFER | AGEXDRV_FLAG_DMA2HOST | AGEXDRV_FLAG_PCI64BIT},
+	[SubType_VCXM] = {
+		.name = "VisionCam XM",
+		.flags = AGEXDRV_FLAG_COMMONBUFFER | AGEXDRV_FLAG_DMA2HOST},
+	[SubType_LEMANS] = {
+		.name = "VisionBox LE MANS",
+		.flags = AGEXDRV_FLAG_COMMONBUFFER},
+	[SubType_PCIE_CL] = {
+		.name = "PCIe CL",
+		.flags = AGEXDRV_FLAG_COMMONBUFFER | AGEXDRV_FLAG_DMA2HOST | AGEXDRV_FLAG_PCI64BIT},
+	[SubType_AGEX5] = {
+		.name = "VisionBox AGE-X5",
+		.flags = AGEXDRV_FLAG_COMMONBUFFER},
+	[SubType_AGEX5_CL] = {
+		.name = "VisionBox AGE-X5 CL",
+		.flags = AGEXDRV_FLAG_COMMONBUFFER | AGEXDRV_FLAG_DMA2HOST | AGEXDRV_FLAG_PCI64BIT},
+	[SubType_DAYTONA] = {
+		.name = "VisionBox DAYTONA",
+		.flags = AGEXDRV_FLAG_SPI},
+};
 
 //<====================================>
 //	PCI fns
@@ -50,54 +81,14 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 
 	pr_devel(MODDEBUGOUTTEXT" AGEXDrv_PCI_probe\n");
 
-
-	//>was sind wir?
-	/**********************************************************************/
-	if( (id->vendor == 0x1204) &&  (id->device == 0x0200) )		//Lattice (AGE-X1)
+	tempDevSubType = id->driver_data;
+	if (tempDevSubType == SubType_Invalid || tempDevSubType > ARRAY_SIZE(AGEXDrv_device_info))
 	{
-		tempDevSubType = SubType_AGEX;
-		pr_devel(MODDEBUGOUTTEXT" found AGE-X device\n");
-	}
-	else if((id->vendor == 0x1172) &&  (id->device == 0x0004) )	//Altera (AGE-X2)
-	{
-		tempDevSubType = SubType_AGEX2;
-		pr_devel(MODDEBUGOUTTEXT" found AGE-X2 device\n");
-	}
-	else if((id->vendor == 0x1172) &&  (id->device == 0x0010) )	//Altera (AGE-X2-CL)
-	{
-		tempDevSubType = SubType_AGEX2_CL;
-		pr_devel(MODDEBUGOUTTEXT" found AGE-X2-CL device\n");
-	}
-	else if((id->vendor == 0x1172) &&  (id->device == 0xA6E4) )	//Altera (MVC0)
-	{
-		tempDevSubType = SubType_MVC0;
-		pr_devel(MODDEBUGOUTTEXT" found MVC0 device\n");
-	}
-	else if((id->vendor == 0x1172) &&  (id->device == 0x0005) )	//Altera (VCXM)
-	{
-		tempDevSubType = SubType_VCXM;
-		pr_devel(MODDEBUGOUTTEXT" found VisionCam XM device\n");
-	}
-	else if((id->vendor == 0x1172) &&  (id->device == 0xCA72) )	//Altera (LeMans) 
-	{
-		tempDevSubType = SubType_LEMANS;
-		pr_devel(MODDEBUGOUTTEXT" found VisionBox LeMans device\n");
-	}
-	else if((id->vendor == 0x1172) &&  (id->device == 0xDECA) )	//Altera (PCIe-CL)
-	{
-		tempDevSubType = SubType_PCIE_CL;
-		pr_devel(MODDEBUGOUTTEXT" found PCIe-CL device\n");
-	}
-	else if((id->vendor == 0x1172) &&  (id->device == 0xA6E5) )	//Altera (AGE-X5)
-	{
-		tempDevSubType = SubType_AGEX5;
-		pr_devel(MODDEBUGOUTTEXT" found AGE-X5 device\n");
-	}
-	else
-	{
-		printk(KERN_WARNING MODDEBUGOUTTEXT" unknowen device identifier (ven: 0x%x,  dev: 0x%x)\n", id->vendor, id->device);
+		printk(KERN_WARNING MODDEBUGOUTTEXT" unknown device identifier (%u)\n", tempDevSubType);
 		return -EINVAL;
 	}
+
+	pr_devel(MODDEBUGOUTTEXT" found '%s' device\n", AGEXDrv_device_info[tempDevSubType].name);
 
 
 	//>freie Minor Nummer?
@@ -112,6 +103,7 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 			_ModuleData.Devs[DevIndex].DeviceSubType= tempDevSubType;
 			_ModuleData.Devs[DevIndex].DeviceNumber = MKDEV(MAJOR(_ModuleData.FirstDeviceNumber), DevIndex);
 			_ModuleData.Devs[DevIndex].pDeviceDevice = &pcidev->dev;
+			_ModuleData.Devs[DevIndex].flags =  AGEXDrv_device_info[tempDevSubType].flags;
 			pci_set_drvdata(pcidev, &_ModuleData.Devs[DevIndex]);				//damit wir im AGEXDrv_PCI_remove() wissen welches def freigebene werden soll
 			break;
 		}
@@ -157,15 +149,14 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 		else
 			pr_devel(MODDEBUGOUTTEXT" map bar0> 0x%llx to 0x%p\n",bar0_start,_ModuleData.Devs[DevIndex].pVABAR0);
 	}
-	_ModuleData.Devs[DevIndex].BAR0SizeBytes = bar0_len;
 
 
 	//>DMA(Coherent) Buffer (nicht AGEX1)
 	/**********************************************************************/
-	if( IS_TYPEWITH_COMMONBUFFER(_ModuleData.Devs[DevIndex].DeviceSubType) )
+	if( IS_TYPEWITH_COMMONBUFFER(&_ModuleData.Devs[DevIndex]) )
 	{
 		u8 MaxDAMAddressSize = 32;
-		if( IS_TYPEWITH_PCI64BIT(_ModuleData.Devs[DevIndex].DeviceSubType) )
+		if( IS_TYPEWITH_PCI64BIT(&_ModuleData.Devs[DevIndex]) )
 			MaxDAMAddressSize = 64;
 
 		//sagt das wir xxBit können
@@ -207,7 +198,7 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 
 	//>DMA2Host Buffer (also CL, VCXM ...)
 	/**********************************************************************/
-	if( IS_TYPEWITH_DMA2HOST(_ModuleData.Devs[DevIndex].DeviceSubType) )
+	if( IS_TYPEWITH_DMA2HOST(&_ModuleData.Devs[DevIndex]) )
 	{
 		//damit z.b dma_map_sg() (mit einer IOMMU) nicht zuviel zusammengefasst
 		// aber >nicht< für sg_alloc_table_from_pages()!
@@ -220,12 +211,12 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 	//>IRQ & tasklet
 	/**********************************************************************/
 	//tasklet
-	tasklet_init(&_ModuleData.Devs[DevIndex].IRQTasklet, AGEXDrv_tasklet, DevIndex);
+	tasklet_init(&_ModuleData.Devs[DevIndex].IRQTasklet, AGEXDrv_tasklet, (unsigned long)&_ModuleData.Devs[DevIndex]);
 
 	//msi einschalten
 	//http://www.mjmwired.net/kernel/Documentation/MSI-HOWTO.txt
 	// "... to call this API before calling request_irq()..."
-	if( IS_TYPEWITH_COMMONBUFFER(_ModuleData.Devs[DevIndex].DeviceSubType) ) 
+	if( IS_TYPEWITH_COMMONBUFFER(&_ModuleData.Devs[DevIndex]) ) 
 	{
 		if( pci_enable_msi(pcidev) != 0)
 			{printk(KERN_ERR MODDEBUGOUTTEXT"pci_enable_msi failed!\n"); return -EIO;}
@@ -241,19 +232,17 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 			) != 0)
 	{
 		printk(KERN_ERR MODDEBUGOUTTEXT" request_irq failed\n");
-		if( IS_TYPEWITH_COMMONBUFFER(_ModuleData.Devs[DevIndex].DeviceSubType) )
+		if( IS_TYPEWITH_COMMONBUFFER(&_ModuleData.Devs[DevIndex]) )
 			pci_disable_msi(pcidev);
 
 		_ModuleData.Devs[DevIndex].boIsIRQOpen = FALSE;
 		return -EIO;
 	}
-	else
-	{
-		AGEXDrv_SwitchInterruptOn(&_ModuleData.Devs[DevIndex], TRUE);
 
-		pr_devel(MODDEBUGOUTTEXT" IRQ> %d \n",pcidev->irq);
-		_ModuleData.Devs[DevIndex].boIsIRQOpen = TRUE;
-	}
+	AGEXDrv_SwitchInterruptOn(&_ModuleData.Devs[DevIndex], TRUE);
+
+	pr_devel(MODDEBUGOUTTEXT" IRQ> %d \n",pcidev->irq);
+	_ModuleData.Devs[DevIndex].boIsIRQOpen = TRUE;
 
 
 	//>dev init & fügt das es hinzu
@@ -326,7 +315,7 @@ void AGEXDrv_PCI_remove(struct pci_dev *pcidev)
 	{
 		AGEXDrv_SwitchInterruptOn(pDevData, FALSE);
 		free_irq(pcidev->irq, pDevData);
-		if( IS_TYPEWITH_COMMONBUFFER(pDevData->DeviceSubType) )
+		if( IS_TYPEWITH_COMMONBUFFER(pDevData) )
 			pci_disable_msi(pcidev);
 	}
 	
@@ -342,7 +331,7 @@ void AGEXDrv_PCI_remove(struct pci_dev *pcidev)
 		release_mem_region( pci_resource_start(pcidev, 0), pci_resource_len(pcidev, 0) );
 	pDevData->boIsBAR0Requested = FALSE;
 
-	if( 	( IS_TYPEWITH_COMMONBUFFER(pDevData->DeviceSubType) )
+	if( 	( IS_TYPEWITH_COMMONBUFFER(pDevData) )
 		&& 	(pDevData->pVACommonBuffer != NULL) )
 		dma_free_coherent(&pcidev->dev, PAGE_SIZE, pDevData->pVACommonBuffer, pDevData->pBACommonBuffer);
 	pDevData->pVACommonBuffer = NULL;

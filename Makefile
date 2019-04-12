@@ -23,7 +23,7 @@ else
 endif
 
 ccflags-y := $(DEBFLAGS) -Werror -Wall -Wextra -Wno-unused-parameter -Wno-date-time 
-agexpcidrv-objs := FileOps.o ISRTasklet.o LockedOps.o AGEXDrv.o PCI.o DMARead.o
+agexpcidrv-objs := FileOps.o ISRTasklet.o LockedOps.o AGEXDrv.o PCI.o SPI.o DMARead.o
 obj-m	:= agexpcidrv.o
 
 # If KERNELDIR is defined, we've been invoked from the DKMS
@@ -33,7 +33,7 @@ KERNELDIR ?= /lib/modules/$(shell uname -r)/build
 
 
 default:
-	$(MAKE) -C $(KERNELDIR) M=$(PWD) modules 
+	$(MAKE) -C $(KERNELDIR) M=$(CURDIR) modules 
 
 # create a file like 'agexpcidrv_4.9.0-6-amd64_x86_64.ko'
 deploy:
@@ -54,6 +54,6 @@ clean:
 
 #default /lib/modules/$(KERNELRELEASE)/extra
 install:
-	make -C $(KERNELDIR) M=$(PWD) modules_install
+	make -C $(KERNELDIR) M=$(CURDIR) modules_install
 	depmod -a 
 

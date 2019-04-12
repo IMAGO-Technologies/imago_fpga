@@ -75,41 +75,74 @@ long Locked_startlongtermread(PDEVICE_DATA pDevData, const u32 DeviceID)
 //führt die WriteOp aus, gibt >= 0 für OK sonst fehler code zurück,
 long Locked_write(PDEVICE_DATA pDevData, const u8 __user * pToUserMem, const size_t BytesToWrite)
 {
-	u8 TempBuffer[4*(3+1)];		//damit bei AGEX2 immer 64Bit sind
-
-	/* User Data -> Kernel */
-	if(BytesToWrite > sizeof(TempBuffer) )
-		return -EFBIG;
-	if( copy_from_user (TempBuffer, pToUserMem, BytesToWrite) != 0){
-		printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_write> copy_from_user faild\n"); return -EFAULT;
-	}
-
-
-
-	/* Kernel -> PCI */
-	//Notes:
-	// -für die AGEX muss sich die Adr nicht ändern
-	// -bei der AGEX2 müssen es 32Bit mit steigender Adr sein
-	//
-	// aus include/asm-generic/iomap.h für ioread/writeX_rep
-	// "...They do _not_ update the port address. If you
-	//	want MMIO that copies stuff laid out in MMIO
-	//	memory across multiple ports, use "memcpy_toio()..."
-	//
-	// aber auch memcpy_toio() macht nicht immer 32Bit
-	// "http://www.gossamer-threads.com/lists/linux/kernel/650995?do=post_view_threaded#650995"
-	if (BytesToWrite % 4)
+	if (IS_TYPEWITH_PCI(pDevData) || IS_TYPEWITH_COMMONBUFFER(pDevData))
 	{
-		u32 ByteIndex =0;
-		for(; ByteIndex < BytesToWrite; ByteIndex++)
-			iowrite8(TempBuffer[ByteIndex], pDevData->pVABAR0+ByteIndex);
+		u8 TempBuffer[4*(3+1)];		// +1 damit bei PCIe immer 64 Bit sind
+
+		/* User Data -> Kernel */
+		if(BytesToWrite > sizeof(TempBuffer) )
+			return -EFBIG;
+		if( copy_from_user (TempBuffer, pToUserMem, BytesToWrite) != 0){
+			printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_write> copy_from_user faild\n"); return -EFAULT;
+		}
+
+		/* Kernel -> PCI */
+		//Notes:
+		// -für die AGEX muss sich die Adr nicht ändern
+		// -bei der AGEX2 müssen es 32Bit mit steigender Adr sein
+		//
+		// aus include/asm-generic/iomap.h für ioread/writeX_rep
+		// "...They do _not_ update the port address. If you
+		//	want MMIO that copies stuff laid out in MMIO
+		//	memory across multiple ports, use "memcpy_toio()..."
+		//
+		// aber auch memcpy_toio() macht nicht immer 32Bit
+		// "http://www.gossamer-threads.com/lists/linux/kernel/650995?do=post_view_threaded#650995"
+		if (BytesToWrite % 4)
+		{
+			u32 ByteIndex =0;
+			for(; ByteIndex < BytesToWrite; ByteIndex++)
+				iowrite8(TempBuffer[ByteIndex], pDevData->pVABAR0+ByteIndex);
+		}
+		else
+		{
+			u32 WordsToCopy = BytesToWrite/4;
+			u32 WordIndex =0;
+			for(; WordIndex < WordsToCopy; WordIndex++)
+				iowrite32( ((u32*)TempBuffer)[WordIndex], pDevData->pVABAR0 + WordIndex*4 );
+		}
 	}
-	else
+	else if (IS_TYPEWITH_SPI(pDevData))
 	{
-		u32 WordsToCopy = BytesToWrite/4;
-		u32 WordIndex =0;
-		for(; WordIndex < WordsToCopy; WordIndex++)
-			iowrite32( ((u32*)TempBuffer)[WordIndex], pDevData->pVABAR0 + WordIndex*4 );
+		struct spi_transfer transfer;
+		struct spi_message message;
+		struct spi_device *spi = to_spi_device(pDevData->pDeviceDevice);
+		int result;
+		u8 txbuf[1+3*4];		// SPI Header + SUN Paket
+
+		/* User Data -> Kernel */
+		if (BytesToWrite != (3*4))
+			return -EFBIG;
+
+		txbuf[0] = 0; // SPI Header: in CPU Source-FIFO schreiben
+		if (copy_from_user (&txbuf[1], pToUserMem, BytesToWrite) != 0) {
+			printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_write> copy_from_user faild\n");
+			return -EFAULT;
+		}
+
+		spi_message_init(&message);
+		memset(&transfer, 0, sizeof(transfer));
+		transfer.tx_buf = txbuf;
+		transfer.len = sizeof(txbuf);
+		spi_message_add_tail(&transfer, &message);
+
+		result = spi_sync(spi, &message);
+		if (result < 0)
+		{
+			dev_err(&spi->dev, "Locked_write> SPI error %d\n", result);
+			return -EFAULT;
+		}
+		printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_write done\n");
 	}
 
 	return BytesToWrite;
@@ -321,7 +354,7 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 			if( BufferSizeBytes < (3*2) ){
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n"); result = -EFBIG;
 			}
-			else if( !IS_TYPEWITH_DMA2HOST(pDevData->DeviceSubType) )
+			else if( !IS_TYPEWITH_DMA2HOST(pDevData) )
 			{				
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> No DMA support!\n");	result = -EFAULT;
 			}
@@ -367,7 +400,7 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 			if( BufferSizeBytes < (1+2*sizeof(u64) )){
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n"); result = -EFBIG;
 			}
-			else if( !IS_TYPEWITH_DMA2HOST(pDevData->DeviceSubType) )
+			else if( !IS_TYPEWITH_DMA2HOST(pDevData) )
 			{				
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> No DMA support!\n");	result = -EFAULT;
 			}
@@ -450,7 +483,7 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 			if( BufferSizeBytes < ( 1 + sizeof(u16) +  sizeof(u64))){
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n"); result = -EFBIG;
 			}
-			else if( !IS_TYPEWITH_DMA2HOST(pDevData->DeviceSubType) )
+			else if( !IS_TYPEWITH_DMA2HOST(pDevData) )
 			{				
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> No DMA support!\n");	result = -EFAULT;
 			}
@@ -550,7 +583,7 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 			if( BufferSizeBytes < (1) ){
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n"); result = -EFBIG;
 			}
-			else if( !IS_TYPEWITH_DMA2HOST(pDevData->DeviceSubType) )
+			else if( !IS_TYPEWITH_DMA2HOST(pDevData) )
 			{				
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> No DMA support!\n");	result = -EFAULT;
 			}

@@ -37,17 +37,26 @@ module_exit(AGEXDrv_exit);
 //static member (die gleichen für alle devices)
 MODULE_DATA _ModuleData;
 
-
 //für welche PCI IDs sind wir zuständi?
 static struct pci_device_id AGEXDrv_ids[] = {
-	{ PCI_DEVICE(0x1204/*VendorID (Lattice Semi)*/, 0x0200 /*DeviceID*/), },	/* AGE-X1 */
-	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0x0004 /*DeviceID*/), },			/* AGE-X2 */
-	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xA6E4 /*DeviceID*/), },			/* MVC0 */
-	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0x0010 /*DeviceID*/), },			/* AGEX2-CL */
-	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0x0005 /*DeviceID*/), },			/* VCXM */
-	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xCA72 /*DeviceID*/), },			/* LeMans */
-	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xDECA /*DeviceID*/), },			/* PCIe-CL */
-	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xA6E5 /*DeviceID*/), },			/* AGE-X5 */
+	{ PCI_DEVICE(0x1204/*VendorID (Lattice Semi)*/, 0x0200 /*DeviceID*/),	/* AGE-X1 */
+		.driver_data = SubType_AGEX },
+	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0x0004 /*DeviceID*/),			/* AGE-X2 */
+		.driver_data = SubType_AGEX2 },
+	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xA6E4 /*DeviceID*/),			/* MVC0 */
+		.driver_data = SubType_MVC0 },
+	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0x0010 /*DeviceID*/),			/* AGE-X2-CL */
+		.driver_data = SubType_AGEX2_CL },
+	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0x0005 /*DeviceID*/),			/* VCXM */
+		.driver_data = SubType_VCXM },
+	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xCA72 /*DeviceID*/),			/* LeMans */
+		.driver_data = SubType_LEMANS },
+	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xDECA /*DeviceID*/),			/* PCIe-CL */
+		.driver_data = SubType_PCIE_CL },
+	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xA6E5 /*DeviceID*/),			/* AGE-X5 */
+		.driver_data = SubType_AGEX5 },
+	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xDCA5 /*DeviceID*/),			/* AGE-X5-CL */
+		.driver_data = SubType_AGEX5_CL },
 	{ 0, }
 };
 MODULE_DEVICE_TABLE(pci, AGEXDrv_ids);		//macht dem kernel bekannt was dieses modul für PCI devs kann
@@ -142,6 +151,9 @@ int AGEXDrv_init(void)
 	if( pci_register_driver(&AGEXDrv_pci_driver) !=0)
 		printk(KERN_WARNING MODDEBUGOUTTEXT" pci_register_driver failed!\n");
 
+	if( spi_register_driver(&imago_spi_driver) !=0)
+		printk(KERN_WARNING MODDEBUGOUTTEXT" spi_register_driver failed!\n");
+	
 	printk(KERN_INFO MODDEBUGOUTTEXT" init done (%s [%s])\n", MODDATECODE, MODVERSION);
 	pr_devel(MODDEBUGOUTTEXT" leave init\n");
 	return 0;
@@ -152,6 +164,8 @@ int AGEXDrv_init(void)
 void AGEXDrv_exit(void)
 {
 	pr_devel(MODDEBUGOUTTEXT" enter exit\n");
+
+	spi_unregister_driver(&imago_spi_driver);
 
 	//wir können uns nicht mehr um PCIdevs kümmern:-)
 	pci_unregister_driver(&AGEXDrv_pci_driver);
