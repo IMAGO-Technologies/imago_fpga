@@ -25,8 +25,8 @@
 irqreturn_t imago_spi_interrupt(int irq, void *dev_id)
 {
 #if 1
-//	pr_devel(MODDEBUGOUTTEXT" imago_spi_interrupt> (IRQ:%d)\n", irq);
-	trace_printk("imago_spi_interrupt> (IRQ:%d)\n", irq);
+	pr_devel(MODDEBUGOUTTEXT" imago_spi_interrupt> (IRQ:%d)\n", irq);
+//	trace_printk("imago_spi_interrupt> (IRQ:%d)\n", irq);
 
 	return IRQ_WAKE_THREAD;
 #else

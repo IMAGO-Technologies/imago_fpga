@@ -169,7 +169,7 @@ void AGEXDrv_tasklet(unsigned long data)
 	u32			sun_packet[MAX_SUNPACKETSIZE/4];
 	u32			wordCount;
 
-	pr_devel(MODDEBUGOUTTEXT" AGEXDrv_tasklet> (Minor:%lu)\n", devIndex);
+	pr_devel(MODDEBUGOUTTEXT" AGEXDrv_tasklet\n");
 
 
 	if (pDevData->DeviceSubType == SubType_Invalid) {
@@ -197,7 +197,7 @@ void AGEXDrv_tasklet(unsigned long data)
 				printk(KERN_ERR MODDEBUGOUTTEXT" SUN Error: wordcount is too big: %d\n", wordCount);
 				return;
 			}
-			memcpy(&sun_packet[2], ((u32*)pDevData->pVACommonBuffer) + 2, 4 * (wordCount + 2));
+			memcpy(&sun_packet[2], ((u32*)pDevData->pVACommonBuffer) + 2 + 2, 4 * (wordCount + 2));
 			
 			// SUN Packet verarbeiten
 			InterruptTaskletSun(pDevData, sun_packet);
@@ -240,7 +240,6 @@ void AGEXDrv_tasklet(unsigned long data)
 		int result;
 
 		pr_devel(MODDEBUGOUTTEXT" AGEXDrv_tasklet> SPI transfer start\n");
-		trace_printk("AGEXDrv_tasklet> SPI transfer start\n");
 		
 		spi_message_init(&message);
 		memset(&transfer, 0, sizeof(transfer));
@@ -257,7 +256,6 @@ void AGEXDrv_tasklet(unsigned long data)
 		}
 
 		pr_devel(MODDEBUGOUTTEXT" AGEXDrv_tasklet> SPI transfer done\n");
-		trace_printk("AGEXDrv_tasklet> SPI transfer done\n");
 
 		wordCount = rxbuf[1+4];	// Header1
 		if (wordCount != 1) {
@@ -339,8 +337,7 @@ static void InterruptTaskletSun(DEVICE_DATA *pDevData, u32 *sun_packet)
 			{
 				u32 bytes = 4 * (wordCount+2);	 // Paket mit Header0/1
 
-//				pr_devel(MODDEBUGOUTTEXT" Completing request %d, id %d\n",index,deviceID);
-				trace_printk("Completing request %d, id %d\n",index,deviceID);
+				pr_devel(MODDEBUGOUTTEXT" Completing request %d, id %d\n",index,deviceID);
 
 				//wenns in den Buffer passt, Daten einlesen
 				if (bytes <= MAX_SUNPACKETSIZE)
