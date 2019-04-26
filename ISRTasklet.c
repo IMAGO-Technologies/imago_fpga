@@ -197,7 +197,7 @@ void AGEXDrv_tasklet(unsigned long data)
 				printk(KERN_ERR MODDEBUGOUTTEXT" SUN Error: wordcount is too big: %d\n", wordCount);
 				return;
 			}
-			memcpy(&sun_packet[2], ((u32*)pDevData->pVACommonBuffer) + 2 + 2, 4 * (wordCount + 2));
+			memcpy(&sun_packet[2], ((u32*)pDevData->pVACommonBuffer) + 2 + 2, 4 * wordCount);
 			
 			// SUN Packet verarbeiten
 			InterruptTaskletSun(pDevData, sun_packet);

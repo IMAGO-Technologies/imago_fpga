@@ -142,7 +142,6 @@ long Locked_write(PDEVICE_DATA pDevData, const u8 __user * pToUserMem, const siz
 			dev_err(&spi->dev, "Locked_write> SPI error %d\n", result);
 			return -EFAULT;
 		}
-		printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_write done\n");
 	}
 
 	return BytesToWrite;
