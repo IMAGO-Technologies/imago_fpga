@@ -87,34 +87,28 @@ static const struct of_device_id imago_spi_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, imago_spi_of_match);
 
+static const struct spi_device_id imago_spi_id[] = {
+        {"fpga-spi-daytona", SubType_DAYTONA},
+        {}
+};
+MODULE_DEVICE_TABLE(spi, imago_spi_id);
+
 int imago_spi_probe(struct spi_device *spi)
 {
 	int res,i, DevIndex;
 	u8 tempDevSubType;
-//	struct imago_spi_platform_data *pdata = dev_get_platdata(&spi->dev);
-	const struct of_device_id *of_id = of_match_device(imago_spi_of_match, &spi->dev);
+	const struct of_device_id *of_id;
 
 	pr_devel(MODDEBUGOUTTEXT" imago_spi_probe\n");
 
-/*	if ((spi->bits_per_word && spi->bits_per_word != 8)
-		|| (spi->max_speed_hz > 2000000)
-		|| !(spi->mode & SPI_CPHA))
-		return -EINVAL;*/
+	of_id = of_match_device(imago_spi_of_match, &spi->dev);
+	if (of_id)
+		tempDevSubType = (unsigned long)of_id->data;
+	else
+		tempDevSubType = spi_get_device_id(spi)->driver_data;
 
-/*	if (!pdata)
-	{
-		printk(KERN_WARNING MODDEBUGOUTTEXT" Invalid platform data\n");
-		return -EINVAL;
-	}*/
-
-	if (!of_id) {
-		printk(KERN_WARNING MODDEBUGOUTTEXT" missing device identifier\n");
-		return -EINVAL;
-	}
-
-	tempDevSubType = (unsigned long)of_id->data;
-	if (tempDevSubType == SubType_Invalid/* || tempDevSubType > ARRAY_SIZE(AGEXDrv_device_info)*/) {
-		printk(KERN_WARNING MODDEBUGOUTTEXT" unknown device identifier (%u)\n", tempDevSubType);
+	if (tempDevSubType != SubType_DAYTONA) {
+		printk(KERN_WARNING MODDEBUGOUTTEXT" invalid device identifier (%u)\n", tempDevSubType);
 		return -EINVAL;
 	}
 
@@ -255,6 +249,7 @@ struct spi_driver imago_spi_driver = {
 		.name	= "imago-fpga-spi",
 		.of_match_table = of_match_ptr(imago_spi_of_match),
 	},
+	.id_table	= imago_spi_id,
 	.probe		= imago_spi_probe,
 	.remove		= imago_spi_remove,
 };
