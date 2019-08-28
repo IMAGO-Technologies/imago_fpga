@@ -36,40 +36,34 @@
 /*** includes ***/
 /******************************************************************************************/
 //aus usr/src/linux-headers-2.6.38-8-generic/include
-#include <linux/init.h>		// für module_init(),
-#include <linux/module.h>	// für MODULE_LICENSE
-#include <linux/version.h>	// für die Version
+#include <linux/init.h>		// for module_init(),
+#include <linux/module.h>	// for MODULE_LICENSE
+#include <linux/version.h>	// for die Version
 
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
-	#include <linux/printk.h>	// für printk
+	#include <linux/printk.h>	// for printk
 #endif
 
-#include <linux/types.h>	// für dev_t
-#include <asm/types.h>		// für u8, s8
-#include <linux/sched.h>	// f�r current (pointer to the current process)
+#include <linux/types.h>	// for dev_t
+#include <asm/types.h>		// for u8, s8
+#include <linux/sched.h>	// for current (pointer to the current process)
 #include <linux/fs_struct.h>
-#include <linux/kdev_t.h>	// für MAJOR/MINOR
-#include <linux/cdev.h>		// für cdev_*
-#include <linux/device.h>	// für class_create
-#include <linux/fs.h>		// für alloc_chrdev_region /file_*
-#include <linux/semaphore.h>// für up/down ...
-#include <linux/kfifo.h>	// für kfifo_*
-#include <linux/of_device.h>		// für of*
-#include <linux/pci.h>		// für pci*
-#include <linux/spi/spi.h>		// für spi*
-#include <linux/ioport.h>	// für _regio*
-#include <linux/interrupt.h>// für IRQ*
-#include <linux/dma-mapping.h>	//für dma_*
+#include <linux/kdev_t.h>	// for MAJOR/MINOR
+#include <linux/cdev.h>		// for cdev_*
+#include <linux/device.h>	// for class_create
+#include <linux/fs.h>		// for alloc_chrdev_region /file_*
+#include <linux/semaphore.h>// for up/down ...
+#include <linux/kfifo.h>	// for kfifo_*
+#include <linux/of_device.h>	// for of*
+#include <linux/pci.h>		// for pci*
+#include <linux/spi/spi.h>		// for spi*
+#include <linux/ioport.h>	// for _regio*
+#include <linux/interrupt.h>// for IRQ*
+#include <linux/dma-mapping.h>	// for dma_*
 #include <linux/scatterlist.h>	// sg_* ...
 #include <linux/spinlock.h>	// spin_* ...
-#include <linux/delay.h>	// f�r usleep_range
-#if LINUX_VERSION_CODE == KERNEL_VERSION(2,6,32)
-	#include <linux/uaccess.h>	// für copy_to_user
-#elif LINUX_VERSION_CODE < KERNEL_VERSION(4,12,0)
-	#include <asm/uaccess.h>	// für copy_to_user
-#else
-	#include <linux/uaccess.h>	// für copy_to_user
-#endif
+#include <linux/delay.h>	// for usleep_range
+#include <linux/uaccess.h>	// for copy_to_user
 
 
 
