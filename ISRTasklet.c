@@ -34,19 +34,13 @@ static void InterruptTaskletSun(PDEVICE_DATA pDevData, u32 *sun_packet);
 //Schaltet im PCI-Geraet die Ints ab/zu
 void AGEXDrv_SwitchInterruptOn(PDEVICE_DATA pDevData, const bool boTurnOn)
 {
-	u32 regAdr;
-
-	/* alles gut? */
-	if (pDevData == NULL || pDevData->DeviceSubType == SubType_Invalid)
-		return;
-	if ((IS_TYPEWITH_PCI(pDevData) || IS_TYPEWITH_COMMONBUFFER(pDevData)) && pDevData->pVABAR0 == NULL)
+	if (pDevData == NULL || pDevData->DeviceSubType == SubType_Invalid || pDevData->pVABAR0 == NULL)
 		return;
 
 	//der DPC ist/ muss durch sein
 	//(kann aber erst hier gesetzt werden da sonst race cond mit CommonBuffer Clear, IRQEnable und DPCFlag)
 	if (boTurnOn) {
 
-		/* CommonBuffer Adr setzen (nur gÃ¼ltig solange IRQon) & Init */
 		if (IS_TYPEWITH_COMMONBUFFER(pDevData)) {
 			//nur um ganz sicher zu sein
 			if( (pDevData->pVACommonBuffer == NULL) || (pDevData->pBACommonBuffer == 0) )
@@ -56,39 +50,20 @@ void AGEXDrv_SwitchInterruptOn(PDEVICE_DATA pDevData, const bool boTurnOn)
 			//ACHTUNG! die 3 Word [Header0/Header1/Data[0]] nicht überschreiben da alte VCXM/CL-PCIe FPGAs während ein DMA IRQ behandelt wurde
 			//	schon das SUNPaket in den CommonBuffer geschrieben haben, 
 			//	nach dem setzen des "IRQ-Enable Bits" im FPGA hat dieser dann das FLAG gesetzt und den MSI geschickt
-			memset(pDevData->pVACommonBuffer,0, 2 * sizeof(u32));
+			memset(pDevData->pVACommonBuffer, 0, 2 * sizeof(u32));
 			smp_mb();	//nop bei x86
-
-			//> Adr ins FPGA setzen
-			//(low 32Bit)
-			iowrite32( (pDevData->pBACommonBuffer & 0xFFFFFFFF), pDevData->pVABAR0 + ISR_COMMONBUFFER_ADR_AGEX2);
-
-#ifdef CONFIG_64BIT		
-			//(high 32Bit)
-			if( IS_TYPEWITH_PCI64BIT(pDevData) )
-				iowrite32( (pDevData->pBACommonBuffer >> 32), pDevData->pVABAR0 + ISR_COMMONBUFFER_ADR_AGEX2 +4);
-#endif		
 		}
 
 		pDevData->boIsDPCRunning = FALSE;
 	}
 
 	/* IRQ enable flag */
-
-	//wo kommt das On/Off Bit hin?
-	if( IS_TYPEWITH_COMMONBUFFER(pDevData) )
-		regAdr = ISR_ONOFF_OFFSET_AGEX2;
-	else
-		regAdr = ISR_ONOFF_OFFSET_AGEX;
-
-	if (IS_TYPEWITH_PCI(pDevData) || IS_TYPEWITH_COMMONBUFFER(pDevData))
-		iowrite32(boTurnOn ? 1 : 0, pDevData->pVABAR0 + regAdr);
-//	else if (IS_TYPEWITH_SPI(pDevData)	=> passiert automatisch
+	iowrite32(boTurnOn ? 1 : 0, pDevData->pVABAR0 + (IS_TYPEWITH_COMMONBUFFER(pDevData) ? ISR_ONOFF_OFFSET_AGEX2 : ISR_ONOFF_OFFSET_AGEX));
 }
 
 
 
-//< HWIRQ > nur pruefen ob von uns -> tasklet starten
+//< HWIRQ PCI/PCIe > nur pruefen ob von uns -> tasklet starten
 irqreturn_t AGEXDrv_interrupt(int irq, void *dev_id)
 {
 	u32 regVal;
@@ -333,7 +308,7 @@ static void InterruptTaskletSun(DEVICE_DATA *pDevData, u32 *sun_packet)
 	u8 serialId = (sun_packet[1] >> 27) & 1;
 	struct SUN_DEVICE_DATA *pSunDevice = &pDevData->SunDeviceData[deviceID];
 
-	dev_printk(KERN_DEBUG, pDevData->dev, "InterruptTaskletSun() > packet word count: %d\n", wordCount);
+	dev_dbg(pDevData->dev, "InterruptTaskletSun() > packet word count: %d\n", wordCount);
 
 	if (wordCount != 1)
 		dev_warn(pDevData->dev, "InterruptTaskletSun() > received payload size is incorrect: %u words\n", wordCount);
@@ -345,7 +320,7 @@ static void InterruptTaskletSun(DEVICE_DATA *pDevData, u32 *sun_packet)
 
 		spin_unlock_bh(&pDevData->lock);
 
-		dev_printk(KERN_DEBUG, pDevData->dev, "completing request for DeviceID %u\n", deviceID);
+		dev_dbg(pDevData->dev, "completing request for DeviceID %u\n", deviceID);
 
 		memcpy(pSunDevice->packet, sun_packet, 3*4);
 		up(&pSunDevice->semResult);

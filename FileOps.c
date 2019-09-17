@@ -124,7 +124,7 @@ ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *
 		return -EINVAL;
 	pDevData = (PDEVICE_DATA) filp->private_data;
 
-	dev_printk(KERN_DEBUG, pDevData->dev, "AGEXDrv_read() > %d Bytes\n", (int)count);
+	dev_dbg(pDevData->dev, "AGEXDrv_read() > %d Bytes\n", (int)count);
 
 	//mem ok?
 	if (pDevData->boIsIRQOpen == FALSE)
@@ -155,14 +155,14 @@ ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *
 	if (count < (BytesToWrite+3*4))
 		return -EFBIG;
 
-	dev_printk(KERN_DEBUG, pDevData->dev, "AGEXDrv_read() > DeviceID %d, BytesToWrite %d, TimeOut %u\n", DeviceID, BytesToWrite, TimeOut_ms);
+	dev_dbg(pDevData->dev, "AGEXDrv_read() > DeviceID %d, BytesToWrite %d, TimeOut %u\n", DeviceID, BytesToWrite, TimeOut_ms);
 
 	pSunDevice = &pDevData->SunDeviceData[DeviceID];
 
 	//Note: unterbrechbar(durch gdb), abbrechbar durch kill -9 & kill -15(term) 
 	//  noch ist nix passiert, Kernel darf den Aufruf wiederhohlen ohne den User zu benachrichtigen	
 	if (down_interruptible(&pDevData->DeviceSem) != 0) {
-		dev_printk(KERN_DEBUG, pDevData->dev, "AGEXDrv_read() > down_interruptible('DeviceSem') failed!\n");
+		dev_dbg(pDevData->dev, "AGEXDrv_read() > down_interruptible('DeviceSem') failed!\n");
 		return -ERESTARTSYS;
 	}
 
@@ -190,7 +190,7 @@ ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *
 		return res;
 	}
 
-	dev_printk(KERN_DEBUG, pDevData->dev, "AGEXDrv_read() > wait for response for DeviceID %d\n", DeviceID);
+	dev_dbg(pDevData->dev, "AGEXDrv_read() > wait for response for DeviceID %d\n", DeviceID);
 
 	/* warten auf Antwort */
 	// aufwachen durch Signal, up vom SWI, oder User [Abort], bzw TimeOut
@@ -205,7 +205,7 @@ ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *
 		unsigned long jiffiesTimeOut = msecs_to_jiffies(TimeOut_ms);
 		int waitRes = down_timeout(&pSunDevice->semResult, jiffiesTimeOut);
 		if (waitRes == (-ETIME)) {
-			dev_printk(KERN_DEBUG, pDevData->dev, "AGEXDrv_read() > timeout for DeviceID: %u\n", DeviceID);
+			dev_dbg(pDevData->dev, "AGEXDrv_read() > timeout for DeviceID: %u\n", DeviceID);
 			return -ETIME;
 		} else if (waitRes != 0) {
 			res = -EINTR;
@@ -219,7 +219,7 @@ ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *
 	if (pSunDevice->requestState == SUN_REQ_STATE_ABORT) {
 		pSunDevice->requestState = SUN_REQ_STATE_IDLE;
 		spin_unlock_bh(&pDevData->lock);
-		dev_printk(KERN_DEBUG, pDevData->dev, "AGEXDrv_read() > aborting read for DeviceID: %u\n", DeviceID);
+		dev_dbg(pDevData->dev, "AGEXDrv_read() > aborting read for DeviceID: %u\n", DeviceID);
 		return -EINTR;
 	}
 	else if (pSunDevice->requestState != SUN_REQ_STATE_RESULT) {
@@ -248,7 +248,7 @@ ssize_t AGEXDrv_write(struct file *filp, const char __user *buf, size_t count,lo
 		return -EINVAL;
 	pDevData = (PDEVICE_DATA) filp->private_data;
 
-	dev_printk(KERN_DEBUG, pDevData->dev, "AGEXDrv_write() > %d bytes\n", (int)count);
+	dev_dbg(pDevData->dev, "AGEXDrv_write() > %d bytes\n", (int)count);
 
 	// is mem access OK?
 	if (!access_ok(VERIFY_READ, buf, count))
@@ -258,7 +258,7 @@ ssize_t AGEXDrv_write(struct file *filp, const char __user *buf, size_t count,lo
 	//Note: unterbrechbar(durch gdb), abbrechbar durch kill -9 & kill -15(term) 
 	//  noch ist nix passiert, Kernel darf den Aufruf wiederhohlen ohne den User zu benachrichtigen
 	if (down_interruptible(&pDevData->DeviceSem) != 0) {
-		dev_printk(KERN_DEBUG, pDevData->dev, "AGEXDrv_write() > down_interruptible('DeviceSem') failed!\n");
+		dev_dbg(pDevData->dev, "AGEXDrv_write() > down_interruptible('DeviceSem') failed!\n");
 		return -ERESTARTSYS;
 	}
 //----------------------------->

@@ -212,7 +212,7 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 					}
 
 					pSunDevice->requestState = SUN_REQ_STATE_IDLE;
-					dev_printk(KERN_DEBUG, pDevData->dev, "Locked_ioctl > NewDeviceID = %d\n", index);
+					dev_dbg(pDevData->dev, "Locked_ioctl > NewDeviceID = %d\n", index);
 					return 1;
 				}
 			}
@@ -240,7 +240,7 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 
 			pSunDevice = &pDevData->SunDeviceData[DeviceID];
 
-			dev_printk(KERN_DEBUG, pDevData->dev, "Locked_ioctl > Aborting read for DeviceID %u\n", DeviceID);
+			dev_dbg(pDevData->dev, "Locked_ioctl > Aborting read for DeviceID %u\n", DeviceID);
 
 			spin_lock_bh(&pDevData->lock);
 			if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA) {
@@ -340,7 +340,7 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 			pDMAChannel = &pDevData->DMARead_Channels[iDMAChannel];
 
 			// abort running DMA transfers
-			dev_printk(KERN_DEBUG, pDevData->dev, "Locked_ioctl() > reset DMA channel, jobsDone before: %u\n", kfifo_len(&pDMAChannel->Jobs_Done));
+			dev_dbg(pDevData->dev, "Locked_ioctl() > reset DMA channel, jobsDone before: %u\n", kfifo_len(&pDMAChannel->Jobs_Done));
 			AGEXDrv_DMARead_Abort_DMAChannel(pDevData, iDMAChannel);
 
 			// Wait for completion
@@ -358,7 +358,7 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 					}
 				}
 			}
-			dev_printk(KERN_DEBUG, pDevData->dev, "Locked_ioctl() > reset DMA channel, jobsDone after: %u\n", kfifo_len(&pDMAChannel->Jobs_Done));
+			dev_dbg(pDevData->dev, "Locked_ioctl() > reset DMA channel, jobsDone after: %u\n", kfifo_len(&pDMAChannel->Jobs_Done));
 
 			memset(&tmpJob, 0, sizeof(tmpJob));
 			spin_lock_bh(&pDevData->DMARead_SpinLock);
