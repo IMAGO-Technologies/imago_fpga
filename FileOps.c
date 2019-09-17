@@ -32,14 +32,14 @@
 int AGEXDrv_open(struct inode *node, struct file *filp)
 {
 	int iMinor;
-	if( (node==NULL) || (filp==NULL) )
+	if (node == NULL || filp == NULL)
 		return -EINVAL; 
 	iMinor = iminor(node);
 
 	pr_devel(MODDEBUGOUTTEXT" open (Minor:%d)\n", iMinor);
 
 	//setzt ins "file" den Context
-	if(iMinor >= MAX_DEVICE_COUNT)
+	if (iMinor >= MAX_DEVICE_COUNT)
 		return -EINVAL;
 	filp->private_data = &_ModuleData.Devs[iMinor];
 
@@ -56,14 +56,15 @@ long AGEXDrv_unlocked_ioctl (struct file *filp, unsigned int cmd, unsigned long 
 	PDEVICE_DATA pDevData = NULL;
 
 	//Note: beim 1. write bekommen wir ein CMD:1, Type 'T', Size: 0 <-> FIONBIO (linux/include/asm-i386/ioctls.h, line 41)
-	pr_devel(MODDEBUGOUTTEXT" ioctl (CMD %d, MAGIC %c, size %d)\n",_IOC_NR(cmd), _IOC_TYPE(cmd), _IOC_SIZE(cmd));
+	pr_devel(MODDEBUGOUTTEXT" ioctl (CMD %d, MAGIC %c, size %d)\n", _IOC_NR(cmd), _IOC_TYPE(cmd), _IOC_SIZE(cmd));
 
 	/* Alles gut */
-	if( (filp==NULL) || (filp->private_data==NULL) ) return -EINVAL;
+	if (filp == NULL || filp->private_data == NULL)
+		return -EINVAL;
 	pDevData = (PDEVICE_DATA) filp->private_data;
 	//ist ist das CMD eins f�r uns?
-	if (_IOC_TYPE(cmd) != AGEXDRV_IOC_MAGIC) return -ENOTTY;
-	if (_IOC_NR(cmd) > AGEXDRV_IOC_MAXNR) return -ENOTTY;
+	if (_IOC_TYPE(cmd) != AGEXDRV_IOC_MAGIC)
+		return -ENOTTY;
 
 	//bei uns ist arg ein Pointer, und testen ob wir ihn nutzen dürfen (richtung aus UserSicht)
 	if (_IOC_DIR(cmd) & _IOC_READ)
@@ -77,8 +78,10 @@ long AGEXDrv_unlocked_ioctl (struct file *filp, unsigned int cmd, unsigned long 
 	/* jetzt die CMDs auswerten */
 	//Note: unterbrechbar(durch gdb), abbrechbar durch kill -9 & kill -15(term) 
 	//  noch ist nix passiert, Kernel darf den Aufruf wiederhohlen ohne den User zu benachrichtigen
-	if( down_interruptible(&pDevData->DeviceSem) != 0)
-		{pr_devel(MODDEBUGOUTTEXT" AGEXDrv_unlocked_ioctl(), down_interruptible() failed!\n"); return -ERESTARTSYS;}
+	if (down_interruptible(&pDevData->DeviceSem) != 0) {
+		pr_devel(MODDEBUGOUTTEXT" AGEXDrv_unlocked_ioctl(), down_interruptible() failed!\n");
+		return -ERESTARTSYS;
+	}
 //----------------------------->
 	//hier wird das CMD ausgef�hrt
 	ret = Locked_ioctl(pDevData, cmd, (u8 __user *) arg, _IOC_SIZE(cmd) );
@@ -89,12 +92,12 @@ long AGEXDrv_unlocked_ioctl (struct file *filp, unsigned int cmd, unsigned long 
 	return ret;
 }
 
-ssize_t AGEXDrv_read (struct file *filp, char __user *buf, size_t count, loff_t *pos)
+ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *pos)
 {
 	u32 TimeOut_ms, BytesToWrite, DeviceID;
 	long res;	
-	s8 Index = -1;
 	PDEVICE_DATA pDevData = NULL;
+	struct SUN_DEVICE_DATA *pSunDevice;
 
 	/*Wie es geht:
 	 * 1. (locked)
@@ -116,20 +119,21 @@ ssize_t AGEXDrv_read (struct file *filp, char __user *buf, size_t count, loff_t 
 	 *	- beide flags löschen
 	 */
 
-	pr_devel(MODDEBUGOUTTEXT" read (%d Bytes)\n", (int)count);
-
 	/* Alles gut? */
-	if( (filp==NULL) || (filp->private_data==NULL) )
+	if (filp == NULL || filp->private_data == NULL)
 		return -EINVAL;
 	pDevData = (PDEVICE_DATA) filp->private_data;
+
+	dev_printk(KERN_DEBUG, pDevData->dev, "AGEXDrv_read() > %d Bytes\n", (int)count);
+
 	//mem ok?
-	if(pDevData->boIsIRQOpen == FALSE)
+	if (pDevData->boIsIRQOpen == FALSE)
 		return -EFAULT;
-	if(count < (2*4))		//min 2 DWords, 2. is the size
+	if (count < (2*4))		//min 2 DWords, 2. is the size
 		return -EFAULT;
 
-	//dürfen wir den mem nutzen?
-	if( !access_ok(VERIFY_WRITE, buf, count) )
+	//duerfen wir den mem nutzen?
+	if (!access_ok(VERIFY_WRITE, buf, count))
 		return -EFAULT;
 
 
@@ -148,91 +152,90 @@ ssize_t AGEXDrv_read (struct file *filp, char __user *buf, size_t count, loff_t 
 		return -EFAULT;
 	if( get_user(TimeOut_ms, (u32*)(buf+2*4) ) != 0)
 		return -EFAULT;	
-	if( (BytesToWrite+3*4) > count)
+	if (count < (BytesToWrite+3*4))
 		return -EFBIG;
 
-	pr_devel(MODDEBUGOUTTEXT" read, devID %d, BytesToWrite %d, TimeOut %u\n",DeviceID,BytesToWrite,TimeOut_ms);
+	dev_printk(KERN_DEBUG, pDevData->dev, "AGEXDrv_read() > DeviceID %d, BytesToWrite %d, TimeOut %u\n", DeviceID, BytesToWrite, TimeOut_ms);
+
+	pSunDevice = &pDevData->SunDeviceData[DeviceID];
 
 	//Note: unterbrechbar(durch gdb), abbrechbar durch kill -9 & kill -15(term) 
 	//  noch ist nix passiert, Kernel darf den Aufruf wiederhohlen ohne den User zu benachrichtigen	
 	if (down_interruptible(&pDevData->DeviceSem) != 0) {
-		pr_devel(MODDEBUGOUTTEXT" AGEXDrv_read():down_interruptible('DeviceSem') failed!\n");
+		dev_printk(KERN_DEBUG, pDevData->dev, "AGEXDrv_read() > down_interruptible('DeviceSem') failed!\n");
 		return -ERESTARTSYS;
 	}
-//----------------------------->
-	//freien eintrag suchen
-	res = Locked_startlongtermread(pDevData, DeviceID);
-	if (res < 0) {
-		up(&pDevData->DeviceSem);
-		printk(KERN_WARNING MODDEBUGOUTTEXT" read, Locked_startlongtermread() failed (%ld)!\n", res);
-		goto EXIT_READ;
+
+	if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA)	// should never happen
+		dev_warn(pDevData->dev, "AGEXDrv_read() > pending FPGA request for DeviceID %u, toggling serial ID -> %u\n", DeviceID, pSunDevice->serialID);
+	spin_lock_bh(&pDevData->lock);
+	if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA) {
+		// Pending request is still in FPGA (after timeout or reuse of device after killed process) => toggle serial ID
+		pSunDevice->serialID = !pSunDevice->serialID;
+		// requestState is already SUN_REQ_STATE_INFPGA
 	}
-	Index = (s8)res;
+	else {
+		pSunDevice->requestState = SUN_REQ_STATE_INFPGA;
+	}
+	spin_unlock_bh(&pDevData->lock);
 
-	/* Paket ins FPGA schreiben */
-	res =  Locked_write(pDevData, buf+3*4, BytesToWrite);
+	// check semaphore
+	while (down_trylock(&pSunDevice->semResult) == 0) // should never happen
+		dev_warn(pDevData->dev, "AGEXDrv_read() > clearing unfinished semaphore result for DeviceID %u\n", DeviceID);
+
+	res = Locked_write(pDevData, buf+3*4, BytesToWrite);
 	up(&pDevData->DeviceSem);
-
 	if (res < 0) {
 		printk(KERN_WARNING MODDEBUGOUTTEXT" read, Locked_write() failed (%ld)!\n", res);
-		goto EXIT_READ;
+		return res;
 	}
-	pr_devel(MODDEBUGOUTTEXT" read, wait for request %d\n", Index);
 
+	dev_printk(KERN_DEBUG, pDevData->dev, "AGEXDrv_read() > wait for response for DeviceID %d\n", DeviceID);
 
 	/* warten auf Antwort */
 	// aufwachen durch Signal, up vom SWI, oder User [Abort], bzw TimeOut
 	if (TimeOut_ms == 0xFFFFFFFF) {
 		//Note: nicht unterbrechbar(durch gdb), abbrechbar nur durch kill -9, nicht kill -15(term) 
-		if( down_killable(&pDevData->LongTermRequestList[Index].WaitSem) != 0) {
-			res = -EINTR;
-			printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_read():down_killable('LongTermRequest') failed!\n");
-			goto EXIT_READ;
+		if (down_killable(&pSunDevice->semResult) != 0) {
+			printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_read() > down_killable() failed!\n");
+			return -EINTR;
 		}
 	} else {
 		//Note: nicht unter(durch GDB) bzw. abbrechbar down_timeout() > __down_timeout() > __down_common(sem, TASK_UNINTERRUPTIBLE, timeout);
 		unsigned long jiffiesTimeOut = msecs_to_jiffies(TimeOut_ms);
-		int waitRes = down_timeout(&pDevData->LongTermRequestList[Index].WaitSem,jiffiesTimeOut);
+		int waitRes = down_timeout(&pSunDevice->semResult, jiffiesTimeOut);
 		if (waitRes == (-ETIME)) {
-			res = -ETIME;
-			pr_devel(MODDEBUGOUTTEXT" AGEXDrv_read> down_timeout(), timeout!\n");
-			goto EXIT_READ;
+			dev_printk(KERN_DEBUG, pDevData->dev, "AGEXDrv_read() > timeout for DeviceID: %u\n", DeviceID);
+			return -ETIME;
 		} else if (waitRes != 0) {
 			res = -EINTR;
-			printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_read> down_timeout(), failed!\n");
-			goto EXIT_READ;
+			dev_warn(pDevData->dev, "AGEXDrv_read() > down() failed for DeviceID: %u\n", DeviceID);
+			return -EINTR;
 		}
 	}
 
 	//abort durch user?
-	if (pDevData->LongTermRequestList[Index].boAbortWaiting) {
-		res = -EINTR;
-		goto EXIT_READ;
+	spin_lock_bh(&pDevData->lock);
+	if (pSunDevice->requestState == SUN_REQ_STATE_ABORT) {
+		pSunDevice->requestState = SUN_REQ_STATE_IDLE;
+		spin_unlock_bh(&pDevData->lock);
+		dev_printk(KERN_DEBUG, pDevData->dev, "AGEXDrv_read() > aborting read for DeviceID: %u\n", DeviceID);
+		return -EINTR;
 	}
-	
-	/* daten copy */
-	//zu viel für den user buf bzw. gültig?
-	if ( 	(pDevData->LongTermRequestList[Index].IRQBuffer_anzBytes > count)
-		||	(pDevData->LongTermRequestList[Index].IRQBuffer_anzBytes > MAX_SUNPACKETSIZE)
-		||	(pDevData->LongTermRequestList[Index].IRQBuffer_anzBytes == 0) ) {
-		res = -EFBIG;
-		goto EXIT_READ;
+	else if (pSunDevice->requestState != SUN_REQ_STATE_RESULT) {
+		spin_unlock_bh(&pDevData->lock);
+		dev_warn(pDevData->dev, "AGEXDrv_read() > unexpected request state (%u)\n", pSunDevice->requestState);
+		return -EFAULT;
 	}
-	//copy
-	if( copy_to_user(buf, pDevData->LongTermRequestList[Index].IRQBuffer, pDevData->LongTermRequestList[Index].IRQBuffer_anzBytes ) != 0 ){
-		res = -EFAULT;
-		goto EXIT_READ;
+
+	if (copy_to_user(buf, pSunDevice->packet, 3*4) != 0 ) {
+		return -EFAULT;
 	}
-	else
-		res = pDevData->LongTermRequestList[Index].IRQBuffer_anzBytes;
 
+	pSunDevice->requestState = SUN_REQ_STATE_IDLE;
+	spin_unlock_bh(&pDevData->lock);
 
-
-	//gibt den eintrag frei
-EXIT_READ:
-	pDevData->LongTermRequestList[Index].boIsInProcessUse = FALSE;
-	pr_devel(MODDEBUGOUTTEXT" read, result %ld\n", res);
-	return res;
+	return 3*4;
 }
 
 ssize_t AGEXDrv_write(struct file *filp, const char __user *buf, size_t count,loff_t *pos)
@@ -240,23 +243,22 @@ ssize_t AGEXDrv_write(struct file *filp, const char __user *buf, size_t count,lo
 	long res;
 	PDEVICE_DATA pDevData = NULL;
 
-	pr_devel(MODDEBUGOUTTEXT" write (%d Bytes)\n", (int)count);
-
 	/* Alles gut? */
 	if (filp == NULL || filp->private_data == NULL)
 		return -EINVAL;
 	pDevData = (PDEVICE_DATA) filp->private_data;
-	//mem ok?
 
-	//dürfen wir den mem nutzen?
+	dev_printk(KERN_DEBUG, pDevData->dev, "AGEXDrv_write() > %d bytes\n", (int)count);
+
+	// is mem access OK?
 	if (!access_ok(VERIFY_READ, buf, count))
 		return -EFAULT;
 
-	/* jetzt kommt das schreiben */
+	// write data
 	//Note: unterbrechbar(durch gdb), abbrechbar durch kill -9 & kill -15(term) 
 	//  noch ist nix passiert, Kernel darf den Aufruf wiederhohlen ohne den User zu benachrichtigen
 	if (down_interruptible(&pDevData->DeviceSem) != 0) {
-		pr_devel(MODDEBUGOUTTEXT" AGEXDrv_write():down_interruptible('DeviceSem') failed!\n");
+		dev_printk(KERN_DEBUG, pDevData->dev, "AGEXDrv_write() > down_interruptible('DeviceSem') failed!\n");
 		return -ERESTARTSYS;
 	}
 //----------------------------->

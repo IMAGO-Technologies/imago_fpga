@@ -1,7 +1,7 @@
 /*
  * AGEXDrv.h
  *
- * Copyright (C) 201x IMAGO Technologies GmbH
+ * Copyright (C) IMAGO Technologies GmbH
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -22,10 +22,10 @@
 
 //> defines about the Module
 /******************************************************************************************/
-#define MODVERSION "1.1.9.3"
+#define MODVERSION "1.1.10.0"
 #define MODDATECODE __DATE__ " - " __TIME__
 #define MODLICENSE "GPL";
-#define MODDESCRIPTION "Kernel module for the VisionBox AGE-X PCI(e) devices";
+#define MODDESCRIPTION "IMAGO FPGA / RTCC device driver";
 #define MODAUTHOR "IMAGO Technologies GmbH";
 
 #define MODCLASSNAME	"agexdrv"
@@ -35,7 +35,6 @@
 
 /*** includes ***/
 /******************************************************************************************/
-//aus usr/src/linux-headers-2.6.38-8-generic/include
 #include <linux/init.h>		// for module_init(),
 #include <linux/module.h>	// for MODULE_LICENSE
 #include <linux/version.h>	// for die Version
@@ -77,7 +76,7 @@ typedef u8 IOCTLBUFFER[128];
 #define MAX(x,y) (x > y ? x : y)
 
 
-// Hardware-Typ Definitionen aus PCIDrv_Linux
+// Hardware type definitions
 enum AGEX_DEVICE_SUBTYPE
 {
 	SubType_Invalid 	= 0,
@@ -93,6 +92,7 @@ enum AGEX_DEVICE_SUBTYPE
 	SubType_DAYTONA		= 10
 };
 
+// Device info flags used by struct sAGEXDrv_device_info
 #define AGEXDRV_FLAG_COMMONBUFFER	0x01
 #define AGEXDRV_FLAG_PCI			0x02
 #define AGEXDRV_FLAG_PCI64BIT		0x04
@@ -100,91 +100,79 @@ enum AGEX_DEVICE_SUBTYPE
 #define AGEXDRV_FLAG_SPI			0x10
 
 
-//> Ioctl definitions siehe. "ioctl-number.txt"
+//> Ioctl definitions, see "ioctl-number.txt"
 /******************************************************************************************/
-//magic number
+// magic number
 #define AGEXDRV_IOC_MAGIC  '['
 
-//richtung ist aus UserSicht, size ist ehr der Type 
-//(Achtung! alteDefs nicht ändern wegen alte libs)
+// direction is from user's view
 #define AGEXDRV_IOC_GET_VERSION 			_IOR(AGEXDRV_IOC_MAGIC, 0, IOCTLBUFFER)
 #define AGEXDRV_IOC_GET_BUILD_DATE 			_IOR(AGEXDRV_IOC_MAGIC, 1, IOCTLBUFFER)
 #define AGEXDRV_IOC_RELEASE_DEVICEID 		_IOWR(AGEXDRV_IOC_MAGIC, 2, u8)
 #define AGEXDRV_IOC_CREATE_DEVICEID 		_IOR(AGEXDRV_IOC_MAGIC, 3, u8)
 #define AGEXDRV_IOC_GET_SUBTYPE 			_IOR(AGEXDRV_IOC_MAGIC, 4, u8)
 #define AGEXDRV_IOC_ABORT_LONGTERM_READ 	_IOWR(AGEXDRV_IOC_MAGIC, 5, u8)
-
 #define AGEXDRV_IOC_DMAREAD_CONFIG			_IOW(AGEXDRV_IOC_MAGIC, 6, IOCTLBUFFER)
 #define AGEXDRV_IOC_DMAREAD_ADD_BUFFER		_IOW(AGEXDRV_IOC_MAGIC, 7, IOCTLBUFFER)
 #define AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER	_IOWR(AGEXDRV_IOC_MAGIC, 8, IOCTLBUFFER)
 #define AGEXDRV_IOC_DMAREAD_ABORT_DMA		_IOW(AGEXDRV_IOC_MAGIC, 9, u8)
 #define AGEXDRV_IOC_DMAREAD_ABORT_WAITER	_IOW(AGEXDRV_IOC_MAGIC, 10, u8)
-
-//max num (nur zum Testen)
-#define AGEXDRV_IOC_MAXNR 10
+#define AGEXDRV_IOC_DMAREAD_RESETCHANNEL	_IOW(AGEXDRV_IOC_MAGIC, 11, u8)
 
 
-//> Infos Ã¼ber die Device bzw. LongTermRequest
 /******************************************************************************************/
-//Wie viele devices kÃ¶nnen wir zugleich bedienen
+
+// maximum number of supported devices (FPGAs)
 #define MAX_DEVICE_COUNT 4
 
-//Gibt wie viele LongTerm Requests offen sein dÃ¼rfen/kÃ¶nnen
-#define MAX_LONG_TERM_IO_REQUEST 8
+// number of SUN device IDs for each FPGA
+#define MAX_IRQDEVICECOUNT 64
+#define MAX_SUNPACKETSIZE  (4*3) // SUN packet size, 2x 32 bit header + 32 bit payload
 
-// SUN "GerÃ¤te"
-#define MAX_IRQDEVICECOUNT 128	// 2^n, max. 128
-#define MAX_SUNPACKETSIZE  (4*3)// grÃ¶ÃŸe in Bytes mit Header
-
-//1 schaltet den Interrupt an
+// register offset for interrupt enable
 #define ISR_ONOFF_OFFSET_AGEX (1<<20)
 #define ISR_ONOFF_OFFSET_AGEX2 (0x10010)
-//wo kommt die PCI-Adr des common buffers hin
+// register offset for setting the address of interrupt data
 #define ISR_COMMONBUFFER_ADR_AGEX2 (0x10000)
-//1 sagt das, dass device einen Interrupt angelegt hat
+// register offset for reading interrupt flag and FIFO level
 #define ISR_AVAILABLE_OFFSET (1<<20)
 
-//wie viele DMAs kann es geben(sagt nichts darüber aus ob die HW so viele kann)
-//[DMA*TC<=28 Bits sonst reicht das FlagReg' im CommonBuffer nicht mehr]
-//[auch muss der CommonBuffer groß genug für die BufferZähler]
-//[beides sind im drv UINT8]
+// maximum number of supported DMA channels
 #define MAX_DMA_READ_DMACHANNELS 	4	
-//wie viele DMATransaction pro DMAChannel
+// maximum number of transactions for each DMA channel
 #define MAX_DMA_READ_CHANNELTCS		6
-//wie viele SGs für ein Transfer einer TC einer DMA (größe hängt am Kernel, ab SG_MAX_SINGLE_ALLOC dann chained)
+// maximum number of scatter gather elements per transaction
 #define MAX_DMA_READ_TCSGS			2048
 #if (MAX_DMA_READ_CHANNELTCS*MAX_DMA_READ_DMACHANNELS) > 28
- #error MAX Bits 28 for DMARead!
+ #error Too many DMA transfer channels (> 28)
 #endif
 
-#define DMA_READ_TC_SG_OFFSET 		0x40000
-#define DMA_READ_TC_TC2TC_SETPBYTES (16/*4 flags + 4 size(DWORDs) + 8 ptr(4k align) */) /*muss nDWORDs sein*/
-#define DMA_READ_TC_SG_MAX_BYTECOUNT ( (1<<22)-1 ) /* können max 20Bit DWord (1MByte) */
+#define DMA_READ_TC_SG_OFFSET 		0x40000			// FPGA address offset for SG elements
+#define DMA_READ_TC_TC2TC_SETPBYTES 16				// size of SG entry: 4 flags + 4 size + 8 ptr
+#define DMA_READ_TC_SG_MAX_BYTECOUNT ( (1<<22)-1 )	// transfer limit in bytes for SG element: FPGA limit is 20 bit word count (32-bit words)
 
-//die SGFlags
-#define DMA_READ_TC_SG_FLAG_START_TRANSACTION 	(0x09) /* Loest FIFO-Reset aus + Bildstart */
-#define DMA_READ_TC_SG_FLAG_START_TRANSFER 		(0x00) /* FPGA wertet einfach FIFO-empty Flag aus */
-#define DMA_READ_TC_SG_FLAG_END_TRANSACTION		(0x02) /* DescrData.Link */
-#define DMA_READ_TC_SG_FLAG_END_TRANSFER 		(0x04) /* DescrData.EnableIRQ */
-#define DMA_READ_TC_SG_FLAG_ERROR 				(0x10 | DMA_READ_TC_SG_FLAG_END_TRANSACTION | DMA_READ_TC_SG_FLAG_END_TRANSFER)
+// flags for SG elements
+#define DMA_READ_TC_SG_FLAG_START_TRANSACTION 	(0x09) // transaction start: SG descriptor FIFO reset + DMA start flag
+#define DMA_READ_TC_SG_FLAG_START_TRANSFER 		(0x00) // intermediate transfer: no additional flags required
+#define DMA_READ_TC_SG_FLAG_END_TRANSACTION		(0x06) // end of transaction: discriptor link + interrupt flag
+#define DMA_READ_TC_SG_FLAG_END_TRANSFER 		(0x04) // end of intermediate transfer: discriptor link + interrupt flag 
+#define DMA_READ_TC_SG_FLAG_ERROR 				(0x10 | DMA_READ_TC_SG_FLAG_END_TRANSACTION)
 
 
-
-//Anzahl der Elemente im .Jobs_ToTo, .Jobs_Done FIFO
+// maximum number of queued jobs for each DMA channel handled by the driver
 #define MAX_DMA_READ_JOBFIFO_SIZE	32
 
 
 //2xDWORD, 		IRQFlags
-//2xDWORD, 		IRQPaket, Header0/Header1
-//128xDWORD, 	IRQPaket, Daten	
-//DMAs*TCsx8,	DMABuffer Zähler (UINT16)
+//2xDWORD, 		IRQPacket, Header0/Header1
+//128xDWORD, 	IRQPacket, data
+//DMAs*TCsx8,	DMABuffer counters (UINT16)
 #define HOST_BUFFER_SIZE ((4*(2+2+128))+(MAX_DMA_READ_DMACHANNELS*MAX_DMA_READ_CHANNELTCS*8)) 
 #define HOST_BUFFER_DMAREAD_COUNTER_OFFSET (4*(2+2+128))
 
 
-//für DMA_READ_* brauchen wir eine PageSize von 4k 
-#if PAGE_SIZE!=4096
- #error PageSize must be 4096!
+#if PAGE_SIZE != 4096
+ #error Page size must be 4096 bytes
 #endif
 
 
@@ -196,105 +184,85 @@ struct sAGEXDrv_device_info {
 	u8 flags;
 };
 
-/*NOTE:
- * es gibt 3 Arten der Nutzung einer DeviceID
- *
- * -> sie ist im FPGA unterwegs
- * -> ein Process wartet auf eine DeviceID
- * -> die DLL hat eine ID belegt
-*/
+// state definitions for SUN device read requests
+enum SUN_REQ_STATE {
+	SUN_REQ_STATE_FREE		= 0,	// DeviceID is not used by user space
+	SUN_REQ_STATE_IDLE		= 1,	// DeviceID is used, but no request is active
+	SUN_REQ_STATE_INFPGA	= 2,	// Request is in the FPGA or not handled by ISR yet
+	SUN_REQ_STATE_RESULT	= 3,	// Request is handled by ISR waiting to be processed by process
+	SUN_REQ_STATE_ABORT		= 4		// Request abort signaled to process
+};
 
-//Fast alles zusammen was es Ã¼ber solch ein Request zu wissen gibt
-typedef struct _LONG_TERM_IO_REQUEST
-{
-	//> eintrag ist erst frei wenn beide(boIsInFPGA, boIsInProcessUse) flags false sind
-	//true gibt an das der Eintrag im FPGA ist, wird nur vom tasklet gelÃ¶scht
-	bool boIsInFPGA;
-
-	//true gibt an das ein process den eintrag noch nutzt, wird nur vom process gelÃ¶cht
-	bool boIsInProcessUse ;
-
-	//der Request selbst bzw der prozess
-	struct semaphore WaitSem;
-	
-	//die semaphore wurde signalisiert, aber nicht im ISR sondern durch den User(IOCTL) ==> Abbruch
-	//wird nur in Locked_startlongtermread() gelÃ¶scht
-	bool boAbortWaiting;
-
-	//ID um die Antwort wieder zu zuordnen
-	u8	DeviceID;
-
-	//im DPC/Tasklet wird das Paket aufgehoben(dort kann nicht in den USER Mem geschrieben werden)
-	u32	IRQBuffer[MAX_SUNPACKETSIZE/4];
-	u8	IRQBuffer_anzBytes;
-}  LONGTERM_IOREQUEST, *PLONGTERM_IOREQUEST;
+// SUN device read request structure
+struct SUN_DEVICE_DATA {
+	enum SUN_REQ_STATE requestState;
+	u8 serialID;
+	struct semaphore semResult;
+	u32	packet[MAX_SUNPACKETSIZE/4];
+};
 
 
-
-//Fast alles zusammen für ein UserBuffer für eine DMA (Read)
+// DMA job structure
 typedef struct _DMA_READ_JOB
 {
-	//UserBuffer
- 	uintptr_t 	pVMUser;			//NULL ptr, dann ein DummyJob vom Abort
-	size_t 		anzBytesToTransfer;
+ 	uintptr_t 	pVMUser;			// user buffer
+	size_t 		bufferSize;
 
-	//Status (nur gültig/gesetzt) wenn in .Jobs_Done)
-	bool		boIsOk;				//ohne Fehler übertragen
-	u16 		BufferCounter; 		//laufender Zähler, FPGA zählt
+	// job status, valid only if in Jobs_Done FIFO
+	bool		boIsOk;				// no errors
+	u16 		BufferCounter; 		// buffer counter comming from FPGA
 
-	//Pinned UserBuffer
-	bool			boIsPageListValid;	//1<>PageListe wurde angelegt 
-	bool 			boIsPinned;			//1<>UserMem ist gepinned
+	// pinned user buffer
+	bool			boIsPageListValid;	// page list 'ppPageList' is allocated
+	bool 			boIsPinned;			// get_user_pages() was called
 	struct page **	ppPageList;
-	u32				anzPagesPinned;
+	u32				pagesPinned;
 
-	//SGListe
-	bool 			boIsSGValid;	//1<>sgTable wurde angelegt 
-	bool 			boIsSGMapped;	//1<>wurde gemapped
+	// SG table
+	bool 			boIsSGValid;	// SG table 'SGTable' is valid
+	bool 			boIsSGMapped;	// SG table is mapped for DMA
 	struct sg_table SGTable;	
-	u32				anzSGItemsLeft;	//wie viele SGs müssen noch übertragen werden, bzw. dem FPGA über geben
-	struct scatterlist *pSGNext;	//Nächste Element was gesendet werden kann, kann aber auch sg_is_last()==true sein oder NULL für last+1, es müssen aber nicht alle Element einer SGListe benutzt sein.
+	u32				SGItemsLeft;	// number of remaining SG elements for DMA to complete
+	struct scatterlist *pSGNext;	// SG elements to transfer
 }  DMA_READ_JOB, *PDMA_READ_JOB;
 
-//Fast alles zusammen für ein DMA (Read) TC 
+// transfer channel structure
 typedef struct _DMA_READ_TC
 {
-	bool 			boIsUsed;		//1<>Rest ist der struct gültig bzw. die boIsxxx
-
-	//der Job(UserBuffer)
-	DMA_READ_JOB	Job;
+	bool 			boIsUsed;		// transfer channel is in use
+	DMA_READ_JOB	Job;			// current job data (comming from Jobs_ToDo FIFO, going to Jobs_Done FIFO)
 }  DMA_READ_TC, *PDMA_READ_TC;
 
-//Fast alles zusammen für einen DMA (Read) Channel
+// DMA channel structure
 typedef struct _DMA_READ_CHANNEL
 {
-	DECLARE_KFIFO(Jobs_ToDo, DMA_READ_JOB, MAX_DMA_READ_JOBFIFO_SIZE);	//sind nicht einer DMA/TC zugewiesen (auch nicht gewesen)
-	DECLARE_KFIFO(Jobs_Done, DMA_READ_JOB, MAX_DMA_READ_JOBFIFO_SIZE);	//sind nicht mehr einer DMA/TC zugewiesen (kann aber auch abgebrochen worden sein)
+	DECLARE_KFIFO(Jobs_ToDo, DMA_READ_JOB, MAX_DMA_READ_JOBFIFO_SIZE);	// pending transfer jobs
+	DECLARE_KFIFO(Jobs_Done, DMA_READ_JOB, MAX_DMA_READ_JOBFIFO_SIZE);	// transfer jobs done or aborted
 
-	struct semaphore WaitSem;									// der WaitRequest, es ist im Jobs_Done was drin, im AbortFall ist es ein DummyJob
+	struct semaphore WaitSem;									// counting semapore, increments for each job in Jobs_Done
 
-	DMA_READ_TC		TCs[MAX_DMA_READ_CHANNELTCS];				//liste der möglichen TCs
+	DMA_READ_TC		TCs[MAX_DMA_READ_CHANNELTCS];				// transfer channel data
 }  DMA_READ_CHANNEL, *PDMA_READ_CHANNEL;
 
 
 
-//Fast alle Infos zu seinen PCI(e) Device zusammen
+// device data structure
 typedef struct _DEVICE_DATA
 {		
 	//> Device	
 	//***************************************************************/
 	bool			boIsDeviceOpen;	//true <> Device ist valid
 	struct cdev		DeviceCDev;		//das KernelObj vom Module	
-	struct device*	pDeviceDevice;	//pcidev->dev
+	struct device*	dev;	//pcidev->dev
 	u8 				DeviceSubType;	//was sind wir AGEX, AGEX2... <> AGEX_DEVICE_SUBTYPE	
 	struct semaphore DeviceSem;		//lock fÃ¼r ein Device (diese struct & common buffer)
 	dev_t			DeviceNumber;	//Nummer von CHAR device
 	u8				flags;
 
-	//> IDs/MetaInfos fÃ¼r ein read	
+	//> IDs/MetaInfos fuer ein read	
 	//***************************************************************/
-	bool				boIsDeviceIDUsed[MAX_IRQDEVICECOUNT];	//Feld mit den DeviceIDs, UserMode fragt an, welche frei sind
-	LONGTERM_IOREQUEST  LongTermRequestList[MAX_LONG_TERM_IO_REQUEST];
+	spinlock_t				lock;
+	struct SUN_DEVICE_DATA	SunDeviceData[MAX_IRQDEVICECOUNT];
 
 	//> BAR0
 	//***************************************************************/
@@ -305,7 +273,7 @@ typedef struct _DEVICE_DATA
 	//> ~IRQ
 	//***************************************************************/
 	bool					boIsIRQOpen;	//true<>IRQ ist open
-	bool 					boIsDPCRunning;	//damit nur ein DPC zur Zeit läuft&gequeued 
+	bool 					boIsDPCRunning;	//damit nur ein DPC zur Zeit lï¿½uft&gequeued 
 	struct tasklet_struct	IRQTasklet;		//~SWI worker
 	
 	//> CommonBuffer (AGEX2/4...)
@@ -315,94 +283,96 @@ typedef struct _DEVICE_DATA
 
 	//> DMA (AGEX2 CL, VCXM)
 	//***************************************************************/
-	u8						DMARead_anzChannels;//wie viele Channel gibt es?
-	u8						DMARead_anzTCs;		//wie viele TCs pro Channel?
-	u16  					DMARead_anzSGs;		//wie viele Scatter/Gather Pairs pro TC 
-	spinlock_t				DMARead_SpinLock;	//Lock für DMAStructs/und DMAUnit im FPGA
-	DMA_READ_CHANNEL		DMARead_Channels[MAX_DMA_READ_DMACHANNELS];	//Params für alle möglichen DMAChannels	
+	u8						DMARead_channels;	// actual number of DMA channels
+	u8						DMARead_TCs;		// actual number of transfer channels
+	u16  					DMARead_SGs;		// actual number of scatter gather elements
+	spinlock_t				DMARead_SpinLock;	// DMA spinlock
+	DMA_READ_CHANNEL		DMARead_Channels[MAX_DMA_READ_DMACHANNELS];	// DMA channel data
 } DEVICE_DATA, *PDEVICE_DATA;
 
-//Fast alles zusammen was zu diesem Module gehÃ¶rt, (Note: n PCIdevs fÃ¼r das Module, Module wird nur 1x geladen)
+// module data structure
 typedef struct _MODULE_DATA
 {
-	DEVICE_DATA		Devs[MAX_DEVICE_COUNT];			//Infos/Context fÃ¼r je device, Index ist der Minor
-	bool			boIsMinorUsed[MAX_DEVICE_COUNT];//daher ist Devs[Minor] benutzt/frei?
+	DEVICE_DATA		Devs[MAX_DEVICE_COUNT];				// device data, index is minor number
+	bool			boIsMinorUsed[MAX_DEVICE_COUNT];	// used flag
 
-	dev_t 			FirstDeviceNumber;	//MAJOR(devNumber),MINOR(devNumber) (eg 240 , 0)
+	dev_t 			FirstDeviceNumber;	// MAJOR(devNumber),MINOR(devNumber) (eg 240 , 0)
 	struct class	*pModuleClass;		// /sys/class/*
 
 } MODULE_DATA, *PMODULE_DATA;
 
 
-//Global vars
+// globals
 extern MODULE_DATA _ModuleData;
 extern struct sAGEXDrv_device_info AGEXDrv_device_info[];
 extern struct spi_driver imago_spi_driver;
 
 /*** prototypes ***/
 /******************************************************************************************/
-/*LOCKED fns*/
-long Locked_startlongtermread(PDEVICE_DATA pDevData, const u32 DeviceID);
+/* locked functions */
 long Locked_write(PDEVICE_DATA pDevData, const u8 __user * pToUserMem, const size_t BytesToWrite);
 long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, const u32 BufferSizeBytes);
 
-/*File fns*/
+/* file operations */
 int AGEXDrv_open(struct inode *node, struct file *filp);
 ssize_t AGEXDrv_read (struct file *filp, char __user *buf, size_t count, loff_t *pos);
 ssize_t AGEXDrv_write (struct file *filp, const char __user *buf, size_t count,loff_t *pos);
 long AGEXDrv_unlocked_ioctl (struct file *filp, unsigned int cmd,unsigned long arg);
 
-/* ~IRQ fns*/
+/* ~IRQ functions */
 irqreturn_t AGEXDrv_interrupt(int irq, void *dev_id);
 void AGEXDrv_SwitchInterruptOn(PDEVICE_DATA pDevData, const bool boTurnOn);
-void AGEXDrv_tasklet(unsigned long data);
+void AGEXDrv_tasklet_PCIe(unsigned long data);
+void AGEXDrv_tasklet_PCI(unsigned long data);
+void AGEXDrv_tasklet_SPI(unsigned long data);
 
-/* PCI fns*/
+/* PCI functions */
 int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id);
 void AGEXDrv_PCI_remove(struct pci_dev *pcidev);
 
-/* DMA fns */
+/* DMA functions */
 void AGEXDrv_DMARead_StartDMA(PDEVICE_DATA pDevData);
 void AGEXDrv_DMARead_DPC(PDEVICE_DATA pDevData, const u32 isDoneReg, const u32 isOkReg, const u16* pBufferCounters);
 void AGEXDrv_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC);
 
-bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob, uintptr_t pVMUser, u64 anzBytesToTransfer);
+bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob, uintptr_t pVMUser, u64 bufferSize);
 void AGEXDrv_DMARead_UnMapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob);
 
 void AGEXDrv_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA);
 void AGEXDrv_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData,  const u32 iDMA);
 
 
-/*Module fns*/
+/* module functions */
 int AGEXDrv_init(void);
 void AGEXDrv_exit(void);
 void AGEXDrv_InitDrvData(PDEVICE_DATA pDat);
 
 
-//Device kann MSIX, CommonBuffer im PC-Mem
+// device uses PCIe interface (common buffer + MSI)
 static inline bool IS_TYPEWITH_COMMONBUFFER(DEVICE_DATA *pDeviceData)
 {
 	return ((pDeviceData->flags & AGEXDRV_FLAG_COMMONBUFFER) != 0);
 }
 
-//PCI
+// device uses PCI interface
 static inline bool IS_TYPEWITH_PCI(DEVICE_DATA *pDeviceData)
 {
 	return ((pDeviceData->flags & AGEXDRV_FLAG_PCI) != 0);
 }
 
-//Device kann 64Bit Adressen
+// device supports 64-bit addressing
 static inline bool IS_TYPEWITH_PCI64BIT(DEVICE_DATA *pDeviceData)
 {
 	return ((pDeviceData->flags & AGEXDRV_FLAG_PCI64BIT) != 0);
 }
 
-//Device kann DMAReads (Device schreibt in PC-Mem)
+// device supports DMA
 static inline bool IS_TYPEWITH_DMA2HOST(DEVICE_DATA *pDeviceData)
 {
 	return ((pDeviceData->flags & AGEXDRV_FLAG_DMA2HOST) != 0);
 }
 
+// device uses SPI interface
 static inline bool IS_TYPEWITH_SPI(DEVICE_DATA *pDeviceData)
 {
 	return ((pDeviceData->flags & AGEXDRV_FLAG_SPI) != 0);

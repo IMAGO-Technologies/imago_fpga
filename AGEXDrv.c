@@ -189,7 +189,7 @@ void AGEXDrv_InitDrvData(PDEVICE_DATA pDat)
 
 	/* Module */
 	pDat->boIsDeviceOpen	= FALSE;
-	pDat->pDeviceDevice		= NULL;
+	pDat->dev				= NULL;
 	pDat->DeviceSubType		= SubType_Invalid;
 	#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
 		sema_init(&pDat->DeviceSem,1);		//1<>frei
@@ -197,25 +197,12 @@ void AGEXDrv_InitDrvData(PDEVICE_DATA pDat)
 		init_MUTEX( &pDat->DeviceSem);
 	#endif
 
-		
 	/* SUN */
-	for(i=0;i<MAX_IRQDEVICECOUNT;i++)
-		pDat->boIsDeviceIDUsed[i] = FALSE;
+	spin_lock_init(&pDat->lock);
 
-	for(i=0;i<MAX_LONG_TERM_IO_REQUEST;i++)
-	{
-		pDat->LongTermRequestList[i].boIsInFPGA = FALSE;
-		pDat->LongTermRequestList[i].boIsInProcessUse = FALSE;
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
-		sema_init(&pDat->LongTermRequestList[i].WaitSem,0);		
-#else
-		init_MUTEX_LOCKED( &pDat->LongTermRequestList[i].WaitSem);
-#endif
-
-		//nicht notwendig...
-		memset(pDat->LongTermRequestList[i].IRQBuffer,0, MAX_SUNPACKETSIZE); 
-		pDat->LongTermRequestList[i].IRQBuffer_anzBytes = 0;
-		pDat->LongTermRequestList[i].DeviceID 			= MAX_IRQDEVICECOUNT; //nicht gültig, 0..<MAX_IRQDEVICECOUNT
+	for (i = 0; i<MAX_IRQDEVICECOUNT; i++) {
+		pDat->SunDeviceData[i].requestState = SUN_REQ_STATE_FREE;
+		pDat->SunDeviceData[i].serialID = 0;
 	}
 
 	pDat->boIsBAR0Requested = FALSE;
@@ -230,9 +217,9 @@ void AGEXDrv_InitDrvData(PDEVICE_DATA pDat)
 	//Note: 
 	//	- da wir hier noch nicht wissen ob wie überhaupt eine DMA haben immer init
 	// 	- auch alle möglichen DMAChannels/TCs initen da wir noch nicht wissen wie viele wir haben werden
-	pDat->DMARead_anzChannels	= 0;
-	pDat->DMARead_anzTCs		= 0;
-	pDat->DMARead_anzSGs		= 0;
+	pDat->DMARead_channels	= 0;
+	pDat->DMARead_TCs		= 0;
+	pDat->DMARead_SGs		= 0;
 	spin_lock_init(&pDat->DMARead_SpinLock);
 	for(iChannel = 0; iChannel < MAX_DMA_READ_DMACHANNELS; iChannel++)
 	{

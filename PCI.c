@@ -102,7 +102,7 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 			AGEXDrv_InitDrvData(&_ModuleData.Devs[DevIndex]);			
 			_ModuleData.Devs[DevIndex].DeviceSubType= tempDevSubType;
 			_ModuleData.Devs[DevIndex].DeviceNumber = MKDEV(MAJOR(_ModuleData.FirstDeviceNumber), DevIndex);
-			_ModuleData.Devs[DevIndex].pDeviceDevice = &pcidev->dev;
+			_ModuleData.Devs[DevIndex].dev = &pcidev->dev;
 			_ModuleData.Devs[DevIndex].flags =  AGEXDrv_device_info[tempDevSubType].flags;
 			pci_set_drvdata(pcidev, &_ModuleData.Devs[DevIndex]);				//damit wir im AGEXDrv_PCI_remove() wissen welches def freigebene werden soll
 			break;
@@ -211,7 +211,10 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 	//>IRQ & tasklet
 	/**********************************************************************/
 	//tasklet
-	tasklet_init(&_ModuleData.Devs[DevIndex].IRQTasklet, AGEXDrv_tasklet, (unsigned long)&_ModuleData.Devs[DevIndex]);
+	if( IS_TYPEWITH_COMMONBUFFER(&_ModuleData.Devs[DevIndex]) ) 
+		tasklet_init(&_ModuleData.Devs[DevIndex].IRQTasklet, AGEXDrv_tasklet_PCIe, (unsigned long)&_ModuleData.Devs[DevIndex]);
+	else
+		tasklet_init(&_ModuleData.Devs[DevIndex].IRQTasklet, AGEXDrv_tasklet_PCI, (unsigned long)&_ModuleData.Devs[DevIndex]);
 
 	//msi einschalten
 	//http://www.mjmwired.net/kernel/Documentation/MSI-HOWTO.txt
@@ -304,7 +307,7 @@ void AGEXDrv_PCI_remove(struct pci_dev *pcidev)
 
 	//DMA (versuchen) aufzuräumen
 	// - devs die keine DMA haben, da ist DMARead_anzXXX=0 
-	for(i = 0; i < pDevData->DMARead_anzChannels; i++)
+	for(i = 0; i < pDevData->DMARead_channels; i++)
 	{
 		AGEXDrv_DMARead_Abort_DMAChannel(pDevData, i);
 		AGEXDrv_DMARead_Abort_DMAWaiter(pDevData, i);

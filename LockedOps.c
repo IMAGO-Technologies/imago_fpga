@@ -4,7 +4,7 @@
  * Handle the the read/write/IO Ops 
  * (only one thread is inside this file at the same time, every arg should be valid)
  * 
- * Copyright (C) 201x IMAGO Technologies GmbH
+ * Copyright (C) IMAGO Technologies GmbH
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -23,69 +23,26 @@
 
 #include "AGEXDrv.h"
 
-//fÃ¼hrt die sucht einen freien eintrag und belegt diesen, gibt >= 0 fÃ¼r OK sonst fehler code zurÃ¼ck,
-// -> Fehler, wenn eine Anfrage zur ID offen ist
-// -> Fehler, wenn kein Platz mehr ist
-// dass die DeviceID geÃ¶ffnet wird nicht Ã¼berprÃ¼ft, ist fÃ¼r den Treiber Egal
-long Locked_startlongtermread(PDEVICE_DATA pDevData, const u32 DeviceID)
-{
-	u32 index;
 
-	/* Es darf zu dieser Zeit keine Anfrage mit der Ã¼bergebenen ID offen sein */
-	//(Ã¼ber die ID erfolgt die Zuordnung IRQ <-> Request)
-	for(index=0; index<MAX_LONG_TERM_IO_REQUEST; index++)
-	{
-		if(		( (pDevData->LongTermRequestList[index].boIsInFPGA == TRUE) || (pDevData->LongTermRequestList[index].boIsInProcessUse == TRUE) )
-			&&	(pDevData->LongTermRequestList[index].DeviceID == DeviceID) )
-		{
-			printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_startlongtermread> DeviceID is in use (index: %u, devId: %u, %d:%d)!\n", index, DeviceID,
-							pDevData->LongTermRequestList[index].boIsInFPGA, pDevData->LongTermRequestList[index].boIsInProcessUse);
-			return -EBUSY;
-		}
-	}
-
-	/* Ist noch Platz fÃ¼r noch eine Anfrage? */
-	for(index=0; index<MAX_LONG_TERM_IO_REQUEST; index++)
-	{
-		if(		(pDevData->LongTermRequestList[index].boIsInFPGA == FALSE)
-			&& 	(pDevData->LongTermRequestList[index].boIsInProcessUse == FALSE))
-		{
-			//init des eintrags
-			pDevData->LongTermRequestList[index].IRQBuffer_anzBytes = 0;
-			pDevData->LongTermRequestList[index].DeviceID			= DeviceID;
-			pDevData->LongTermRequestList[index].boAbortWaiting		= FALSE;
-			while( down_trylock(&pDevData->LongTermRequestList[index].WaitSem) == 0){}		//die sem runter zÃ¤hlen bis sie blocked, SWI & Abort setzen es
-
-			//Eintrag wird genutzt
-			pDevData->LongTermRequestList[index].boIsInProcessUse	= TRUE;
-			pDevData->LongTermRequestList[index].boIsInFPGA			= TRUE;		//vor dem Write setzen, kann ja sein das gleich nach dem write ein IRQ kommt
-
-			return index;
-		}
-
-		pr_devel(MODDEBUGOUTTEXT" Locked_startlongtermread> Item is in use (index: %u, %d:%d)!\n", index,
-							pDevData->LongTermRequestList[index].boIsInFPGA, pDevData->LongTermRequestList[index].boIsInProcessUse);
-
-	}
-
-
-	return -EBUSY;
-}
-
-//fÃ¼hrt die WriteOp aus, gibt >= 0 fÃ¼r OK sonst fehler code zurÃ¼ck,
+// writes FPGA packet
 long Locked_write(PDEVICE_DATA pDevData, const u8 __user * pToUserMem, const size_t BytesToWrite)
 {
-	if (IS_TYPEWITH_PCI(pDevData) || IS_TYPEWITH_COMMONBUFFER(pDevData))
-	{
-		u8 TempBuffer[4*(3+1)];		// +1 damit bei PCIe immer 64 Bit sind
+	u8 TempBuffer[4*(3+1)];		// +1 damit bei PCIe immer 64 Bit sind
+	u8 deviceID;
 
-		/* User Data -> Kernel */
-		if(BytesToWrite > sizeof(TempBuffer) )
-			return -EFBIG;
-		if( copy_from_user (TempBuffer, pToUserMem, BytesToWrite) != 0){
-			printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_write> copy_from_user faild\n"); return -EFAULT;
-		}
+	// User Data -> Kernel
+	if (BytesToWrite > sizeof(TempBuffer))
+		return -EFBIG;
+	if (copy_from_user (TempBuffer, pToUserMem, BytesToWrite) != 0) {
+		dev_warn(pDevData->dev, "Locked_write(): copy_from_user() faild\n");
+		return -EFAULT;
+	}
 
+	// insert serialID to Header1:
+	deviceID = (((u32*)TempBuffer)[1] >> 20) & (MAX_IRQDEVICECOUNT - 1);
+	((u32*)TempBuffer)[1] |= pDevData->SunDeviceData[deviceID].serialID << 27;
+
+	if (IS_TYPEWITH_PCI(pDevData) || IS_TYPEWITH_COMMONBUFFER(pDevData)) {
 		/* Kernel -> PCI */
 		//Notes:
 		// -fÃ¼r die AGEX muss sich die Adr nicht Ã¤ndern
@@ -98,37 +55,27 @@ long Locked_write(PDEVICE_DATA pDevData, const u8 __user * pToUserMem, const siz
 		//
 		// aber auch memcpy_toio() macht nicht immer 32Bit
 		// "http://www.gossamer-threads.com/lists/linux/kernel/650995?do=post_view_threaded#650995"
-		if (BytesToWrite % 4)
-		{
+		if (BytesToWrite % 4) {
 			u32 ByteIndex =0;
 			for(; ByteIndex < BytesToWrite; ByteIndex++)
 				iowrite8(TempBuffer[ByteIndex], pDevData->pVABAR0+ByteIndex);
 		}
-		else
-		{
+		else {
 			u32 WordsToCopy = BytesToWrite/4;
-			u32 WordIndex =0;
-			for(; WordIndex < WordsToCopy; WordIndex++)
-				iowrite32( ((u32*)TempBuffer)[WordIndex], pDevData->pVABAR0 + WordIndex*4 );
+			u32 WordIndex;
+			for (WordIndex = 0; WordIndex < WordsToCopy; WordIndex++)
+				iowrite32(((u32*)TempBuffer)[WordIndex], pDevData->pVABAR0 + WordIndex*4 );
 		}
 	}
-	else if (IS_TYPEWITH_SPI(pDevData))
-	{
+	else if (IS_TYPEWITH_SPI(pDevData)) {
 		struct spi_transfer transfer;
 		struct spi_message message;
-		struct spi_device *spi = to_spi_device(pDevData->pDeviceDevice);
+		struct spi_device *spi = to_spi_device(pDevData->dev);
 		int result;
 		u8 txbuf[1+3*4];		// SPI Header + SUN Paket
 
-		/* User Data -> Kernel */
-		if (BytesToWrite != (3*4))
-			return -EFBIG;
-
 		txbuf[0] = 0; // SPI Header: in CPU Source-FIFO schreiben
-		if (copy_from_user (&txbuf[1], pToUserMem, BytesToWrite) != 0) {
-			printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_write> copy_from_user faild\n");
-			return -EFAULT;
-		}
+		memcpy(&txbuf[1], TempBuffer, 3*4);
 
 		spi_message_init(&message);
 		memset(&transfer, 0, sizeof(transfer));
@@ -137,8 +84,7 @@ long Locked_write(PDEVICE_DATA pDevData, const u8 __user * pToUserMem, const siz
 		spi_message_add_tail(&transfer, &message);
 
 		result = spi_sync(spi, &message);
-		if (result < 0)
-		{
+		if (result < 0) {
 			dev_err(&spi->dev, "Locked_write> SPI error %d\n", result);
 			return -EFAULT;
 		}
@@ -150,96 +96,87 @@ long Locked_write(PDEVICE_DATA pDevData, const u8 __user * pToUserMem, const siz
 //fÃ¼hrt eine IOOp durch, gibt >= 0 fÃ¼r OK sonst fehler code zurÃ¼ck,
 long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, const u32 BufferSizeBytes)
 {
-	long result=0;
+	struct SUN_DEVICE_DATA *pSunDevice;
 
-	switch(cmd)
+	switch (cmd)
 	{
 		/* Gibt die Version als String zurÃ¼ck */
 		/**********************************************************************/
 		case AGEXDRV_IOC_GET_VERSION:
-			if( sizeof(MODVERSION) > BufferSizeBytes){
-				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n"); result = -EFBIG;
+			if (BufferSizeBytes < sizeof(MODVERSION)) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n");
+				return -EFBIG;
 			}
-			else
-			{
-				if( copy_to_user(pToUserMem,MODVERSION,sizeof(MODVERSION)) !=0 ){
-					printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> copy_to_user faild\n"); result = -EFAULT;
-				}
-				else
-					result = sizeof(MODVERSION);
+			if (copy_to_user(pToUserMem, MODVERSION, sizeof(MODVERSION)) != 0) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> copy_to_user faild\n");
+				return -EFAULT;
 			}
-
-			break;
+			return sizeof(MODVERSION);
 
 
 		/* Gibt das Build date/time als String zurÃ¼ck */
 		/**********************************************************************/
 		case AGEXDRV_IOC_GET_BUILD_DATE:
-			if( sizeof(MODDATECODE) > BufferSizeBytes){
-				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n"); result = -EFBIG;
+			if (sizeof(MODDATECODE) > BufferSizeBytes ) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n");
+				return -EFBIG;
 			}
-			else
-			{
-				if( copy_to_user(pToUserMem,MODDATECODE,sizeof(MODDATECODE)) !=0 ){
-					printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> copy_to_user faild\n"); result = -EFAULT;
-				}
-				else
-					result = sizeof(MODDATECODE);
+			if (copy_to_user(pToUserMem, MODDATECODE, sizeof(MODDATECODE)) != 0) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> copy_to_user faild\n");
+				return -EFAULT;
 			}
-
-		break;
+			return sizeof(MODDATECODE);
 
 
 		/* Gibt SubType zurÃ¼ck */
 		/**********************************************************************/
 		case AGEXDRV_IOC_GET_SUBTYPE:
-			if( sizeof(pDevData->DeviceSubType) > BufferSizeBytes){
-				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n"); result = -EFBIG;
+			if (sizeof(pDevData->DeviceSubType) > BufferSizeBytes ) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n");
+				return -EFBIG;
 			}
-			else
-			{
-				if( copy_to_user(pToUserMem,&pDevData->DeviceSubType,sizeof(pDevData->DeviceSubType)) !=0 ){
-					printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> copy_to_user faild\n"); result = -EFAULT;
-				}
-				else
-					result = sizeof(pDevData->DeviceSubType);
+			if (copy_to_user(pToUserMem, &pDevData->DeviceSubType, sizeof(pDevData->DeviceSubType)) != 0) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> copy_to_user faild\n");
+				return -EFAULT;
 			}
-
-		break;
-
+			return sizeof(pDevData->DeviceSubType);
 
 
 		/* Markiert die DeviceID als frei*/
 		/**********************************************************************/
 		//	-> kein Fehler wenn ungenutzt oder noch im LongTermRequest noch OutOfRange
 		case AGEXDRV_IOC_RELEASE_DEVICEID:
-			if( BufferSizeBytes != 1){
-				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n"); result = -EFBIG;
+		{
+			u8 DeviceID;
+
+			if (BufferSizeBytes != 1) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n");
+				return -EFBIG;
 			}
-			else
+
+			if (get_user(DeviceID, pToUserMem) != 0) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n");
+				return -EFAULT;
+			}
+
+			//gÃ¼ltig?
+			if (DeviceID >= MAX_IRQDEVICECOUNT)
 			{
-				//lesen
-				u8 DeviceID;
-				if( get_user(DeviceID,pToUserMem) != 0){
-					printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n"); result = -EFAULT;
-					break;
-				}
-
-				//gÃ¼ltig?
-				if(DeviceID >= MAX_IRQDEVICECOUNT)
-					printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> DeviceID out of range!\n");
-				else
-				{
-					//nur zum Tracen
-					pr_devel(MODDEBUGOUTTEXT" Locked_ioctl> Release DeviceID = %d, was %s\n",
-							   DeviceID, (pDevData->boIsDeviceIDUsed[DeviceID])?("true"):("false") );
-
-					//freigeben, immer egal was fÃ¼r ein Zustand war
-					pDevData->boIsDeviceIDUsed[DeviceID] = FALSE;
-				}
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> DeviceID out of range!\n");
+				return 0;
 			}
 
-			break;
+			pSunDevice = &pDevData->SunDeviceData[DeviceID];
+
+			spin_lock_bh(&pDevData->lock);
+			if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA) {
+				pSunDevice->serialID = !pSunDevice->serialID;		// Pending request is still in FPGA => toggle serial ID
+			}
+			pSunDevice->requestState = SUN_REQ_STATE_FREE;
+			spin_unlock_bh(&pDevData->lock);
+
+			return 0;
+		}
 
 
 		/* Gibt eine neue DeviceID zurÃ¼ck */
@@ -250,328 +187,405 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 		// 		die Anfrage ist dann noch unterwegs, ja der Request wurde abgebrochen aber die DeviceID ist
 		// 		noch genutzt
 		case AGEXDRV_IOC_CREATE_DEVICEID:
-			if( BufferSizeBytes != 1){
-				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n"); result = -EFBIG;
+		{
+			unsigned int index;
+			
+			if (BufferSizeBytes != 1) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n");
+				return -EFBIG;
 			}
-			else
+
+			for (index=0; index < MAX_IRQDEVICECOUNT; index++)
 			{
-				s16 NewDeviceID = -1;
-				u8 iLongTerm;
-				u16 index;
-
-				//alle mÃ¶glichen IDs testen
-				for(index=0; index < MAX_IRQDEVICECOUNT; index++)
+				if (pDevData->SunDeviceData[index].requestState == SUN_REQ_STATE_FREE)
 				{
-					//benutzt?
-					if(pDevData->boIsDeviceIDUsed[index])
-						continue;
+					pSunDevice = &pDevData->SunDeviceData[index];
 
-					//lÃ¤uf noch ein LongTempRequest mit der ID?
-					NewDeviceID = index;
-					for(iLongTerm=0; iLongTerm<MAX_LONG_TERM_IO_REQUEST; iLongTerm++)
-					{
-						if(		( (pDevData->LongTermRequestList[iLongTerm].boIsInFPGA == TRUE) || (pDevData->LongTermRequestList[iLongTerm].boIsInProcessUse == TRUE) )
-							&&	(pDevData->LongTermRequestList[iLongTerm].DeviceID == NewDeviceID) )
-						{
-							//wenn noch offen war rÃ¼cksetzen, weiter suchen
-							NewDeviceID = -1;
-						}
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
+					sema_init(&pDevData->SunDeviceData[index].semResult, 0);
+#else
+					init_MUTEX_LOCKED(&pDevData->SunDeviceData[index].semResult);
+#endif
+					if (put_user((u8)index, pToUserMem) != 0) {
+						dev_errpDevData->dev, "Locked_ioctl > put_user() failed\n");
+						return -EFAULT;
 					}
 
-					//neue ID gefunden?
-					if(NewDeviceID != -1)
-					{
-						//speichern
-						if( put_user(NewDeviceID,pToUserMem) != 0){
-							printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> put_user faild\n");
-							result = -EFAULT;
-							break;
-						}
-						result = 1;
-
-						//marken
-						pDevData->boIsDeviceIDUsed[NewDeviceID] = TRUE;
-
-						break;
-					}
+					pSunDevice->requestState = SUN_REQ_STATE_IDLE;
+					dev_printk(KERN_DEBUG, pDevData->dev, "Locked_ioctl > NewDeviceID = %d\n", index);
+					return 1;
 				}
-
-				//Fehler?
-				if( NewDeviceID == -1){
-					printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> No free DeviceID\n"); result = -EMFILE;
-				}
-				else
-					pr_devel(MODDEBUGOUTTEXT" Locked_ioctl> NewDeviceID = %d\n", NewDeviceID );
 			}
 
-			break;
-
+			dev_warn(pDevData->dev, "Locked_ioctl > No free DeviceID\n");
+			return -EMFILE;
+		}
 
 		/* Wenn zur DeviceID ein LONGTERM_IOREQUEST lÃ¤uft, sem posten. flag setzen*/
 		/**********************************************************************/
 		case AGEXDRV_IOC_ABORT_LONGTERM_READ:
-			if( BufferSizeBytes != 1){
-				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n"); result = -EFBIG;
-			}
-			else
-			{
-				u8 DeviceID;
-				u32 index;
+		{
+			u8 DeviceID;
 
-				//DevId lesen
-				if( get_user(DeviceID,pToUserMem) != 0){
-					printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n");
-					result = -EFAULT;
-					break;
-				}
-
-				//jetzt laufende EintrÃ¤ge zur ID suchen
-				for(index=0; index<MAX_LONG_TERM_IO_REQUEST; index++)
-				{
-					if(		(pDevData->LongTermRequestList[index].boIsInFPGA == TRUE) && (pDevData->LongTermRequestList[index].boIsInProcessUse == TRUE) 
-						&&	(pDevData->LongTermRequestList[index].DeviceID == DeviceID) )
-					{
-						//Process aufwecken
-						pr_devel(MODDEBUGOUTTEXT" Locked_ioctl> Abort LongRead = %d, DeviceID = %d\n", index, DeviceID);
-						pDevData->LongTermRequestList[index].boAbortWaiting = TRUE;
-						smp_mb();	//sicher ist sicher
-						up(&pDevData->LongTermRequestList[index].WaitSem);
-					}
-				}				
+			if (BufferSizeBytes != 1) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n");
+				return -EFBIG;
 			}
 
-			break;
+			//DevId lesen
+			if (get_user(DeviceID, pToUserMem) != 0) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n");
+				return -EFAULT;
+			}
 
+			pSunDevice = &pDevData->SunDeviceData[DeviceID];
 
-			
+			dev_printk(KERN_DEBUG, pDevData->dev, "Locked_ioctl > Aborting read for DeviceID %u\n", DeviceID);
+
+			spin_lock_bh(&pDevData->lock);
+			if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA) {
+				pSunDevice->requestState = SUN_REQ_STATE_ABORT;
+				pSunDevice->serialID = !pSunDevice->serialID;		// toggle serial ID
+				spin_unlock_bh(&pDevData->lock);
+				up(&pSunDevice->semResult);
+			}
+			else if (pSunDevice->requestState == SUN_REQ_STATE_RESULT) {
+				pSunDevice->requestState = SUN_REQ_STATE_ABORT;
+				spin_unlock_bh(&pDevData->lock);
+			}
+			else {
+				spin_unlock_bh(&pDevData->lock);
+			}
+			return 0;
+		}
+
 
 		/******** DMA ********/
 		/*********************/
-		/* übergibt die anzDMAs/TCs/SGs, kann nur geändert werden wenn noch auf 0 bzw. wenn keine Änderung*/
+		/* Uebergibt die anzDMAs/TCs/SGs, kann nur geaendert werden wenn noch auf 0 bzw. wenn keine Aenderung*/
 		/**********************************************************************/
 		case AGEXDRV_IOC_DMAREAD_CONFIG:
-			if( BufferSizeBytes < (3*2) ){
-				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n"); result = -EFBIG;
+		{
+			u16 tmpDMAs, tmpTCs, tmpSGs;
+
+			if (BufferSizeBytes < (3*2)) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n");
+				return -EFBIG;
 			}
-			else if( !IS_TYPEWITH_DMA2HOST(pDevData) )
-			{				
-				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> No DMA support!\n");	result = -EFAULT;
+			if (!IS_TYPEWITH_DMA2HOST(pDevData)) {				
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> No DMA support!\n");
+				return -EFAULT;
 			}
-			else
-			{
-				u16 tmpDMAs, tmpTCs, tmpSGs;
-				if( get_user(tmpDMAs,(u16*)(pToUserMem+0)) != 0){
-					printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n"); result = -EFAULT; break;	}
-				if( get_user(tmpTCs,(u16*)(pToUserMem+2)) != 0){
-					printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n"); result = -EFAULT; break;	}
-				if( get_user(tmpSGs,(u16*)(pToUserMem+4)) != 0){
-					printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n"); result = -EFAULT; break;	}
+			if (get_user(tmpDMAs, (u16*)(pToUserMem + 0)) != 0) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n");
+				return -EFAULT;
+			}
+			if (get_user(tmpTCs,(u16*)(pToUserMem + 2)) != 0) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n");
+				return -EFAULT;
+			}
+			if (get_user(tmpSGs,(u16*)(pToUserMem + 4)) != 0) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n");
+				return -EFAULT;
+			}
 
-				//nur größer setzen, bzw nur wenn noch nicht gesetzt
-				// - in AGEXDrv_init()/AGEXDrv_PCI_probe() > AGEXDrv_InitDrvData() wurde alle max möglichen geinit
-				// - nicht ändern wegen RaceCond, da wir davon augehen das die IRQFlags fortlaufend sind
-				if( 	!((pDevData->DMARead_anzChannels == 0) || (pDevData->DMARead_anzChannels == tmpDMAs) ) 
-					|| 	!((pDevData->DMARead_anzTCs == 0) || (pDevData->DMARead_anzTCs == tmpTCs)) 
-					|| 	!((pDevData->DMARead_anzSGs == 0) || (pDevData->DMARead_anzSGs == tmpSGs)) ){
-					printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Can't configure used DMA/TCs!\n");	result = -EFAULT;
+			//nur grï¿½ï¿½er setzen, bzw nur wenn noch nicht gesetzt
+			// - in AGEXDrv_init()/AGEXDrv_PCI_probe() > AGEXDrv_InitDrvData() wurde alle max mï¿½glichen geinit
+			// - nicht ï¿½ndern wegen RaceCond, da wir davon augehen das die IRQFlags fortlaufend sind
+			if ( 	!((pDevData->DMARead_channels == 0) || (pDevData->DMARead_channels == tmpDMAs) ) 
+				|| 	!((pDevData->DMARead_TCs == 0) || (pDevData->DMARead_TCs == tmpTCs)) 
+				|| 	!((pDevData->DMARead_SGs == 0) || (pDevData->DMARead_SGs == tmpSGs))) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Can't configure used DMA/TCs!\n");
+				return -EFAULT;
+			}
+			//nicht ueber max setzen
+			if ((tmpDMAs > MAX_DMA_READ_DMACHANNELS) || (tmpTCs > MAX_DMA_READ_CHANNELTCS) || (tmpSGs > MAX_DMA_READ_TCSGS)) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> ConfigDMARead anzDMA/TC/SG too large!\n");
+				return -EFAULT;
+			}
+
+			pDevData->DMARead_channels	= tmpDMAs;
+			pDevData->DMARead_TCs		= tmpTCs;
+			pDevData->DMARead_SGs		= tmpSGs;
+			pr_devel(MODDEBUGOUTTEXT" Locked_ioctl> ConfigDMARead anzDMAs: %d, anzTCs: %d, anzSGs: %d\n",
+					pDevData->DMARead_channels, pDevData->DMARead_TCs, pDevData->DMARead_SGs);
+			return 0;
+		}
+
+
+		case AGEXDRV_IOC_DMAREAD_RESETCHANNEL:
+		{
+			u8 	iDMAChannel;
+			DMA_READ_JOB tmpJob;
+			unsigned int iTC;
+			PDMA_READ_CHANNEL pDMAChannel;
+
+			if (BufferSizeBytes < 1) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n");
+				return -EFBIG;
+			}
+			if (!IS_TYPEWITH_DMA2HOST(pDevData)) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> No DMA support!\n");
+				return -EFAULT;
+			}
+			if (get_user(iDMAChannel, pToUserMem) != 0) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n");
+				return -EFAULT;
+			}
+			if (iDMAChannel >= pDevData->DMARead_channels) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> DMAChannel is out of range!\n");
+				return -EFAULT;
+			}
+			
+			pDMAChannel = &pDevData->DMARead_Channels[iDMAChannel];
+
+			// abort running DMA transfers
+			dev_printk(KERN_DEBUG, pDevData->dev, "Locked_ioctl() > reset DMA channel, jobsDone before: %u\n", kfifo_len(&pDMAChannel->Jobs_Done));
+			AGEXDrv_DMARead_Abort_DMAChannel(pDevData, iDMAChannel);
+
+			// Wait for completion
+			for (iTC = 0; iTC < pDevData->DMARead_TCs; iTC++) {
+				if (pDMAChannel->TCs[iTC].boIsUsed) {
+					unsigned long jiffiesTimeOut = msecs_to_jiffies(100);
+					int waitRes = down_timeout(&pDMAChannel->WaitSem, jiffiesTimeOut);
+					if (waitRes == (-ETIME)) {
+						dev_warn(pDevData->dev, "Locked_ioctl(): reset DMA channel timeout waiting for lost image\n");
+						return -EFAULT;
+					}
+					if (waitRes != 0) {
+						dev_warn(pDevData->dev, "Locked_ioctl(): reset DMA channel down_timeout() failed\n");
+						return -EFAULT;
+					}
 				}
-				//nicht über max setzen
-				else if( (tmpDMAs > MAX_DMA_READ_DMACHANNELS) || (tmpTCs > MAX_DMA_READ_CHANNELTCS) || (tmpSGs > MAX_DMA_READ_TCSGS) ){
-					printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> ConfigDMARead anzDMA/TC/SG too large!\n");	result = -EFAULT;
+			}
+			dev_printk(KERN_DEBUG, pDevData->dev, "Locked_ioctl() > reset DMA channel, jobsDone after: %u\n", kfifo_len(&pDMAChannel->Jobs_Done));
+
+			memset(&tmpJob, 0, sizeof(tmpJob));
+			spin_lock_bh(&pDevData->DMARead_SpinLock);
+			while (kfifo_get(&pDMAChannel->Jobs_Done, &tmpJob) == 1) {
+				if (tmpJob.pVMUser != 0) {
+					dev_info(pDevData->dev, "Locked_ioctl(): unmapping lost buffer 0x%lx, pages: %u\n", tmpJob.pVMUser, tmpJob.pagesPinned);
+					spin_unlock_bh(&pDevData->DMARead_SpinLock);	
+					AGEXDrv_DMARead_UnMapUserBuffer(pDevData, &tmpJob);
+					spin_lock_bh(&pDevData->DMARead_SpinLock);
 				}
-				else
-				{
-					pDevData->DMARead_anzChannels	= tmpDMAs;
-					pDevData->DMARead_anzTCs		= tmpTCs;
-					pDevData->DMARead_anzSGs		= tmpSGs;
-					pr_devel(MODDEBUGOUTTEXT" Locked_ioctl> ConfigDMARead anzDMAs: %d, anzTCs: %d, anzSGs: %d\n",
-							pDevData->DMARead_anzChannels, pDevData->DMARead_anzTCs, pDevData->DMARead_anzSGs);
-				}
-		    }
+			}
+			spin_unlock_bh(&pDevData->DMARead_SpinLock);	
 
-			break;
+			// Reinitialize semaphore
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
+			sema_init(&pDMAChannel->WaitSem, 0);
+#else
+			init_MUTEX_LOCKED(&pDMAChannel->WaitSem);
+#endif
+			return 0;
+		}
 
 
-
-		/* fügt, wenn Platz, UserBuffer dem .Jobs_ToDo FIFO hinzu  */
+		/* add buffer to DMA FIFO */
 		/**********************************************************************/
 		case AGEXDRV_IOC_DMAREAD_ADD_BUFFER:
-			if( BufferSizeBytes < (1+2*sizeof(u64) )){
-				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n"); result = -EFBIG;
+		{
+			u8 	iDMAChannel;
+			u64 UserPTR, anzBytesToDo, SizeNeeded;
+			PDMA_READ_CHANNEL pDMAChannel;
+			DMA_READ_JOB tmpJob;
+
+			if (BufferSizeBytes < (1 + 2 * sizeof(u64))) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n");
+				return -EFBIG;
 			}
-			else if( !IS_TYPEWITH_DMA2HOST(pDevData) )
-			{				
-				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> No DMA support!\n");	result = -EFAULT;
+			if (!IS_TYPEWITH_DMA2HOST(pDevData)) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> No DMA support!\n");
+				return -EFAULT;
 			}
-			else					
-			{
-				u8 	iDMAChannel;
-			   	u64 UserPTR, anzBytesToDo;
-				DMA_READ_JOB tmpJob;
 
-				//> Args vom User lesen und testen
-				if( get_user(iDMAChannel,pToUserMem+0) != 0){
-					printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n"); result = -EFAULT; break;	}
-				if( get_user(UserPTR,(u64*)(pToUserMem+1)) != 0){
-					printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n"); result = -EFAULT; break;	}
-				if( get_user(anzBytesToDo,(u64*)(pToUserMem+sizeof(u64)+1)) != 0){
-					printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n"); result = -EFAULT; break;	}
-			
-				//wenn es kein DMA gibt ist anz=0
-				if( iDMAChannel >= pDevData->DMARead_anzChannels ){
-					printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> DMAChannel is out of range!"); result = -EFAULT; break;
-				}
-				if( (pToUserMem==0) || (anzBytesToDo==0) ){
-					printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> USER ptr can't be zero or zero transfer!");	result = -EFAULT; break;
-				}
+			//> Args vom User lesen und testen
+			if (get_user(iDMAChannel, pToUserMem) != 0) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n");
+				return -EFAULT;
+			}
+			if (get_user(UserPTR, (u64*)(pToUserMem + 1)) != 0) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n");
+				return -EFAULT;
+			}
+			if (get_user(anzBytesToDo, (u64*)(pToUserMem + sizeof(u64) + 1)) != 0) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n");
+				return -EFAULT;
+			}
+		
+			//wenn es kein DMA gibt ist anz=0
+			if (iDMAChannel >= pDevData->DMARead_channels) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> DMAChannel is out of range!");
+				return -EFAULT;
+			}
+			if ((pToUserMem==0) || (anzBytesToDo==0)) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> USER ptr can't be zero or zero transfer!");
+				return -EFAULT;
+			}
+
+			pDMAChannel = &pDevData->DMARead_Channels[iDMAChannel];
+
+			//> Job erzeugen [hier ohne DMA lock] (auch mappen/pinnen...)
+			if (!AGEXDrv_DMARead_MapUserBuffer(pDevData, &tmpJob, (uintptr_t) UserPTR, anzBytesToDo)) {
+				AGEXDrv_DMARead_UnMapUserBuffer(pDevData, &tmpJob);
+				printk(KERN_WARNING MODDEBUGOUTTEXT"Locked_ioctl> (AGEXDRV_IOC_DMAREAD_ADD_BUFFER), AGEXDrv_DMARead_MapUserBuffer() failed!\n");
+				return -EINTR;
+			}
 
 
-				//> Job erzeugen [hier ohne DMA lock] (auch mappen/pinnen...)
-				if( !AGEXDrv_DMARead_MapUserBuffer(pDevData, &tmpJob, (uintptr_t) UserPTR, anzBytesToDo) ){
-					AGEXDrv_DMARead_UnMapUserBuffer(pDevData, &tmpJob);
-					result = -EINTR; printk(KERN_WARNING MODDEBUGOUTTEXT"Locked_ioctl> (AGEXDRV_IOC_DMAREAD_ADD_BUFFER), AGEXDrv_DMARead_MapUserBuffer() failed!\n"); break;
-				}
-
-
-				//> Job adden
-				spin_lock_bh(&pDevData->DMARead_SpinLock);
+			//> Job adden
+			spin_lock_bh(&pDevData->DMARead_SpinLock);
 //----------------------------->
-				//noch Platz? (.Jobs_ToDo)
-				if( kfifo_avail( &pDevData->DMARead_Channels[iDMAChannel].Jobs_ToDo) < 1){
-					printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> JobToDoBuffer is full\n"); result = -ENOMEM;}
-				else
-				{
-					//noch Platz? (.Jobs_Done), es müssen passen
-					// - alle (möglichen) laufenden
-					// - da beim AbortBuffer alle Jobs aus .Jobs_ToDo nach .Jobs_Done verschoben werden +1
-					// - da beim AbortWaiter ein dummyBuffer hinzugefügt wird +1
-					//
-					u64 SizeNeeded = kfifo_len( &pDevData->DMARead_Channels[iDMAChannel].Jobs_ToDo);
-					SizeNeeded += pDevData->DMARead_anzTCs + 1 + 1;
-					if( kfifo_avail( &pDevData->DMARead_Channels[iDMAChannel].Jobs_Done) < SizeNeeded){
-						printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> JobDoneBuffer is too full\n"); result = -ENOMEM;}
-					else
-					{
-						//job adden
-						if( kfifo_put(&pDevData->DMARead_Channels[iDMAChannel].Jobs_ToDo, tmpJob) == 0){
-							printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> can't add into JobToDoBuffer\n"); result = -ENOMEM;}
-					}
-				}
-//<-----------------------------
+			//noch Platz? (.Jobs_ToDo)
+			if (kfifo_avail( &pDMAChannel->Jobs_ToDo) < 1) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> JobToDoBuffer is full\n");
 				spin_unlock_bh(&pDevData->DMARead_SpinLock);
+				AGEXDrv_DMARead_UnMapUserBuffer(pDevData, &tmpJob);
+				return -ENOMEM;
+			}
+
+			//noch Platz? (.Jobs_Done), es mï¿½ssen passen
+			// - alle (mï¿½glichen) laufenden
+			// - da beim AbortBuffer alle Jobs aus .Jobs_ToDo nach .Jobs_Done verschoben werden +1
+			// - da beim AbortWaiter ein dummyBuffer hinzugefï¿½gt wird +1
+			//
+			SizeNeeded = kfifo_len(&pDMAChannel->Jobs_ToDo);
+			SizeNeeded += pDevData->DMARead_TCs + 1 + 1;
+			if (kfifo_avail(&pDMAChannel->Jobs_Done) < SizeNeeded) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> JobDoneBuffer is too full\n");
+				spin_unlock_bh(&pDevData->DMARead_SpinLock);
+				AGEXDrv_DMARead_UnMapUserBuffer(pDevData, &tmpJob);
+				return -ENOMEM;
+			}
+			//job adden
+			if (kfifo_put(&pDMAChannel->Jobs_ToDo, tmpJob) == 0) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> can't add into JobToDoBuffer\n");
+				spin_unlock_bh(&pDevData->DMARead_SpinLock);
+				AGEXDrv_DMARead_UnMapUserBuffer(pDevData, &tmpJob);
+				return -ENOMEM;
+			}
+//<-----------------------------
+			spin_unlock_bh(&pDevData->DMARead_SpinLock);
+
+			
+			//> Versucht neue DMAs(ï¿½ber alle Channels) zu starten
+			AGEXDrv_DMARead_StartDMA(pDevData);
+
+			return 0;
+		}
 
 
-				//wenn Fehler unmappen
-				if(result!=0)
-					AGEXDrv_DMARead_UnMapUserBuffer(pDevData, &tmpJob);
-
-				
-				//> Versucht neue DMAs(über alle Channels) zu starten
-				AGEXDrv_DMARead_StartDMA(pDevData);
-
-		    }//else Type & Args Ok
-
-			break;
-
-
-
-
-		/* wartet(mit TimeOut) auf einen fertigen DMABuffer, gibt den (Status/Counter/VAPtr) zurück  */
+		/* wartet(mit TimeOut) auf einen fertigen DMABuffer, gibt den (Status/Counter/VAPtr) zurï¿½ck  */
 		/**********************************************************************/
 		case AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER:
-			if( BufferSizeBytes < ( 1 + sizeof(u16) +  sizeof(u64))){
-				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n"); result = -EFBIG;
+		{
+			u8 	iDMAChannel;
+			u32 TimeOut_ms;
+			PDMA_READ_CHANNEL pDMAChannel;
+			DMA_READ_JOB tmpJob;
+
+			if (BufferSizeBytes < (1 + sizeof(u16) + sizeof(u64))) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n");
+				return -EFBIG;
 			}
-			else if( !IS_TYPEWITH_DMA2HOST(pDevData) )
-			{				
-				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> No DMA support!\n");	result = -EFAULT;
+			if (!IS_TYPEWITH_DMA2HOST(pDevData)) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> No DMA support!\n");
+				return -EFAULT;
+			}
+
+			memset(&tmpJob, 0, sizeof(tmpJob));	/* wegen warning */
+
+			//args vom USER
+			if (get_user(iDMAChannel, pToUserMem + 0) != 0) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n");
+				return -EFAULT;
+			}
+			if (get_user(TimeOut_ms, (u32*)(pToUserMem + 1)) != 0) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n");
+				return -EFAULT;
+			}
+			if (iDMAChannel >= pDevData->DMARead_channels) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> DMAChannel is out of range!\n");
+				return -EFAULT;
+			}
+
+			pDMAChannel = &pDevData->DMARead_Channels[iDMAChannel];
+
+			//> warten (mit timeout)
+			//IOCTRL lock temporï¿½r lï¿½sen
+			up(&pDevData->DeviceSem);
+//<......................................................................
+			// aufwachen durch Signal, up vom SWI, oder User [Abort], bzw TimeOut
+			if (TimeOut_ms == 0xFFFFFFFF)
+			{	
+				//Note: unterbrechbar(durch gdb), abbrechbar durch kill -9 & kill -15(term) 
+				//  noch ist nix passiert, Kernel darf den Aufruf wiederhohlen ohne den User zu benachrichtigen							
+				if (down_interruptible(&pDMAChannel->WaitSem) != 0) {
+					pr_devel(MODDEBUGOUTTEXT" Locked_ioctl> (AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER), down_interruptible() failed!\n");
+					down(&pDevData->DeviceSem);
+					return -ERESTARTSYS;
+				}
 			}
 			else
 			{
-				u8 	iDMAChannel;
-				u32 TimeOut_ms;
-				DMA_READ_JOB tmpJob; /* ={}; geht aber auch nicht, gibt warning */
-				memset(&tmpJob, 0, sizeof(tmpJob));	/* wegen warning */
-
-				//args vom USER
-				if( get_user(iDMAChannel,pToUserMem+0) != 0){
-					printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n"); result = -EFAULT; break;	}
-				if( get_user(TimeOut_ms,(u32*)(pToUserMem+1)) != 0){
-					printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n"); result = -EFAULT; break;	}
-				if( iDMAChannel >= pDevData->DMARead_anzChannels ){
-					printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> DMAChannel is out of range!\n"); result = -EFAULT; break;
+				//Note: nicht unter(durch GDB) bzw. abbrechbar down_timeout() > __down_timeout() > __down_common(sem, TASK_UNINTERRUPTIBLE, timeout);
+				unsigned long jiffiesTimeOut = msecs_to_jiffies(TimeOut_ms);
+				int waitRes = down_timeout(&pDMAChannel->WaitSem,jiffiesTimeOut);
+				if (waitRes == (-ETIME)) {
+					pr_devel(MODDEBUGOUTTEXT" Locked_ioctl> (AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER), down_timeout() timeout!\n");
+					down(&pDevData->DeviceSem);
+					return -ETIME;
 				}
-
-
-				//> warten (mit timeout)
-				//IOCTRL lock temporär lösen
-				up(&pDevData->DeviceSem);
-//<......................................................................
-				// aufwachen durch Signal, up vom SWI, oder User [Abort], bzw TimeOut
-				if( TimeOut_ms == 0xFFFFFFFF )
-				{	
-					//Note: unterbrechbar(durch gdb), abbrechbar durch kill -9 & kill -15(term) 
-					//  noch ist nix passiert, Kernel darf den Aufruf wiederhohlen ohne den User zu benachrichtigen							
-					if( down_interruptible(&pDevData->DMARead_Channels[iDMAChannel].WaitSem) != 0)
-						{result = -ERESTARTSYS; pr_devel(MODDEBUGOUTTEXT" Locked_ioctl> (AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER), down_interruptible() failed!\n");}				
+				if (waitRes != 0) {
+					printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> (AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER), down_timeout() failed!\n");
+					down(&pDevData->DeviceSem);
+					return -EINTR;
 				}
-				else
-				{
-					//Note: nicht unter(durch GDB) bzw. abbrechbar down_timeout() > __down_timeout() > __down_common(sem, TASK_UNINTERRUPTIBLE, timeout);
-					unsigned long jiffiesTimeOut = msecs_to_jiffies(TimeOut_ms);
-					int waitRes = down_timeout(&pDevData->DMARead_Channels[iDMAChannel].WaitSem,jiffiesTimeOut);
-					if( waitRes == (-ETIME))
-						{result = -ETIME; pr_devel(MODDEBUGOUTTEXT" Locked_ioctl> (AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER), down_timeout() timeout!\n");}
-					else if ( waitRes != 0)
-						{result = -EINTR; printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> (AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER), down_timeout() failed!\n");}
-				}
-				down(&pDevData->DeviceSem);
+			}
+			down(&pDevData->DeviceSem);
 //......................................................................>
-
-
-				
-				//> Buffer aus FIFO entnehmen (wenn warten erfolgreich war [könnte aber auch ein abort sein])
-				if(result == 0 )
-				{
-					spin_lock_bh(&pDevData->DMARead_SpinLock);
+			
+			//> Buffer aus FIFO entnehmen (wenn warten erfolgreich war [kï¿½nnte aber auch ein abort sein])
+			spin_lock_bh(&pDevData->DMARead_SpinLock);
 //---------------------------------------------------------->
-					if( kfifo_len( &pDevData->DMARead_Channels[iDMAChannel].Jobs_Done)>=1 )
-					{
-						if( kfifo_get(&pDevData->DMARead_Channels[iDMAChannel].Jobs_Done, &tmpJob) != 1) /*sicher ist sicher*/
-							{ result = -EINTR; printk(KERN_WARNING MODDEBUGOUTTEXT"Locked_ioctl> (AGEXDRV_IOC_DMAREAD_ADD_BUFFER), kfifo_get() failed!\n"); }
-					}
-					else
-						pr_devel(MODDEBUGOUTTEXT" - DMARead wake up, without buffer!\n");
-//<----------------------------------------------------------
+			if (kfifo_len( &pDMAChannel->Jobs_Done) >= 1) {
+				if (kfifo_get(&pDMAChannel->Jobs_Done, &tmpJob) != 1) { /*sicher ist sicher*/
 					spin_unlock_bh(&pDevData->DMARead_SpinLock);	
+					printk(KERN_WARNING MODDEBUGOUTTEXT"Locked_ioctl> (AGEXDRV_IOC_DMAREAD_ADD_BUFFER), kfifo_get() failed!\n");
+					return -EINTR;
 				}
-
-		
-				//> an User schicken (wenn Ok [der DMA kann natürlich fehler haben, bzw. ein dummyBuffer vom Abort sein])
-				if( result == 0 )
-				{
-					//> unmappen
-					AGEXDrv_DMARead_UnMapUserBuffer(pDevData, &tmpJob);
-
-
-					//> an User schicken
-					if( put_user( (u8) tmpJob.boIsOk, pToUserMem) != 0){
-						printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n"); result = -EFAULT; break;	}
-					if( put_user( tmpJob.BufferCounter, (u16*)(pToUserMem+1)) != 0){
-						printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n"); result = -EFAULT; break;	}
-					if( put_user( tmpJob.pVMUser, (u64*)(pToUserMem+1+sizeof(u16))) != 0){
-						printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n"); result = -EFAULT; break;	}
-
-						pr_devel(MODDEBUGOUTTEXT" Locked_ioctl> DMARead return buffer iDMA: %d, res: %d, Seq: %d, VMPtr: %p\n",
-						   	iDMAChannel, tmpJob.boIsOk, tmpJob.BufferCounter, (void*)tmpJob.pVMUser);
-					result =  1 + sizeof(u16) +  sizeof(u64);
-				}
+			}
+			else {
+				pr_devel(MODDEBUGOUTTEXT" - DMARead wake up, without buffer!\n");
+			}
+//<----------------------------------------------------------
+			spin_unlock_bh(&pDevData->DMARead_SpinLock);	
 
 			
-		    }
+			//> an User schicken (wenn Ok [der DMA kann natï¿½rlich fehler haben, bzw. ein dummyBuffer vom Abort sein])
+			//> unmappen
+			AGEXDrv_DMARead_UnMapUserBuffer(pDevData, &tmpJob);
 
-			break;
 
+			//> an User schicken
+			if (put_user( (u8) tmpJob.boIsOk, pToUserMem) != 0) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n");
+				return -EFAULT;
+			}
+			if (put_user( tmpJob.BufferCounter, (u16*)(pToUserMem + 1)) != 0) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n");
+				return -EFAULT;
+			}
+			if (put_user( tmpJob.pVMUser, (u64*)(pToUserMem + 1 + sizeof(u16))) != 0) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n");
+				return -EFAULT;
+			}
+
+			pr_devel(MODDEBUGOUTTEXT" Locked_ioctl> DMARead return buffer iDMA: %d, res: %d, Seq: %d, VMPtr: %p\n",
+				iDMAChannel, tmpJob.boIsOk, tmpJob.BufferCounter, (void*)tmpJob.pVMUser);
+			return 1 + sizeof(u16) +  sizeof(u64);
+		}
 
 
 		/* versucht die laufende DMAs abzubrechen, async */
@@ -579,42 +593,38 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 		/**********************************************************************/
 		case AGEXDRV_IOC_DMAREAD_ABORT_DMA:
 		case AGEXDRV_IOC_DMAREAD_ABORT_WAITER:
-			if( BufferSizeBytes < (1) ){
-				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n"); result = -EFBIG;
+		{
+			//> Args vom User lesen und testen
+			u8 	iDMAChannel;
+			if (BufferSizeBytes < 1) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n");
+				return -EFBIG;
 			}
-			else if( !IS_TYPEWITH_DMA2HOST(pDevData) )
-			{				
-				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> No DMA support!\n");	result = -EFAULT;
+			if (!IS_TYPEWITH_DMA2HOST(pDevData)) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> No DMA support!\n");
+				return -EFAULT;
 			}
+			if (get_user(iDMAChannel, pToUserMem) != 0) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n");
+				return -EFAULT;
+			}
+			if (iDMAChannel >= pDevData->DMARead_channels) {
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> DMAChannel is out of range!\n");
+				return -EFAULT;
+			}
+
+			//> DMA/UserThreads abbrechen
+			if(cmd == AGEXDRV_IOC_DMAREAD_ABORT_DMA)
+				AGEXDrv_DMARead_Abort_DMAChannel(pDevData, iDMAChannel);
 			else
-			{
-				//> Args vom User lesen und testen
-				u8 	iDMAChannel;
-				if( get_user(iDMAChannel,pToUserMem+0) != 0){
-					printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n"); result = -EFAULT; break;	}
-				if( iDMAChannel >= pDevData->DMARead_anzChannels ){
-					printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> DMAChannel is out of range!\n"); result = -EFAULT; break;
-				}
+				AGEXDrv_DMARead_Abort_DMAWaiter(pDevData, iDMAChannel);
+
+			return 0;
+		}
 
 
-				//> DMA/UserThreads abbrechen
-				if(cmd == AGEXDRV_IOC_DMAREAD_ABORT_DMA)
-					AGEXDrv_DMARead_Abort_DMAChannel(pDevData, iDMAChannel);
-				else
-					AGEXDrv_DMARead_Abort_DMAWaiter(pDevData, iDMAChannel);
-		    }
-
-			break;
-
-
-
-
-
-		//sollte nie sein (siehe oben bzw. Ebene höher)
+		// sollte nie sein (siehe oben bzw. Ebene hoeher)
 		default:
 			return -ENOTTY;
 	}
-
-
-	return result;
 }

@@ -22,6 +22,7 @@
 
 #include "AGEXDrv.h"
 
+#if 0
 irqreturn_t imago_spi_interrupt(int irq, void *dev_id)
 {
 #if 1
@@ -60,10 +61,11 @@ irqreturn_t imago_spi_interrupt(int irq, void *dev_id)
 	return IRQ_HANDLED;
 #endif
 }
+#endif
 
 irqreturn_t imago_spi_thread(int irq, void *dev_id)
 {
-	AGEXDrv_tasklet((unsigned long)dev_id);
+	AGEXDrv_tasklet_SPI((unsigned long)dev_id);
 	
 	return IRQ_HANDLED;
 }
@@ -129,7 +131,7 @@ int imago_spi_probe(struct spi_device *spi)
 			AGEXDrv_InitDrvData(&_ModuleData.Devs[DevIndex]);			
 			_ModuleData.Devs[DevIndex].DeviceSubType= tempDevSubType;
 			_ModuleData.Devs[DevIndex].DeviceNumber = MKDEV(MAJOR(_ModuleData.FirstDeviceNumber), DevIndex);
-			_ModuleData.Devs[DevIndex].pDeviceDevice = &spi->dev;
+			_ModuleData.Devs[DevIndex].dev = &spi->dev;
 			_ModuleData.Devs[DevIndex].flags =  AGEXDrv_device_info[tempDevSubType].flags;
 			spi_set_drvdata(spi, &_ModuleData.Devs[DevIndex]);
 			break;
@@ -149,7 +151,7 @@ int imago_spi_probe(struct spi_device *spi)
 				IRQF_TRIGGER_RISING | IRQF_ONESHOT, MODMODULENAME, &_ModuleData.Devs[DevIndex]) != 0) {
 #else
 	//tasklet
-	tasklet_init(&_ModuleData.Devs[DevIndex].IRQTasklet, AGEXDrv_tasklet, DevIndex);
+	tasklet_init(&_ModuleData.Devs[DevIndex].IRQTasklet, AGEXDrv_tasklet_SPI, DevIndex);
 
 	if (request_irq(spi->irq,/* die IRQ nummer */
 			imago_spi_interrupt,	/* die IRQ fn */
