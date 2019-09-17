@@ -207,7 +207,7 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 					init_MUTEX_LOCKED(&pDevData->SunDeviceData[index].semResult);
 #endif
 					if (put_user((u8)index, pToUserMem) != 0) {
-						dev_errpDevData->dev, "Locked_ioctl > put_user() failed\n");
+						dev_err(pDevData->dev, "Locked_ioctl > put_user() failed\n");
 						return -EFAULT;
 					}
 
