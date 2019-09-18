@@ -340,6 +340,7 @@ void AGEXDrv_DMARead_UnMapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob);
 
 void AGEXDrv_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA);
 void AGEXDrv_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData,  const u32 iDMA);
+int AGEXDrv_DMARead_Reset_DMAChannel(PDEVICE_DATA pDevData, unsigned int dma_channel);
 
 
 /* module functions */

@@ -316,11 +316,9 @@ void AGEXDrv_PCI_remove(struct pci_dev *pcidev)
 	if (pDevData == NULL) {
 		printk(KERN_WARNING MODDEBUGOUTTEXT" device pointer is zero!\n"); return;}
 
-	//DMA (versuchen) aufzuräumen
-	// - devs die keine DMA haben, da ist DMARead_anzXXX=0 
+	// Stop DMA transfers and unmap all buffers
 	for (i = 0; i < pDevData->DMARead_channels; i++) {
-		AGEXDrv_DMARead_Abort_DMAChannel(pDevData, i);
-		AGEXDrv_DMARead_Abort_DMAWaiter(pDevData, i);
+		AGEXDrv_DMARead_Reset_DMAChannel(pDevData, i);
 	}
 
 	//IRQ zuückgeben

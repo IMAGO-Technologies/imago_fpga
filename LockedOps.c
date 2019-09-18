@@ -315,10 +315,7 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 
 		case AGEXDRV_IOC_DMAREAD_RESETCHANNEL:
 		{
-			u8 	iDMAChannel;
-			DMA_READ_JOB tmpJob;
-			unsigned int iTC;
-			PDMA_READ_CHANNEL pDMAChannel;
+			u8 iDMAChannel;
 
 			if (BufferSizeBytes < 1) {
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n");
@@ -337,48 +334,7 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 				return -EFAULT;
 			}
 			
-			pDMAChannel = &pDevData->DMARead_Channels[iDMAChannel];
-
-			// abort running DMA transfers
-			dev_dbg(pDevData->dev, "Locked_ioctl() > reset DMA channel, jobsDone before: %u\n", kfifo_len(&pDMAChannel->Jobs_Done));
-			AGEXDrv_DMARead_Abort_DMAChannel(pDevData, iDMAChannel);
-
-			// Wait for completion
-			for (iTC = 0; iTC < pDevData->DMARead_TCs; iTC++) {
-				if (pDMAChannel->TCs[iTC].boIsUsed) {
-					unsigned long jiffiesTimeOut = msecs_to_jiffies(100);
-					int waitRes = down_timeout(&pDMAChannel->WaitSem, jiffiesTimeOut);
-					if (waitRes == (-ETIME)) {
-						dev_warn(pDevData->dev, "Locked_ioctl(): reset DMA channel timeout waiting for lost image\n");
-						return -EFAULT;
-					}
-					if (waitRes != 0) {
-						dev_warn(pDevData->dev, "Locked_ioctl(): reset DMA channel down_timeout() failed\n");
-						return -EFAULT;
-					}
-				}
-			}
-			dev_dbg(pDevData->dev, "Locked_ioctl() > reset DMA channel, jobsDone after: %u\n", kfifo_len(&pDMAChannel->Jobs_Done));
-
-			memset(&tmpJob, 0, sizeof(tmpJob));
-			spin_lock_bh(&pDevData->DMARead_SpinLock);
-			while (kfifo_get(&pDMAChannel->Jobs_Done, &tmpJob) == 1) {
-				if (tmpJob.pVMUser != 0) {
-					dev_info(pDevData->dev, "Locked_ioctl(): unmapping lost buffer 0x%lx, pages: %u\n", tmpJob.pVMUser, tmpJob.pagesPinned);
-					spin_unlock_bh(&pDevData->DMARead_SpinLock);	
-					AGEXDrv_DMARead_UnMapUserBuffer(pDevData, &tmpJob);
-					spin_lock_bh(&pDevData->DMARead_SpinLock);
-				}
-			}
-			spin_unlock_bh(&pDevData->DMARead_SpinLock);	
-
-			// Reinitialize semaphore
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
-			sema_init(&pDMAChannel->WaitSem, 0);
-#else
-			init_MUTEX_LOCKED(&pDMAChannel->WaitSem);
-#endif
-			return 0;
+			return AGEXDrv_DMARead_Reset_DMAChannel(pDevData, iDMAChannel);
 		}
 
 

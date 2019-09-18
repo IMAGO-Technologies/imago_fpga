@@ -333,33 +333,34 @@ void AGEXDrv_DMARead_UnMapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob)
 // beendet eine DMA, egal ob mit oder ohne Fehler, ob gelaufen oder nicht (läuft auch aus DPC)
 void AGEXDrv_DMARead_EndDMA(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC, const bool boIsOk, const u16 BufferCounter)
 {	
-	PDMA_READ_TC 	tmpTC 			= pDevData->DMARead_Channels[iDMA].TCs + iTC;
-	DMA_READ_JOB 	tmpJob;
+	PDMA_READ_CHANNEL pDMAChannel = &pDevData->DMARead_Channels[iDMA];
+	PDMA_READ_TC pTC = &pDMAChannel->TCs[iTC];
+	DMA_READ_JOB tmpJob;
 
-	pr_devel(MODDEBUGOUTTEXT" AGEXDrv_DMARead_EndDMA> DMA: %d, TC: %d, Res: %d, Seq: %d\n",
+	dev_dbg(pDevData->dev, "AGEXDrv_DMARead_EndDMA > DMA: %d, TC: %d, Res: %d, Seq: %d\n",
 				   	iDMA, iTC, boIsOk, BufferCounter);
-	if(tmpTC->boIsUsed == FALSE)
- 		{printk(KERN_WARNING MODDEBUGOUTTEXT " AGEXDrv_DMARead_EndDMA> invalid TC!\n"); return;}
+	if (pTC->boIsUsed == FALSE) {
+		dev_warn(pDevData->dev, " AGEXDrv_DMARead_EndDMA > invalid TC!\n");
+		return;
+	}
 
-
-	//TC freigeben,  Job copy und Status eintragen 
-	/**********************************************************************/
-	tmpJob = tmpTC->Job;
+	// copy job data from finished TC
+	tmpJob = pTC->Job;
 	tmpJob.boIsOk			= boIsOk;
 	tmpJob.BufferCounter	= BufferCounter;
 
-	tmpTC->boIsUsed = FALSE;
-
-
-	//Job in .Jobs_Done (unter lock)
-	/**********************************************************************/
 	spin_lock_bh(&pDevData->DMARead_SpinLock);
-//---------------------------------------------------------->
-	if( kfifo_put(&pDevData->DMARead_Channels[iDMA].Jobs_Done, tmpJob) == 0){
-		printk(KERN_ERR MODDEBUGOUTTEXT " AGEXDrv_DMARead_EndDMA> kfifo_put failed!\n");}	//sollte nie sein weil Test ob Platz ist, ist im 'AGEXDRV_IOC_DMAREAD_ADD_BUFFER'
-	pr_devel(MODDEBUGOUTTEXT" - Jobs_Done %d (iDMA: %d)\n", kfifo_len( &pDevData->DMARead_Channels[iDMA].Jobs_Done), iDMA);	
-//<----------------------------------------------------------
+
+	// TC freigeben, unter lock setzen wegen race mit AGEXDrv_DMARead_Reset_DMAChannel()
+	pTC->boIsUsed = FALSE;
+
+	// add job to Jobs_Done FIFO
+	if (kfifo_put(&pDMAChannel->Jobs_Done, tmpJob) == 0) {
+		//sollte nie sein weil Test ob Platz ist, ist im 'AGEXDRV_IOC_DMAREAD_ADD_BUFFER'
+		dev_warn(pDevData->dev, "AGEXDrv_DMARead_EndDMA > kfifo_put failed!\n");
+	}
 	spin_unlock_bh(&pDevData->DMARead_SpinLock);
+	dev_dbg(pDevData->dev, "Jobs_Done %d (iDMA: %d)\n", kfifo_len(&pDMAChannel->Jobs_Done), iDMA);
 
 
 	//SEM posten
@@ -368,7 +369,7 @@ void AGEXDrv_DMARead_EndDMA(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC
 	// 1. sollte nie so sein
 	// 2. der buffer ist für immer lost
 	// 3. der user thread kommt damit zurecht das es keinen buffer gibt
-	up(&pDevData->DMARead_Channels[iDMA].WaitSem);
+	up(&pDMAChannel->WaitSem);
 }
 
 
@@ -413,10 +414,8 @@ void AGEXDrv_DMARead_StartDMA(PDEVICE_DATA pDevData)
 	
 		//freien TC?
 		boHasTC = FALSE;
-		for(iTC = 0; iTC < pDevData->DMARead_TCs; iTC++)
-		{
-			if (pDevData->DMARead_Channels[iDMA].TCs[iTC].boIsUsed == FALSE)
-			{
+		for (iTC = 0; iTC < pDevData->DMARead_TCs; iTC++) {
+			if (pDevData->DMARead_Channels[iDMA].TCs[iTC].boIsUsed == FALSE) {
 				boHasTC = TRUE;
 				break;
 			}
@@ -424,13 +423,11 @@ void AGEXDrv_DMARead_StartDMA(PDEVICE_DATA pDevData)
 
 		//> wenn ja dann TC init
 		boIsTCInitDone = FALSE;
-		if( boHasBuffer && boHasTC )
-		{				
+		if( boHasBuffer && boHasTC ) {
 			PDMA_READ_TC tmpTC 	= pDevData->DMARead_Channels[iDMA].TCs + iTC;
 			DMA_READ_JOB tmpJob;
 
-			if( kfifo_get(&pDevData->DMARead_Channels[iDMA].Jobs_ToDo, &tmpJob) == 1) /*sicher ist sicher*/
-			{
+			if (kfifo_get(&pDevData->DMARead_Channels[iDMA].Jobs_ToDo, &tmpJob) == 1) {
 				//struct belegen 
 				tmpTC->boIsUsed	= TRUE;
 				tmpTC->Job		= tmpJob;
@@ -447,8 +444,7 @@ void AGEXDrv_DMARead_StartDMA(PDEVICE_DATA pDevData)
 
 
 		//> starten
-		if(boIsTCInitDone)
-		{
+		if (boIsTCInitDone) {
 			pr_devel(MODDEBUGOUTTEXT" - try to start\n");
 			spin_lock_bh(&pDevData->DMARead_SpinLock);
 //---------------------------------------------------------->
@@ -556,18 +552,13 @@ void AGEXDrv_DMARead_DPC(PDEVICE_DATA pDevData, const u32 isDoneReg, const u32 i
 {
 	u8 iDMA, iTC, BitShift;
 
-	pr_devel(MODDEBUGOUTTEXT" AGEXDrv_DMARead_DPC> isDoneReg: 0x%08X, isOkReg: 0x%08X\n", isDoneReg, isOkReg);
-
-
+	dev_dbg(pDevData->dev, "AGEXDrv_DMARead_DPC > isDoneReg: 0x%08X, isOkReg: 0x%08X\n", isDoneReg, isOkReg);
 
 	/* über alle DMAs/TCs gehen, wir gehen davon aus das es keine lücken gibt!*/
 	/**************************************************************************************/
 	BitShift = 0;
-	for(iDMA = 0; iDMA < pDevData->DMARead_channels; iDMA++)
-	{
-		
-		for(iTC =0; iTC < pDevData->DMARead_TCs; iTC++)
-		{
+	for (iDMA = 0; iDMA < pDevData->DMARead_channels; iDMA++) {
+		for (iTC =0; iTC < pDevData->DMARead_TCs; iTC++) {
 			bool isDone, isOk, isUsed;
 		
 			//> Bits sammeln (damit es besser zum lesen ist)
@@ -575,32 +566,24 @@ void AGEXDrv_DMARead_DPC(PDEVICE_DATA pDevData, const u32 isDoneReg, const u32 i
 			isOk 		= ( ((isOkReg >> BitShift) & 0x1) == 1) ? (TRUE) : (FALSE);
 			isUsed  	= pDevData->DMARead_Channels[iDMA].TCs[iTC].boIsUsed;
 
-
 			//> FPGA sagt die DMA ist durch
-			if(isDone)
-			{
+			if (isDone) {
 				//haben wir sie auch gestartet? (können nix machen wenn nicht)
-				if( !isUsed )
-				{
-					printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_DMARead_DPC>  DMA IRQ without DMA! DMA: %d, TC: %d\n", iDMA, iTC);
+				if (!isUsed) {
+					dev_dbg(pDevData->dev, "AGEXDrv_DMARead_DPC > DMA IRQ without DMA! DMA: %d, TC: %d\n", iDMA, iTC);
 				}
-				else
-				{
+				else {
 					//FPGA hat sie abgebrochen oder wir durch IOctrl)
-					if( !isOk )
-					{
-						pr_devel(MODDEBUGOUTTEXT" - AgeXDMAReadDPC: DMA IRQ for a broken DMA!\n");
-						dev_info(pDevData->dev, "AgeXDMAReadDPC > DMA IRQ for a broken DMA\n");
+					if (!isOk) {
+						dev_dbg(pDevData->dev, "AgeXDMAReadDPC > DMA IRQ for a broken DMA, channel: %u, TC: %u\n", iDMA, iTC);
 						AGEXDrv_DMARead_EndDMA(pDevData, iDMA, iTC, FALSE /*boIsOk*/, 0 /*don't care*/);
 					}
 					//isDone && isOK && isUsed
-					else 
-					{
+					else {
 						//DMA oder nur Transfer durch?
-						if( pDevData->DMARead_Channels[iDMA].TCs[iTC].Job.SGItemsLeft == 0)	//DMA & Transfer durch
+						if (pDevData->DMARead_Channels[iDMA].TCs[iTC].Job.SGItemsLeft == 0)	//DMA & Transfer durch
 							AGEXDrv_DMARead_EndDMA(pDevData, iDMA, iTC, TRUE /*boIsOk*/, pBufferCounters[BitShift]);
-						else
-						{	//nur der Transfer durch, nächsten starten
+						else {	//nur der Transfer durch, nächsten starten
 							spin_lock_bh(&pDevData->DMARead_SpinLock);
 //---------------------------------------------------------->
 							AGEXDrv_DMARead_StartNextTransfer_Locked(pDevData, iDMA, iTC);
@@ -611,7 +594,6 @@ void AGEXDrv_DMARead_DPC(PDEVICE_DATA pDevData, const u32 isDoneReg, const u32 i
 					}//if ok
 				}// if used
 			}//if is done
-
 
 			//> nächster TC ist beim nächsten Bit (auch wenn es die nächste DMA ist)
 			BitShift++;
@@ -631,44 +613,41 @@ void AGEXDrv_DMARead_DPC(PDEVICE_DATA pDevData, const u32 isDoneReg, const u32 i
 //bricht laufende DMAs ab sowie ungenutzte buffer
 void AGEXDrv_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA)
 {
+	PDMA_READ_CHANNEL pDMAChannel = &pDevData->DMARead_Channels[iDMA];
 	DMA_READ_JOB tmpJob;
 	u8 iTC;
 	memset(&tmpJob, 0, sizeof(tmpJob));	/* wegen warning */
 	
-	pr_devel(MODDEBUGOUTTEXT" AGEXDrv_DMARead_Abort_DMAChannel> DMA: %d\n",iDMA);
+	dev_dbg(pDevData->dev, "AGEXDrv_DMARead_Abort_DMAChannel> DMA: %d\n", iDMA);
 
 	spin_lock_bh(&pDevData->DMARead_SpinLock);
 //----------------------------->
 	//> alle Buffers aus .Jobs_ToDo() .Jobs_Done() adden mit FehlerFlag und .WaitSem posten für jeden verschobenen Buffer
-	while( kfifo_get(&pDevData->DMARead_Channels[iDMA].Jobs_ToDo, &tmpJob) == 1)
-	{
+	while( kfifo_get(&pDMAChannel->Jobs_ToDo, &tmpJob) == 1) {
 		tmpJob.boIsOk	= FALSE;
 
 		//adden (sollte immer passen)
-		if( kfifo_put(&pDevData->DMARead_Channels[iDMA].Jobs_Done, tmpJob) == 0){
-			printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_DMARead_Abort_DMAChannel> can't add Buffer to Jobs_Done, BufferLost\n"); break;
+		if (kfifo_put(&pDMAChannel->Jobs_Done, tmpJob) == 0) {
+			printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_DMARead_Abort_DMAChannel> can't add Buffer to Jobs_Done, BufferLost\n");
+			break;
 		}
 
 		//thread wecken
-		up(&pDevData->DMARead_Channels[iDMA].WaitSem);
+		up(&pDMAChannel->WaitSem);
 
-		pr_devel(MODDEBUGOUTTEXT" - move JOB .Jobs_ToDo > Jobs_Done\n");
+		dev_dbg(pDevData->dev, "move JOB .Jobs_ToDo > Jobs_Done\n");
 	}	
-
-
 
 	//> für alle gültigen/laufenden DMAs, bei allen TCs.boIsUsed==true, 
 	//> dann ein „SG“ mit Bit4 (Error) schicken (wird vor dem FIFO im FPGA abgefangen)
 	//> Job/Request offen lassen	
-	for(iTC =0; iTC < pDevData->DMARead_TCs; iTC++)
-	{
+	for (iTC =0; iTC < pDevData->DMARead_TCs; iTC++) {
 		//gültiger Eintrag mit dem gesuchten Request? (wenn boIsUsed, dann ist auch der Request gültig)
-		if(pDevData->DMARead_Channels[iDMA].TCs[iTC].boIsUsed)
-		{
+		if (pDMAChannel->TCs[iTC].boIsUsed) {
 			u8* adrSG, WordIndex;
 			u32 tempSG[DMA_READ_TC_TC2TC_SETPBYTES/4];
 
-			pr_devel(MODDEBUGOUTTEXT" - abort DMA iTC: %d \n", iTC);
+			dev_dbg(pDevData->dev, "abort DMA iTC: %d \n", iTC);
 
 			//nur das Flag muss gültig sein
 			tempSG[0] = DMA_READ_TC_SG_FLAG_ERROR;
@@ -678,8 +657,8 @@ void AGEXDrv_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA)
 			//(daher auf IRQ warten damit wir sicher sind das nicht mehr in den PC geschrieben wird, 
 			// falls die DMA in diesem Moment durch ist, wird das IRQ "Flag" dann verworfen...)
 			adrSG = AGEXDrv_DMARead_GetSGAdr(pDevData, iDMA, iTC);	
-			for(WordIndex=0; WordIndex < (DMA_READ_TC_TC2TC_SETPBYTES/4); WordIndex++)
-				iowrite32( tempSG[WordIndex], adrSG + WordIndex*4 );
+			for (WordIndex=0; WordIndex < (DMA_READ_TC_TC2TC_SETPBYTES/4); WordIndex++)
+				iowrite32(tempSG[WordIndex], adrSG + WordIndex*4);
 		}//if boIsUsed					
 	}//for iTC
 //<-----------------------------
@@ -785,10 +764,65 @@ void AGEXDrv_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData,  const u32 iDMA)
 		}//for FIFOSize
 
 	}//for TryLoop
-
-
 }
 
 
+int AGEXDrv_DMARead_Reset_DMAChannel(PDEVICE_DATA pDevData, unsigned int dma_channel)
+{
+	PDMA_READ_CHANNEL pDMAChannel = &pDevData->DMARead_Channels[dma_channel];
+	DMA_READ_JOB tmpJob;
+	unsigned int iTC;
+	int result;
 
+	// abort running DMA transfers in FPGA and move jobs from Jobs_ToDo to Jobs_Done FIFO
+	AGEXDrv_DMARead_Abort_DMAChannel(pDevData, dma_channel);
 
+	// Wait for completion of pending transfers
+	for (iTC = 0; iTC < pDevData->DMARead_TCs; iTC++) {
+		spin_lock_bh(&pDevData->DMARead_SpinLock);
+		if (pDMAChannel->TCs[iTC].boIsUsed) {
+			// reset semaphore count, removing count associated with jobs in Jobs_Done FIFO
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
+			sema_init(&pDMAChannel->WaitSem, 0);
+#else
+			init_MUTEX_LOCKED(&pDMAChannel->WaitSem);
+#endif
+			spin_unlock_bh(&pDevData->DMARead_SpinLock);
+
+			// wait
+			result = down_timeout(&pDMAChannel->WaitSem, msecs_to_jiffies(100));
+			if (result == (-ETIME)) {
+				dev_warn(pDevData->dev, "AGEXDrv_DMARead_Reset_DMAChannel(): reset DMA channel timeout waiting for lost image\n");
+				return -EFAULT;
+			}
+			if (result != 0) {
+				dev_warn(pDevData->dev, "AGEXDrv_DMARead_Reset_DMAChannel(): reset DMA channel down_timeout() failed\n");
+				return -EFAULT;
+			}
+		}
+		else
+			spin_unlock_bh(&pDevData->DMARead_SpinLock);	
+	}
+
+	// All buffers should be in the Jobs_Done now, unmap all
+	memset(&tmpJob, 0, sizeof(tmpJob));
+	spin_lock_bh(&pDevData->DMARead_SpinLock);
+	while (kfifo_get(&pDMAChannel->Jobs_Done, &tmpJob) == 1) {
+		if (tmpJob.pVMUser != 0) {
+			spin_unlock_bh(&pDevData->DMARead_SpinLock);	
+			dev_info(pDevData->dev, "AGEXDrv_DMARead_Reset_DMAChannel(): unmapping lost buffer 0x%lx, %u pages\n", tmpJob.pVMUser, tmpJob.pagesPinned);
+			AGEXDrv_DMARead_UnMapUserBuffer(pDevData, &tmpJob);
+			spin_lock_bh(&pDevData->DMARead_SpinLock);
+		}
+	}
+	spin_unlock_bh(&pDevData->DMARead_SpinLock);	
+
+	// Reset semaphore
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
+	sema_init(&pDMAChannel->WaitSem, 0);
+#else
+	init_MUTEX_LOCKED(&pDMAChannel->WaitSem);
+#endif
+
+	return 0;
+}
