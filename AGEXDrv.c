@@ -1,9 +1,7 @@
 /*
- * AGEXDrv.c
- *
  * The entry point to the kernel module
  *
- * Copyright (C) 201x IMAGO Technologies GmbH
+ * Copyright (C) IMAGO Technologies GmbH
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -221,10 +219,12 @@ void AGEXDrv_InitDrvData(PDEVICE_DATA pDat)
 	pDat->DMARead_TCs		= 0;
 	pDat->DMARead_SGs		= 0;
 	spin_lock_init(&pDat->DMARead_SpinLock);
-	for(iChannel = 0; iChannel < MAX_DMA_READ_DMACHANNELS; iChannel++)
+	for (iChannel = 0; iChannel < MAX_DMA_READ_DMACHANNELS; iChannel++)
 	{
-		PDMA_READ_CHANNEL pChannel = pDat->DMARead_Channels+iChannel;
+		PDMA_READ_CHANNEL pChannel = &pDat->DMARead_Channel[iChannel];
 
+		memset(pChannel->jobBuffers, 0, sizeof(pChannel->jobBuffers));
+		memset(&pChannel->dummyJob, 0, sizeof(pChannel->dummyJob));
 		INIT_KFIFO(pChannel->Jobs_ToDo);
 		INIT_KFIFO(pChannel->Jobs_Done);
 		#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)

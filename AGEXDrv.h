@@ -106,18 +106,21 @@ enum AGEX_DEVICE_SUBTYPE
 #define AGEXDRV_IOC_MAGIC  '['
 
 // direction is from user's view
-#define AGEXDRV_IOC_GET_VERSION 			_IOR(AGEXDRV_IOC_MAGIC, 0, IOCTLBUFFER)
-#define AGEXDRV_IOC_GET_BUILD_DATE 			_IOR(AGEXDRV_IOC_MAGIC, 1, IOCTLBUFFER)
-#define AGEXDRV_IOC_RELEASE_DEVICEID 		_IOWR(AGEXDRV_IOC_MAGIC, 2, u8)
-#define AGEXDRV_IOC_CREATE_DEVICEID 		_IOR(AGEXDRV_IOC_MAGIC, 3, u8)
-#define AGEXDRV_IOC_GET_SUBTYPE 			_IOR(AGEXDRV_IOC_MAGIC, 4, u8)
-#define AGEXDRV_IOC_ABORT_LONGTERM_READ 	_IOWR(AGEXDRV_IOC_MAGIC, 5, u8)
-#define AGEXDRV_IOC_DMAREAD_CONFIG			_IOW(AGEXDRV_IOC_MAGIC, 6, IOCTLBUFFER)
-#define AGEXDRV_IOC_DMAREAD_ADD_BUFFER		_IOW(AGEXDRV_IOC_MAGIC, 7, IOCTLBUFFER)
-#define AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER	_IOWR(AGEXDRV_IOC_MAGIC, 8, IOCTLBUFFER)
-#define AGEXDRV_IOC_DMAREAD_ABORT_DMA		_IOW(AGEXDRV_IOC_MAGIC, 9, u8)
-#define AGEXDRV_IOC_DMAREAD_ABORT_WAITER	_IOW(AGEXDRV_IOC_MAGIC, 10, u8)
-#define AGEXDRV_IOC_DMAREAD_RESETCHANNEL	_IOW(AGEXDRV_IOC_MAGIC, 11, u8)
+#define AGEXDRV_IOC_GET_VERSION 				_IOR(AGEXDRV_IOC_MAGIC, 0, IOCTLBUFFER)
+#define AGEXDRV_IOC_GET_BUILD_DATE 				_IOR(AGEXDRV_IOC_MAGIC, 1, IOCTLBUFFER)
+#define AGEXDRV_IOC_RELEASE_DEVICEID 			_IOWR(AGEXDRV_IOC_MAGIC, 2, u8)
+#define AGEXDRV_IOC_CREATE_DEVICEID 			_IOR(AGEXDRV_IOC_MAGIC, 3, u8)
+#define AGEXDRV_IOC_GET_SUBTYPE 				_IOR(AGEXDRV_IOC_MAGIC, 4, u8)
+#define AGEXDRV_IOC_ABORT_LONGTERM_READ 		_IOWR(AGEXDRV_IOC_MAGIC, 5, u8)
+#define AGEXDRV_IOC_DMAREAD_CONFIG				_IOW(AGEXDRV_IOC_MAGIC, 6, IOCTLBUFFER)
+#define AGEXDRV_IOC_DMAREAD_ADD_BUFFER			_IOW(AGEXDRV_IOC_MAGIC, 7, IOCTLBUFFER)
+#define AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER		_IOWR(AGEXDRV_IOC_MAGIC, 8, IOCTLBUFFER)
+#define AGEXDRV_IOC_DMAREAD_ABORT_DMA			_IOW(AGEXDRV_IOC_MAGIC, 9, u8)
+#define AGEXDRV_IOC_DMAREAD_ABORT_WAITER		_IOW(AGEXDRV_IOC_MAGIC, 10, u8)
+#define AGEXDRV_IOC_DMAREAD_RESETCHANNEL		_IOW(AGEXDRV_IOC_MAGIC, 11, u8)
+#define AGEXDRV_IOC_DMAREAD_MAP_BUFFER			_IOWR(AGEXDRV_IOC_MAGIC, 12, IOCTLBUFFER)
+#define AGEXDRV_IOC_DMAREAD_UNMAP_BUFFER		_IOW(AGEXDRV_IOC_MAGIC, 13, IOCTLBUFFER)
+#define AGEXDRV_IOC_DMAREAD_ADD_MAPPED_BUFFER	_IOW(AGEXDRV_IOC_MAGIC, 14, IOCTLBUFFER)
 
 
 /******************************************************************************************/
@@ -221,7 +224,8 @@ typedef struct _DMA_READ_JOB
 	// SG table
 	bool 			boIsSGValid;	// SG table 'SGTable' is valid
 	bool 			boIsSGMapped;	// SG table is mapped for DMA
-	struct sg_table SGTable;	
+	struct sg_table SGTable;
+	u32				SGcount;		// number of mapped SG elements
 	u32				SGItemsLeft;	// number of remaining SG elements for DMA to complete
 	struct scatterlist *pSGNext;	// SG elements to transfer
 }  DMA_READ_JOB, *PDMA_READ_JOB;
@@ -230,18 +234,24 @@ typedef struct _DMA_READ_JOB
 typedef struct _DMA_READ_TC
 {
 	bool 			boIsUsed;		// transfer channel is in use
-	DMA_READ_JOB	Job;			// current job data (comming from Jobs_ToDo FIFO, going to Jobs_Done FIFO)
+	DMA_READ_JOB	*pJob;			// current job data (comming from Jobs_ToDo FIFO, going to Jobs_Done FIFO)
+	u32				*pDesriptorFifo;
 }  DMA_READ_TC, *PDMA_READ_TC;
 
 // DMA channel structure
 typedef struct _DMA_READ_CHANNEL
 {
-	DECLARE_KFIFO(Jobs_ToDo, DMA_READ_JOB, MAX_DMA_READ_JOBFIFO_SIZE);	// pending transfer jobs
-	DECLARE_KFIFO(Jobs_Done, DMA_READ_JOB, MAX_DMA_READ_JOBFIFO_SIZE);	// transfer jobs done or aborted
+	DMA_READ_JOB jobBuffers[MAX_DMA_READ_JOBFIFO_SIZE-1];				// storage of job buffers, -1 for dummyJob in kfifo
+	DMA_READ_JOB dummyJob;												// dummy job for DMA abort
+
+	// job FIFOs store only pointer to jobs:
+	DECLARE_KFIFO(Jobs_ToDo, PDMA_READ_JOB, MAX_DMA_READ_JOBFIFO_SIZE);	// pending transfer jobs
+	DECLARE_KFIFO(Jobs_Done, PDMA_READ_JOB, MAX_DMA_READ_JOBFIFO_SIZE);	// transfer jobs done or aborted
 
 	struct semaphore WaitSem;									// counting semapore, increments for each job in Jobs_Done
 
-	DMA_READ_TC		TCs[MAX_DMA_READ_CHANNELTCS];				// transfer channel data
+	DMA_READ_TC TCs[MAX_DMA_READ_CHANNELTCS];					// transfer channel data
+	bool doManualMap;
 }  DMA_READ_CHANNEL, *PDMA_READ_CHANNEL;
 
 
@@ -287,7 +297,7 @@ typedef struct _DEVICE_DATA
 	u8						DMARead_TCs;		// actual number of transfer channels
 	u16  					DMARead_SGs;		// actual number of scatter gather elements
 	spinlock_t				DMARead_SpinLock;	// DMA spinlock
-	DMA_READ_CHANNEL		DMARead_Channels[MAX_DMA_READ_DMACHANNELS];	// DMA channel data
+	DMA_READ_CHANNEL		DMARead_Channel[MAX_DMA_READ_DMACHANNELS];	// DMA channel data
 } DEVICE_DATA, *PDEVICE_DATA;
 
 // module data structure
@@ -331,11 +341,11 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id);
 void AGEXDrv_PCI_remove(struct pci_dev *pcidev);
 
 /* DMA functions */
-void AGEXDrv_DMARead_StartDMA(PDEVICE_DATA pDevData);
+int AGEXDrv_DMARead_AddJob(PDEVICE_DATA pDevData, u32 iDMA, DMA_READ_JOB *pJob);
 void AGEXDrv_DMARead_DPC(PDEVICE_DATA pDevData, const u32 isDoneReg, const u32 isOkReg, const u16* pBufferCounters);
 void AGEXDrv_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC);
 
-bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob, uintptr_t pVMUser, u64 bufferSize);
+bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMAChannel, uintptr_t pVMUser, u64 bufferSize, DMA_READ_JOB **ppJob);
 void AGEXDrv_DMARead_UnMapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob);
 
 void AGEXDrv_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA);
