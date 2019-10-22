@@ -626,40 +626,22 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 			down(&pDevData->DeviceSem);
 //......................................................................>
 			
-			//> Buffer aus FIFO entnehmen (wenn warten erfolgreich war [k�nnte aber auch ein abort sein])
+			// get buffer from jobs done FIFO
 			spin_lock_bh(&pDevData->DMARead_SpinLock);
-//---------------------------------------------------------->
-			if (kfifo_len( &pDMAChannel->Jobs_Done) >= 1) {
-				if (kfifo_get(&pDMAChannel->Jobs_Done, &pJob) != 1) { /*sicher ist sicher*/
-					spin_unlock_bh(&pDevData->DMARead_SpinLock);
-					printk(KERN_WARNING MODDEBUGOUTTEXT"Locked_ioctl> (AGEXDRV_IOC_DMAREAD_ADD_BUFFER), kfifo_get() failed!\n");
-					return -EINTR;
-				}
-			}
-			else {
+			if (kfifo_get(&pDMAChannel->Jobs_Done, &pJob) == 0) {
 				spin_unlock_bh(&pDevData->DMARead_SpinLock);	
-				pr_devel(MODDEBUGOUTTEXT" - DMARead wake up, without buffer!\n");
+				dev_err(pDevData->dev, "Locked_ioctl AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER > DMARead wake up, without buffer!\n");
 				return -EFAULT;
 			}
-//<----------------------------------------------------------
 			spin_unlock_bh(&pDevData->DMARead_SpinLock);	
 
 			pVMUser = pJob->pVMUser;	// save user pointer, gets cleared by AGEXDrv_DMARead_UnMapUserBuffer()
 
-			// unmap buffer
+			// unmap buffer or handle cache
 			if (!pDMAChannel->doManualMap)
 				AGEXDrv_DMARead_UnMapUserBuffer(pDevData, pJob);
-#ifndef __ARM_ARCH_7A__
-			// omit dma_sync_sg_for_cpu() because of the required overhead:
-			// dma_sync_sg_for_cpu() does a cache-invalidate on all pages which was already done by calling
-			// dma_sync_sg_for_device() when the buffer was added. Acccessing the buffer in between is not allowed anyway,
-			// so the pages should still be invalidated. The API leaves one extra page space before and after the
-			// DMA region to avoid speculativ loads in this region.
-			// __dma_page_cpu_to_dev(): https://elixir.bootlin.com/linux/v4.14.67/source/arch/arm/mm/dma-mapping.c#L1008
-			// __dma_page_dev_to_cpu(): https://elixir.bootlin.com/linux/v4.14.67/source/arch/arm/mm/dma-mapping.c#L1024
 			else
 				dma_sync_sg_for_cpu(pDevData->dev, pJob->SGTable.sgl, pJob->SGTable.nents, DMA_FROM_DEVICE);
-#endif
 
 			// send buffer to user (can also be dummy-Buffer)
 			if (put_user( (u8) pJob->boIsOk, pToUserMem) != 0) {
