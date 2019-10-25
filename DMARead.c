@@ -526,7 +526,7 @@ void AGEXDrv_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 i
 		//> ins FPGA schreiben
 		pr_devel(MODDEBUGOUTTEXT" - DMA SGs> i: %d > 0x%llx, Bytes %d\n", iSG, (u64) sg_address, sg_length);
 		for (word = 0; word < (DMA_READ_TC_TC2TC_SETPBYTES/4); word++)
-			iowrite32(tempSG[word], pTC->pDesriptorFifo + word);
+			writel_relaxed(tempSG[word], pTC->pDesriptorFifo + word);
 
 	}//for max mögliche SGs pro Transfer
 }
