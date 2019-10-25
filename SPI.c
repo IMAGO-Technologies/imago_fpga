@@ -22,54 +22,6 @@
 
 #include "AGEXDrv.h"
 
-#if 0
-irqreturn_t imago_spi_interrupt(int irq, void *dev_id)
-{
-#if 1
-	pr_devel(MODDEBUGOUTTEXT" imago_spi_interrupt> (IRQ:%d)\n", irq);
-//	trace_printk("imago_spi_interrupt> (IRQ:%d)\n", irq);
-
-	return IRQ_WAKE_THREAD;
-#else
-
-	PDEVICE_DATA pDevData = NULL;
-
-	pr_devel(MODDEBUGOUTTEXT" imago_spi_interrupt> (IRQ:%d, devptr:%p)\n", irq, dev_id);
-
-	/* war der int von uns? reg lesen  */
-	if( dev_id == NULL )
-		return IRQ_NONE;
-	pDevData = (PDEVICE_DATA) dev_id;
-	if (pDevData->DeviceSubType == SubType_Invalid)
-		return IRQ_NONE;
-
-	/* läuft der DPC noch 
-	 * (damit wir nicht bei fremd HWIs, nicht falsch weil doppelt<>Flag im CommonBuffer, denken er währe unser)
-	 * der DPC könnte noch laufen*/
-	if (pDevData->boIsDPCRunning==TRUE)
-		return IRQ_NONE;
-
-	//merken das gleich der DPC läuft
-	/* kann keine 2 HWIs zur gleichen Zeit geben, aber der 
-	 * DPC(eigentlich nicht da der auf der selben CPU ausgeführt wird)
-	 * könnte durch sein vor dem das die HWI durch ist*/
-	pDevData->boIsDPCRunning=TRUE;
-
-	// trigger the tasklet (sollte immer gehen)
-	tasklet_schedule(&pDevData->IRQTasklet);
-
-	return IRQ_HANDLED;
-#endif
-}
-#endif
-
-irqreturn_t imago_spi_thread(int irq, void *dev_id)
-{
-	AGEXDrv_tasklet_SPI((unsigned long)dev_id);
-	
-	return IRQ_HANDLED;
-}
-
 //struct mit den file fns
 struct file_operations AGEXDrv_SPI_fops = {
 	.owner	= THIS_MODULE,
@@ -146,21 +98,9 @@ int imago_spi_probe(struct spi_device *spi)
 	//>IRQ & tasklet
 	/**********************************************************************/
 
-#if 1
-	if (request_threaded_irq(spi->irq, NULL/*imago_spi_interrupt*/, imago_spi_thread,
+	if (request_threaded_irq(spi->irq, NULL, AGEXDrv_spi_thread,
 				IRQF_TRIGGER_RISING | IRQF_ONESHOT, MODMODULENAME, &_ModuleData.Devs[DevIndex]) != 0) {
-#else
-	//tasklet
-	tasklet_init(&_ModuleData.Devs[DevIndex].IRQTasklet, AGEXDrv_tasklet_SPI, DevIndex);
-
-	if (request_irq(spi->irq,/* die IRQ nummer */
-			imago_spi_interrupt,	/* die IRQ fn */
-			IRQF_SHARED,		/* shared */
-			MODMODULENAME,		/* name wird in /proc/interrupts angezeigt */
-			&_ModuleData.Devs[DevIndex]	/* unique identifier/ wird auch dem CallBack mit gegeben */
-			) != 0) {
-#endif
-		printk(KERN_ERR MODDEBUGOUTTEXT" request_irq failed\n");
+		printk(KERN_ERR MODDEBUGOUTTEXT" request_threaded_irq failed\n");
 		_ModuleData.Devs[DevIndex].boIsIRQOpen = FALSE;
 		return -EIO;
 	}
@@ -231,9 +171,6 @@ int imago_spi_remove(struct spi_device *spi)
 		free_irq(spi->irq, pDevData);
 	}
 	
-	//"... this function busy-waits until the tasklet exits..."
-//	tasklet_disable(&pDevData->IRQTasklet);
-
 	//device in der sysfs class löschen
 	if (!IS_ERR(_ModuleData.pModuleClass))	
 		device_destroy(_ModuleData.pModuleClass, pDevData->DeviceNumber);
