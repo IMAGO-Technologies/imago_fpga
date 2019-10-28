@@ -149,8 +149,10 @@ int AGEXDrv_init(void)
 	if( pci_register_driver(&AGEXDrv_pci_driver) !=0)
 		printk(KERN_WARNING MODDEBUGOUTTEXT" pci_register_driver failed!\n");
 
+#ifdef __aarch64__
 	if( spi_register_driver(&imago_spi_driver) !=0)
 		printk(KERN_WARNING MODDEBUGOUTTEXT" spi_register_driver failed!\n");
+#endif
 	
 	printk(KERN_INFO MODDEBUGOUTTEXT" init done (%s [%s])\n", MODDATECODE, MODVERSION);
 	pr_devel(MODDEBUGOUTTEXT" leave init\n");
@@ -163,7 +165,9 @@ void AGEXDrv_exit(void)
 {
 	pr_devel(MODDEBUGOUTTEXT" enter exit\n");
 
+#ifdef __aarch64__
 	spi_unregister_driver(&imago_spi_driver);
+#endif
 
 	//wir können uns nicht mehr um PCIdevs kümmern:-)
 	pci_unregister_driver(&AGEXDrv_pci_driver);

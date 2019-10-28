@@ -23,7 +23,10 @@ else
 endif
 
 ccflags-y := $(DEBFLAGS) -Werror -Wall -Wextra -Wno-unused-parameter -Wno-date-time 
-agexpcidrv-objs := FileOps.o ISRTasklet.o LockedOps.o AGEXDrv.o PCI.o SPI.o DMARead.o
+agexpcidrv-objs := FileOps.o ISRTasklet.o LockedOps.o AGEXDrv.o PCI.o DMARead.o
+ifeq ($(ARCH),arm64)
+	agexpcidrv-objs += SPI.o
+endif
 obj-m	:= agexpcidrv.o
 
 # If KERNELDIR is defined, we've been invoked from the DKMS
