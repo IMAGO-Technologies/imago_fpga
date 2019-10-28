@@ -20,6 +20,7 @@
  */
 
 #include "AGEXDrv.h"
+#include <linux/io.h>	// for writel_relaxed (used for armhf only)
 
 //static u8* AGEXDrv_DMARead_GetSGAdr(PDEVICE_DATA pDevData,const u32 iDMA, const u32 iTC);
 
@@ -254,7 +255,7 @@ bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMA
 	pJob->SGcount = mappedSGs;
 
 	dev_dbg(pDevData->dev, "dma_map_sg() use %d from %d SGs\n", mappedSGs, pJob->SGTable.nents);
-	dev_dbg(pDevData->dev, "first sg element: addr=0x%08x, len=%u\n", (unsigned int)sg_dma_address(pJob->SGTable.sgl), sg_dma_len(pJob->SGTable.sgl));
+	dev_dbg(pDevData->dev, "first sg element: addr=0x%08x, len=%u\n", (unsigned int)sg_dma_address(pJob->SGTable.sgl), (unsigned int)sg_dma_len(pJob->SGTable.sgl));
 
 	return TRUE;
 }
@@ -526,7 +527,11 @@ void AGEXDrv_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 i
 		//> ins FPGA schreiben
 		pr_devel(MODDEBUGOUTTEXT" - DMA SGs> i: %d > 0x%llx, Bytes %d\n", iSG, (u64) sg_address, sg_length);
 		for (word = 0; word < (DMA_READ_TC_TC2TC_SETPBYTES/4); word++)
+#ifdef __ARM_ARCH_7A__
 			writel_relaxed(tempSG[word], pTC->pDesriptorFifo + word);
+#else
+			iowrite32(tempSG[word], pTC->pDesriptorFifo + word);
+#endif
 
 	}//for max mögliche SGs pro Transfer
 }
