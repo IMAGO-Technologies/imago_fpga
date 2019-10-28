@@ -98,6 +98,7 @@ ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *
 	long res;	
 	PDEVICE_DATA pDevData = NULL;
 	struct SUN_DEVICE_DATA *pSunDevice;
+	unsigned long flags;
 
 	/*Wie es geht:
 	 * 1. (locked)
@@ -168,7 +169,7 @@ ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *
 
 	if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA)	// should never happen
 		dev_warn(pDevData->dev, "AGEXDrv_read() > pending FPGA request for DeviceID %u, toggling serial ID -> %u\n", DeviceID, pSunDevice->serialID);
-	spin_lock_bh(&pDevData->lock);
+	spin_lock_irqsave(&pDevData->lock, flags);
 	if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA) {
 		// Pending request is still in FPGA (after timeout or reuse of device after killed process) => toggle serial ID
 		pSunDevice->serialID = !pSunDevice->serialID;
@@ -177,7 +178,7 @@ ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *
 	else {
 		pSunDevice->requestState = SUN_REQ_STATE_INFPGA;
 	}
-	spin_unlock_bh(&pDevData->lock);
+	spin_unlock_irqrestore(&pDevData->lock, flags);
 
 	// check semaphore
 	while (down_trylock(&pSunDevice->semResult) == 0) // should never happen
@@ -215,15 +216,15 @@ ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *
 	}
 
 	//abort durch user?
-	spin_lock_bh(&pDevData->lock);
+	spin_lock_irqsave(&pDevData->lock, flags);
 	if (pSunDevice->requestState == SUN_REQ_STATE_ABORT) {
 		pSunDevice->requestState = SUN_REQ_STATE_IDLE;
-		spin_unlock_bh(&pDevData->lock);
+		spin_unlock_irqrestore(&pDevData->lock, flags);
 		dev_dbg(pDevData->dev, "AGEXDrv_read() > aborting read for DeviceID: %u\n", DeviceID);
 		return -EINTR;
 	}
 	else if (pSunDevice->requestState != SUN_REQ_STATE_RESULT) {
-		spin_unlock_bh(&pDevData->lock);
+		spin_unlock_irqrestore(&pDevData->lock, flags);
 		dev_warn(pDevData->dev, "AGEXDrv_read() > unexpected request state (%u)\n", pSunDevice->requestState);
 		return -EFAULT;
 	}
@@ -233,7 +234,7 @@ ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *
 	}
 
 	pSunDevice->requestState = SUN_REQ_STATE_IDLE;
-	spin_unlock_bh(&pDevData->lock);
+	spin_unlock_irqrestore(&pDevData->lock, flags);
 
 	return 3*4;
 }

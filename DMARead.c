@@ -367,13 +367,13 @@ static inline void AGEXDrv_DMARead_EndDMA(PDEVICE_DATA pDevData, const u32 iDMA,
 		return;
 	}
 
-	spin_lock_bh(&pDevData->DMARead_SpinLock);
+	spin_lock(&pDevData->DMARead_SpinLock);
 
 	// check if current job has completed all SG elements
 	if (isOk && pDevData->DMARead_Channel[iDMA].TCs[iTC].pJob->SGItemsLeft != 0) {
 		// start next transfer for this job
 		AGEXDrv_DMARead_StartNextTransfer_Locked(pDevData, iDMA, iTC);
-		spin_unlock_bh(&pDevData->DMARead_SpinLock);
+		spin_unlock(&pDevData->DMARead_SpinLock);
 		return;
 	}
 
@@ -396,7 +396,7 @@ static inline void AGEXDrv_DMARead_EndDMA(PDEVICE_DATA pDevData, const u32 iDMA,
 		pTC->boIsUsed = FALSE;
 	}
 
-	spin_unlock_bh(&pDevData->DMARead_SpinLock);
+	spin_unlock(&pDevData->DMARead_SpinLock);
 
 	// notify thread
 	up(&pDMAChannel->WaitSem);
@@ -419,7 +419,7 @@ int AGEXDrv_DMARead_AddJob(PDEVICE_DATA pDevData, u32 iDMA, DMA_READ_JOB *pJob)
 	pJob->SGItemsLeft = pJob->SGcount;
 	pJob->pSGNext = pJob->SGTable.sgl;
 
-	spin_lock_bh(&pDevData->DMARead_SpinLock);
+	spin_lock(&pDevData->DMARead_SpinLock);
 
 	// start transfer if idle
 	for (iTC = 0; iTC < pDevData->DMARead_TCs; iTC++) {
@@ -427,19 +427,19 @@ int AGEXDrv_DMARead_AddJob(PDEVICE_DATA pDevData, u32 iDMA, DMA_READ_JOB *pJob)
 			pDMAChannel->TCs[iTC].pJob = pJob;
 			pDMAChannel->TCs[iTC].boIsUsed = TRUE;
 			AGEXDrv_DMARead_StartNextTransfer_Locked(pDevData, iDMA, iTC);
-			spin_unlock_bh(&pDevData->DMARead_SpinLock);
+			spin_unlock(&pDevData->DMARead_SpinLock);
 			return 0;
 		}
 	}
 
 	// add job to Jobs_ToDo FIFO
 	if (kfifo_put(&pDMAChannel->Jobs_ToDo, pJob) == 0) {
-		spin_unlock_bh(&pDevData->DMARead_SpinLock);
+		spin_unlock(&pDevData->DMARead_SpinLock);
 		dev_warn(pDevData->dev, "DMARead_AddJob > Error adding buffer into JobToDo FIFO\n");
 		return -ENOMEM;
 	}
 	
-	spin_unlock_bh(&pDevData->DMARead_SpinLock);
+	spin_unlock(&pDevData->DMARead_SpinLock);
 
 	return 0;
 }
@@ -576,7 +576,7 @@ void AGEXDrv_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA)
 
 	dev_dbg(pDevData->dev, "AGEXDrv_DMARead_Abort_DMAChannel> DMA: %d\n", iDMA);
 
-	spin_lock_bh(&pDevData->DMARead_SpinLock);
+	spin_lock(&pDevData->DMARead_SpinLock);
 //----------------------------->
 	//> alle Buffers aus .Jobs_ToDo() .Jobs_Done() adden mit FehlerFlag und .WaitSem posten für jeden verschobenen Buffer
 	while (kfifo_get(&pDMAChannel->Jobs_ToDo, &pJob) == 1) {
@@ -611,7 +611,7 @@ void AGEXDrv_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA)
 		}//if boIsUsed					
 	}//for iTC
 //<-----------------------------
-	spin_unlock_bh(&pDevData->DMARead_SpinLock);
+	spin_unlock(&pDevData->DMARead_SpinLock);
 }
 
 
@@ -644,10 +644,10 @@ void AGEXDrv_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData,  const u32 iDMA)
 
 	for (iTryLoop=0; iTryLoop<MaxTryLoop; iTryLoop++) {
 		// add Dummy-Job to Jobs_Done FIFO
-		spin_lock_bh(&pDevData->DMARead_SpinLock);
+		spin_lock(&pDevData->DMARead_SpinLock);
 		if (kfifo_put(&pDMAChannel->Jobs_Done, &pDMAChannel->dummyJob) == 0)
 			printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_DMARead_Abort_DMAWaiter> can't add dummyBuffer(iDMA: %d, i: %d)\n", iDMA, iTryLoop);
-		spin_unlock_bh(&pDevData->DMARead_SpinLock);
+		spin_unlock(&pDevData->DMARead_SpinLock);
 
 		// wakeup thread
 		up(&pDMAChannel->WaitSem);
@@ -659,7 +659,7 @@ void AGEXDrv_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData,  const u32 iDMA)
 
 			//> versuchen (dummy/echtes)Bild zu lesen 
 			if (down_trylock(&pDMAChannel->WaitSem) == 0) {
-				spin_lock_bh(&pDevData->DMARead_SpinLock);
+				spin_lock(&pDevData->DMARead_SpinLock);
 //---------------------------------------------------------->
 				if (kfifo_get(&pDMAChannel->Jobs_Done, &pJob) == 1) {
 					// dummy-Buffer? => done
@@ -683,7 +683,7 @@ void AGEXDrv_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData,  const u32 iDMA)
 				else
 					printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_DMARead_Abort_DMAWaiter>DMARead wake up, without buffer!\n");
 //<----------------------------------------------------------
-				spin_unlock_bh(&pDevData->DMARead_SpinLock);	
+				spin_unlock(&pDevData->DMARead_SpinLock);	
 			}
 			else {
 				//TimeOut, FIFO leer, User hat dummyBuffer gelesen => fertig
@@ -708,7 +708,7 @@ int AGEXDrv_DMARead_Reset_DMAChannel(PDEVICE_DATA pDevData, unsigned int dma_cha
 
 	// Wait for completion of pending transfers
 	for (iTC = 0; iTC < pDevData->DMARead_TCs; iTC++) {
-		spin_lock_bh(&pDevData->DMARead_SpinLock);
+		spin_lock(&pDevData->DMARead_SpinLock);
 		if (pDMAChannel->TCs[iTC].boIsUsed) {
 			// reset semaphore count, removing count associated with jobs in Jobs_Done FIFO
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
@@ -716,7 +716,7 @@ int AGEXDrv_DMARead_Reset_DMAChannel(PDEVICE_DATA pDevData, unsigned int dma_cha
 #else
 			init_MUTEX_LOCKED(&pDMAChannel->WaitSem);
 #endif
-			spin_unlock_bh(&pDevData->DMARead_SpinLock);
+			spin_unlock(&pDevData->DMARead_SpinLock);
 
 			// wait
 			result = down_timeout(&pDMAChannel->WaitSem, msecs_to_jiffies(100));
@@ -730,7 +730,7 @@ int AGEXDrv_DMARead_Reset_DMAChannel(PDEVICE_DATA pDevData, unsigned int dma_cha
 			}
 		}
 		else
-			spin_unlock_bh(&pDevData->DMARead_SpinLock);	
+			spin_unlock(&pDevData->DMARead_SpinLock);	
 	}
 
 	// unmap used job buffers

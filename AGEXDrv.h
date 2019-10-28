@@ -22,7 +22,7 @@
 
 //> defines about the Module
 /******************************************************************************************/
-#define MODVERSION "1.1.10.1"
+#define MODVERSION "1.1.11.0"
 #define MODDATECODE __DATE__ " - " __TIME__
 #define MODLICENSE "GPL";
 #define MODDESCRIPTION "IMAGO FPGA / RTCC device driver";
@@ -56,7 +56,7 @@
 #include <linux/of_device.h>	// for of*
 #include <linux/pci.h>		// for pci*
 #include <linux/spi/spi.h>		// for spi*
-#include <linux/ioport.h>	// for _regio*
+#include <linux/ioport.h>	// for _region*
 #include <linux/interrupt.h>// for IRQ*
 #include <linux/dma-mapping.h>	// for dma_*
 #include <linux/scatterlist.h>	// sg_* ...
@@ -283,8 +283,6 @@ typedef struct _DEVICE_DATA
 	//> ~IRQ
 	//***************************************************************/
 	bool					boIsIRQOpen;	//true<>IRQ ist open
-	bool 					boIsDPCRunning;	//damit nur ein DPC zur Zeit l�uft&gequeued 
-	struct tasklet_struct	IRQTasklet;		//~SWI worker
 	
 	//> CommonBuffer (AGEX2/4...)
 	//***************************************************************/
@@ -330,11 +328,12 @@ ssize_t AGEXDrv_write (struct file *filp, const char __user *buf, size_t count,l
 long AGEXDrv_unlocked_ioctl (struct file *filp, unsigned int cmd,unsigned long arg);
 
 /* ~IRQ functions */
-irqreturn_t AGEXDrv_interrupt(int irq, void *dev_id);
+irqreturn_t AGEXDrv_pci_interrupt(int irq, void *dev_id);
+irqreturn_t AGEXDrv_pcie_interrupt(int irq, void *dev_id);
 void AGEXDrv_SwitchInterruptOn(PDEVICE_DATA pDevData, const bool boTurnOn);
-void AGEXDrv_tasklet_PCIe(unsigned long data);
-void AGEXDrv_tasklet_PCI(unsigned long data);
-void AGEXDrv_tasklet_SPI(unsigned long data);
+irqreturn_t AGEXDrv_pcie_thread(int irq, void *dev_id);
+irqreturn_t AGEXDrv_pci_thread(int irq, void *dev_id);
+irqreturn_t AGEXDrv_spi_thread(int irq, void *dev_id);
 
 /* PCI functions */
 int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id);

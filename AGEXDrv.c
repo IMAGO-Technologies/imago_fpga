@@ -212,7 +212,6 @@ void AGEXDrv_InitDrvData(PDEVICE_DATA pDat)
 	pDat->pVACommonBuffer 	= NULL;
 	pDat->pBACommonBuffer	= 0;
 	pDat->boIsIRQOpen		= FALSE;
-	pDat->boIsDPCRunning	= FALSE;
 
 
 	/* DMA */

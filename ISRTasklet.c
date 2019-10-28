@@ -53,8 +53,6 @@ void AGEXDrv_SwitchInterruptOn(PDEVICE_DATA pDevData, const bool boTurnOn)
 			memset(pDevData->pVACommonBuffer, 0, 2 * sizeof(u32));
 			smp_mb();	//nop bei x86
 		}
-
-		pDevData->boIsDPCRunning = FALSE;
 	}
 
 	/* IRQ enable flag */
@@ -63,162 +61,112 @@ void AGEXDrv_SwitchInterruptOn(PDEVICE_DATA pDevData, const bool boTurnOn)
 
 
 
-//< HWIRQ PCI/PCIe > nur pruefen ob von uns -> tasklet starten
-irqreturn_t AGEXDrv_interrupt(int irq, void *dev_id)
+// PCI interrupt
+irqreturn_t AGEXDrv_pci_interrupt(int irq, void *dev_id)
 {
 	u32 regVal;
-	PDEVICE_DATA pDevData = NULL;
+	PDEVICE_DATA pDevData = (PDEVICE_DATA)dev_id;
 
-	/* war der int von uns? reg lesen  */
-	if( dev_id == NULL )
-		return IRQ_NONE;
-	pDevData = (PDEVICE_DATA) dev_id;
-	if( (pDevData->pVABAR0 == NULL) || (pDevData->DeviceSubType == SubType_Invalid) )
-		return IRQ_NONE;
+	BUG_ON(pDevData == NULL || pDevData->pVABAR0 == NULL || pDevData->DeviceSubType == SubType_Invalid);
 
-	/* läuft der DPC noch 
-	 * (damit wir nicht bei fremd HWIs, nicht falsch weil doppelt<>Flag im CommonBuffer, denken er währe unser)
-	 * der DPC könnte noch laufen*/
-	if(pDevData->boIsDPCRunning==TRUE)
-		return IRQ_NONE;
+	// check the FPGA interrupt flag (cleared whein FIFO is empty or when interrupt is disabled)
+	regVal = ioread32(pDevData->pVABAR0 + ISR_AVAILABLE_OFFSET);
+	if ((regVal & 0x1) == 0)
+		return IRQ_NONE;	// not our interrupt
 
+	// disable interrupt in FPGA
+	AGEXDrv_SwitchInterruptOn(pDevData, FALSE);
 
-	/* liest das IRQ flag ein */
-	if( IS_TYPEWITH_COMMONBUFFER(pDevData) )
-	{
-		if( (pDevData->pVACommonBuffer == NULL) || (pDevData->pBACommonBuffer == 0) )
-			return IRQ_NONE;
+	// wake up thread
+	return IRQ_WAKE_THREAD;
+}
 
-		regVal = ((u32*)pDevData->pVACommonBuffer)[0];		//das Bit steht in uns Drin
+// PCIe interrupt
+irqreturn_t AGEXDrv_pcie_interrupt(int irq, void *dev_id)
+{
+	PDEVICE_DATA pDevData = (PDEVICE_DATA)dev_id;
+	u32			IRQReg_A;
+	u32			sun_packet[MAX_SUNPACKETSIZE/4];
+	u32			wordCount;
 
-		//bei nicht DMA nur 1. Bit (sicher ist sicher)
-		if( !IS_TYPEWITH_DMA2HOST(pDevData) )
-			regVal &= 0x1;
+	IRQReg_A = ((u32*)pDevData->pVACommonBuffer)[0];
+
+	// check for SUN interrupt flag
+	if ((IRQReg_A & 0x1) != 0) {
+		// get SUN Header0/1
+		sun_packet[0] = ((u32*)pDevData->pVACommonBuffer)[2+0];
+		sun_packet[1] = ((u32*)pDevData->pVACommonBuffer)[2+1];
+
+		// get SUN packet payload
+		wordCount = sun_packet[1] & 0xFF;
+		if (4 * (2 + wordCount) > sizeof(sun_packet)) {
+			dev_err(pDevData->dev, "AGEXDrv_pcie_thread() > SUN Error: word count is invalid: %d\n", wordCount);
+			return IRQ_HANDLED;
+		}
+		memcpy(&sun_packet[2], ((u32*)pDevData->pVACommonBuffer) + 2 + 2, 4 * wordCount);
+		
+		// process SUN packet
+		InterruptTaskletSun(pDevData, sun_packet);
 	}
-	else
-	{
-		//das Flag geht weg wenn FIFO leer oder IRQs off sind
-		regVal = ioread32(pDevData->pVABAR0 + ISR_AVAILABLE_OFFSET);
-		regVal &= 0x1;		//nur das 1. Bit ist das IRQFlag (sicher ist sicher)
-	}
 
+	// check for DMA done flag and wake thread if required
+	if (IS_TYPEWITH_DMA2HOST(pDevData) && (IRQReg_A >> 4) != 0)
+		return IRQ_WAKE_THREAD;
 
-	/* ja, unser interrupt */
-	if(regVal != 0)
-	{
-		//INTs abschalten
-		//AGEX: IRQ geht weg wenn FIFO leer oder IRQs off sind
-		//AGEX2...: automatisch
-		if( !IS_TYPEWITH_COMMONBUFFER(pDevData) )
-			AGEXDrv_SwitchInterruptOn(pDevData, FALSE);
+	AGEXDrv_SwitchInterruptOn(pDevData, TRUE);
 
-		//merken das gleich der DPC läuft
-		/* kann keine 2 HWIs zur gleichen Zeit geben, aber der 
-		 * DPC(eigentlich nicht da der auf der selben CPU ausgeführt wird)
-		 * könnte durch sein vor dem das die HWI durch ist*/
-		pDevData->boIsDPCRunning=TRUE;
-
-		// trigger the tasklet (sollte immer gehen)
-		tasklet_schedule(&pDevData->IRQTasklet);
-
-		return IRQ_HANDLED;
-	}
-	else
-		return IRQ_NONE;
+	return IRQ_HANDLED;
 }
 
 
-//<====================================>
-//	tasklet fns
-//
-//<====================================>
+// IRQ threads
 
-//SWI bzw. DPC Achtung hat keinen process context
-void AGEXDrv_tasklet_PCIe(unsigned long data)
+// PCIe: only process DMA interrupts, SUN packets are already handled by the interrupt
+irqreturn_t AGEXDrv_pcie_thread(int irq, void *dev_id)
 {
-	PDEVICE_DATA pDevData = (PDEVICE_DATA)data;
-	u32 		DMARead_isDone = 0, DMARead_isOK = 0;
-	u16			DMARead_BufferCounters[MAX_DMA_READ_DMACHANNELS*MAX_DMA_READ_CHANNELTCS];
-	u32			sun_packet[MAX_SUNPACKETSIZE/4];
-	u32			wordCount;
-	u32			IRQReg_A, IRQReg_B;
-
-	if (pDevData->DeviceSubType == SubType_Invalid) {
-		dev_err(pDevData->dev, "AGEXDrv_tasklet_PCIe() > Invalid hardware type\n");
-		return;
-	}
-
-	if( (pDevData->pVACommonBuffer == NULL) || (pDevData->pBACommonBuffer == 0) )
-		return;
+	PDEVICE_DATA pDevData = (PDEVICE_DATA)dev_id;
+	u32 IRQReg_A, IRQReg_B;
+	u32 DMARead_isDone = 0, DMARead_isOK = 0;
+	u16 DMARead_BufferCounters[MAX_DMA_READ_DMACHANNELS*MAX_DMA_READ_CHANNELTCS];
+	s32 i;
+	u32 DMAMask;
 
 	IRQReg_A = ((u32*)pDevData->pVACommonBuffer)[0];
 	IRQReg_B = ((u32*)pDevData->pVACommonBuffer)[1];
 
-	if ((IRQReg_A & 0x1) == 1) {
-		// SUN Header0/1 einlesen
-		sun_packet[0] = ((u32*)pDevData->pVACommonBuffer)[2+0];
-		sun_packet[1] = ((u32*)pDevData->pVACommonBuffer)[2+1];
+	//Bit [3-0] sind reserved, Rest können für ReadDMAs sein
+	DMAMask = pDevData->DMARead_channels * pDevData->DMARead_TCs;
+	DMAMask = (1 << DMAMask)-1;
 
-		// Rest vom SUN Paket einlesen
-		wordCount = sun_packet[1] & 0xFF;
-		if (4 * (2 + wordCount) > sizeof(sun_packet)) {
-			dev_err(pDevData->dev, "AGEXDrv_tasklet_PCIe() > SUN Error: word count is invalid: %d\n", wordCount);
-			return;
-		}
-		memcpy(&sun_packet[2], ((u32*)pDevData->pVACommonBuffer) + 2 + 2, 4 * wordCount);
-		
-		// SUN Packet verarbeiten
-		InterruptTaskletSun(pDevData, sun_packet);
-	}
+	DMARead_isDone = (IRQReg_A >> 4)	& DMAMask;
+	DMARead_isOK =  (~(IRQReg_B >> 4))	& DMAMask & DMARead_isDone; 
 
-	if ( IS_TYPEWITH_DMA2HOST(pDevData) )
-	{
-		s32 i;
-		u32 DMAMask;
-
-		//Bit [3-0] sind reserved, Rest können für ReadDMAs sein
-		DMAMask = pDevData->DMARead_channels * pDevData->DMARead_TCs;
-		DMAMask = (DMAMask > 28) ? (28) : (DMAMask);	//kann eigentlich nicht sein... 
-		DMAMask = (1 << DMAMask)-1;
-
-		DMARead_isDone = (IRQReg_A >> 4)	& DMAMask;
-		DMARead_isOK =  (~(IRQReg_B >> 4))	& DMAMask & DMARead_isDone; 
-
+	// DMA done?
+	if (DMARead_isDone != 0) {
 		//nach den IRQFlags, CPUPaket kommt ein BufferZähler
-		for (i = 0; i < (pDevData->DMARead_channels+pDevData->DMARead_TCs); i++)
-		{
+		for (i = 0; i < (pDevData->DMARead_channels+pDevData->DMARead_TCs); i++) {
 			u8*	pCommonBuffer = (u8*)pDevData->pVACommonBuffer;
 			pCommonBuffer += HOST_BUFFER_DMAREAD_COUNTER_OFFSET;
 			pCommonBuffer += i*8;	//je 8Byte
 			DMARead_BufferCounters[i] = *((u16*)pCommonBuffer);
 		}
-
-		//IRQ?
-		if (DMARead_isDone != 0)
-			AGEXDrv_DMARead_DPC(pDevData, DMARead_isDone, DMARead_isOK, DMARead_BufferCounters);
+		AGEXDrv_DMARead_DPC(pDevData, DMARead_isDone, DMARead_isOK, DMARead_BufferCounters);
 	}
 
-	/* Re-enable the interrupt */
-	/**********************************************************************/
-	AGEXDrv_SwitchInterruptOn(pDevData,TRUE);
+	AGEXDrv_SwitchInterruptOn(pDevData, TRUE);
 
-	return;
+	return IRQ_HANDLED;
 }
 
-void AGEXDrv_tasklet_PCI(unsigned long data)
+irqreturn_t AGEXDrv_pci_thread(int irq, void *dev_id)
 {
-	PDEVICE_DATA pDevData = (PDEVICE_DATA)data;
+	PDEVICE_DATA pDevData = (PDEVICE_DATA)dev_id;
 	u32			sun_packet[MAX_SUNPACKETSIZE/4];
 	u32			wordCount;
 	u32			regVal, fifoLevel;
 
-	if (pDevData->DeviceSubType == SubType_Invalid) {
-		dev_err(pDevData->dev, "AGEXDrv_tasklet_PCI() > Invalid hardware type\n");
-		return;
-	}
-
-	if (pDevData->pVABAR0 == NULL)
-		return;
+	BUG_ON(pDevData->DeviceSubType == SubType_Invalid);
+	BUG_ON(pDevData->pVABAR0 == NULL);
 
 	// AGEX hat ein FIFO => FIFO-Fuellstand einlesen
 	regVal = ioread32(pDevData->pVABAR0 + ISR_AVAILABLE_OFFSET);
@@ -227,8 +175,8 @@ void AGEXDrv_tasklet_PCI(unsigned long data)
 	fifoLevel = (regVal >> 1) & 0x1FF;
 	if (fifoLevel < 3) {
 		// sollte nicht auftreten
-		dev_err(pDevData->dev, "AGEXDrv_tasklet_PCI() > SUN Error: FIFO level to small: %d\n", fifoLevel);
-		return;
+		dev_err(pDevData->dev, "AGEXDrv_pci_thread() > SUN Error: FIFO level to small: %d\n", fifoLevel);
+		return IRQ_HANDLED;
 	}
 
 	// SUN Header0/1 einlesen
@@ -238,8 +186,8 @@ void AGEXDrv_tasklet_PCI(unsigned long data)
 	// Rest vom SUN Paket einlesen
 	wordCount = sun_packet[1] & 0xFF;
 	if (4 * (2 + wordCount) > sizeof(sun_packet)) {
-		dev_err(pDevData->dev, "AGEXDrv_tasklet_PCI() > SUN Error: wordcount is invalid: %d\n", wordCount);
-		return;
+		dev_err(pDevData->dev, "AGEXDrv_pci_thread() > SUN Error: wordcount is invalid: %d\n", wordCount);
+		return IRQ_HANDLED;
 	}
 	ioread32_rep(pDevData->pVABAR0, &sun_packet[2], wordCount);
 
@@ -250,12 +198,12 @@ void AGEXDrv_tasklet_PCI(unsigned long data)
 	/**********************************************************************/
 	AGEXDrv_SwitchInterruptOn(pDevData,TRUE);
 
-	return;
+	return IRQ_HANDLED;
 }
 
-void AGEXDrv_tasklet_SPI(unsigned long data)
+irqreturn_t AGEXDrv_spi_thread(int irq, void *dev_id)
 {
-	PDEVICE_DATA pDevData = (PDEVICE_DATA)data;
+	PDEVICE_DATA pDevData = (PDEVICE_DATA)dev_id;
 	u32			sun_packet[MAX_SUNPACKETSIZE/4];
 	u32			wordCount;
 	struct spi_transfer transfer;
@@ -265,10 +213,7 @@ void AGEXDrv_tasklet_SPI(unsigned long data)
 	u8 rxbuf[1+3*4];
 	int result;
 
-	if (pDevData->DeviceSubType == SubType_Invalid) {
-		dev_err(pDevData->dev, "AGEXDrv_tasklet_SPI() > Invalid hardware type\n");
-		return;
-	}
+	BUG_ON(pDevData->DeviceSubType == SubType_Invalid);
 
 	spi = to_spi_device(pDevData->dev);
 
@@ -283,13 +228,13 @@ void AGEXDrv_tasklet_SPI(unsigned long data)
 	if (result < 0)
 	{
 		dev_err(pDevData->dev, "AGEXDrv_tasklet_SPI() > SPI error %d\n", result);
-		return;
+		return IRQ_HANDLED;
 	}
 
 	wordCount = rxbuf[1+4];	// Header1
 	if (wordCount != 1) {
 		dev_err(pDevData->dev, "AGEXDrv_tasklet_SPI() > word count is invalid: %d\n", wordCount);
-		return;
+		return IRQ_HANDLED;
 	}
 
 	memcpy(sun_packet, &rxbuf[1], 3 * 4);
@@ -297,28 +242,29 @@ void AGEXDrv_tasklet_SPI(unsigned long data)
 	// Process SUN packet
 	InterruptTaskletSun(pDevData, sun_packet);
 
-	return;
+	return IRQ_HANDLED;
 }
 
-//wird mit FPGA-IRQ Off im IRQ-Tasklet aufgerufen, kümmert sich um das SUN-Paket, pDevData ist gültig
+// Process a SUN interrupt packet
 static void InterruptTaskletSun(DEVICE_DATA *pDevData, u32 *sun_packet)
 {
 	u8 wordCount = sun_packet[1] & 0xFF;
 	u8 deviceID = (sun_packet[1] >> 20) & (MAX_IRQDEVICECOUNT-1);
 	u8 serialId = (sun_packet[1] >> 27) & 1;
 	struct SUN_DEVICE_DATA *pSunDevice = &pDevData->SunDeviceData[deviceID];
+	unsigned long flags;
 
 	dev_dbg(pDevData->dev, "InterruptTaskletSun() > packet word count: %d\n", wordCount);
 
 	if (wordCount != 1)
 		dev_warn(pDevData->dev, "InterruptTaskletSun() > received payload size is incorrect: %u words\n", wordCount);
 
-	spin_lock_bh(&pDevData->lock);
+	spin_lock_irqsave(&pDevData->lock, flags);
 
 	if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA && pSunDevice->serialID == serialId) {
 		pSunDevice->requestState = SUN_REQ_STATE_RESULT;
 
-		spin_unlock_bh(&pDevData->lock);
+		spin_unlock_irqrestore(&pDevData->lock, flags);
 
 		dev_dbg(pDevData->dev, "completing request for DeviceID %u\n", deviceID);
 
@@ -326,7 +272,7 @@ static void InterruptTaskletSun(DEVICE_DATA *pDevData, u32 *sun_packet)
 		up(&pSunDevice->semResult);
 	}
 	else {
-		spin_unlock_bh(&pDevData->lock);
+		spin_unlock_irqrestore(&pDevData->lock, flags);
 		if (pSunDevice->requestState != SUN_REQ_STATE_INFPGA)
 			dev_warn(pDevData->dev, "InterruptTaskletSun() > Unexpected state (%u) for DeviceID=%u, dropping packet\n", pSunDevice->requestState, deviceID);
 		else

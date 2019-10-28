@@ -22,7 +22,10 @@
  */
 
 #include "AGEXDrv.h"
-
+#include <linux/irq.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,11,0)
+	#include <uapi/linux/sched/types.h>	/* For struct sched_param */
+#endif
 
 //struct mit den file fns
 struct file_operations AGEXDrv_fops = {
@@ -79,6 +82,8 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 	u8 tempDevSubType;
 	PDEVICE_DATA pDevData = NULL;
 	int minor = -1;
+	struct irq_desc *desc;
+	struct sched_param sched_par;
 
 	pci_set_drvdata(pcidev, NULL);	
 
@@ -211,35 +216,36 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 	
 	//>IRQ & tasklet
 	/**********************************************************************/
-	//tasklet
-	if (IS_TYPEWITH_COMMONBUFFER(pDevData)) 
-		tasklet_init(&pDevData->IRQTasklet, AGEXDrv_tasklet_PCIe, (unsigned long)pDevData);
-	else
-		tasklet_init(&pDevData->IRQTasklet, AGEXDrv_tasklet_PCI, (unsigned long)pDevData);
 
-	//msi einschalten
-	//http://www.mjmwired.net/kernel/Documentation/MSI-HOWTO.txt
-	// "... to call this API before calling request_irq()..."
 	if (IS_TYPEWITH_COMMONBUFFER(pDevData)) {
-		if( pci_enable_msi(pcidev) != 0)
-			{printk(KERN_ERR MODDEBUGOUTTEXT"pci_enable_msi failed!\n"); return -EIO;}
+		// PCIe interface
+		// enable MSI
+		// http://www.mjmwired.net/kernel/Documentation/MSI-HOWTO.txt
+		// "... to call this API before calling request_irq()..."
+		if (pci_enable_msi(pcidev) != 0) {
+			printk(KERN_ERR MODDEBUGOUTTEXT"pci_enable_msi failed!\n");
+			return -EIO;
+		}
+		if (request_threaded_irq(pcidev->irq, AGEXDrv_pcie_interrupt, AGEXDrv_pcie_thread,
+					IRQF_TRIGGER_RISING | IRQF_ONESHOT, MODMODULENAME, pDevData) != 0) {
+			printk(KERN_ERR MODDEBUGOUTTEXT" request_threaded_irq failed\n");
+			pDevData->boIsIRQOpen = FALSE;
+			return -EIO;
+		}
 	}
-
-	//das gibt die (un)gemapped nummer zurück lspci zeigt die mapped an!
-	//if(pci_read_config_byte(dev, PCI_INTERRUPT_LINE, &PCIIRQ_Number) ) {
-	if (request_irq(pcidev->irq,/* die IRQ nummer */
-			AGEXDrv_interrupt,	/* die IRQ fn */
-			IRQF_SHARED,		/* shared */
-			MODMODULENAME,		/* name wird in /proc/interrupts angezeigt */
-			pDevData			/* unique identifier/ wird auch dem CallBack mit gegeben */
-			) != 0) {
-		printk(KERN_ERR MODDEBUGOUTTEXT" request_irq failed\n");
-		if (IS_TYPEWITH_COMMONBUFFER(pDevData))
-			pci_disable_msi(pcidev);
-
-		pDevData->boIsIRQOpen = FALSE;
-		return -EIO;
+	else {
+		// PCI interface
+		if (request_threaded_irq(pcidev->irq, AGEXDrv_pci_interrupt, AGEXDrv_pci_thread,
+					IRQF_SHARED, MODMODULENAME, pDevData) != 0) {
+			printk(KERN_ERR MODDEBUGOUTTEXT" request_threaded_irq failed\n");
+			pDevData->boIsIRQOpen = FALSE;
+			return -EIO;
+		}
 	}
+	// increase priority of threaded interrupt
+	desc = irq_to_desc(pcidev->irq);
+	sched_par.sched_priority = 86;
+	sched_setscheduler(desc->action->thread, SCHED_FIFO, &sched_par);
 
 	if (IS_TYPEWITH_COMMONBUFFER(pDevData)) {
 		// Adresse fuer Common Buffer im FPGA setzen
@@ -325,12 +331,9 @@ void AGEXDrv_PCI_remove(struct pci_dev *pcidev)
 	if(pDevData->boIsIRQOpen) {
 		AGEXDrv_SwitchInterruptOn(pDevData, FALSE);
 		free_irq(pcidev->irq, pDevData);
-		if( IS_TYPEWITH_COMMONBUFFER(pDevData) )
+		if (IS_TYPEWITH_COMMONBUFFER(pDevData))
 			pci_disable_msi(pcidev);
 	}
-	
-	//"... this function busy-waits until the tasklet exits..."
-	tasklet_disable(&pDevData->IRQTasklet);
 
 	//unmappen
 	if(pDevData->pVABAR0 != NULL)

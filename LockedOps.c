@@ -97,6 +97,7 @@ long Locked_write(PDEVICE_DATA pDevData, const u8 __user * pToUserMem, const siz
 long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, const u32 BufferSizeBytes)
 {
 	struct SUN_DEVICE_DATA *pSunDevice;
+	unsigned long flags;
 
 	switch (cmd)
 	{
@@ -168,12 +169,12 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 
 			pSunDevice = &pDevData->SunDeviceData[DeviceID];
 
-			spin_lock_bh(&pDevData->lock);
+			spin_lock_irqsave(&pDevData->lock, flags);
 			if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA) {
 				pSunDevice->serialID = !pSunDevice->serialID;		// Pending request is still in FPGA => toggle serial ID
 			}
 			pSunDevice->requestState = SUN_REQ_STATE_FREE;
-			spin_unlock_bh(&pDevData->lock);
+			spin_unlock_irqrestore(&pDevData->lock, flags);
 
 			return 0;
 		}
@@ -242,19 +243,19 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 
 			dev_dbg(pDevData->dev, "Locked_ioctl > Aborting read for DeviceID %u\n", DeviceID);
 
-			spin_lock_bh(&pDevData->lock);
+			spin_lock_irqsave(&pDevData->lock, flags);
 			if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA) {
 				pSunDevice->requestState = SUN_REQ_STATE_ABORT;
 				pSunDevice->serialID = !pSunDevice->serialID;		// toggle serial ID
-				spin_unlock_bh(&pDevData->lock);
+				spin_unlock_irqrestore(&pDevData->lock, flags);
 				up(&pSunDevice->semResult);
 			}
 			else if (pSunDevice->requestState == SUN_REQ_STATE_RESULT) {
 				pSunDevice->requestState = SUN_REQ_STATE_ABORT;
-				spin_unlock_bh(&pDevData->lock);
+				spin_unlock_irqrestore(&pDevData->lock, flags);
 			}
 			else {
-				spin_unlock_bh(&pDevData->lock);
+				spin_unlock_irqrestore(&pDevData->lock, flags);
 			}
 			return 0;
 		}
@@ -627,13 +628,13 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 //......................................................................>
 			
 			// get buffer from jobs done FIFO
-			spin_lock_bh(&pDevData->DMARead_SpinLock);
+			spin_lock(&pDevData->DMARead_SpinLock);
 			if (kfifo_get(&pDMAChannel->Jobs_Done, &pJob) == 0) {
-				spin_unlock_bh(&pDevData->DMARead_SpinLock);	
+				spin_unlock(&pDevData->DMARead_SpinLock);
 				dev_err(pDevData->dev, "Locked_ioctl AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER > DMARead wake up, without buffer!\n");
 				return -EFAULT;
 			}
-			spin_unlock_bh(&pDevData->DMARead_SpinLock);	
+			spin_unlock(&pDevData->DMARead_SpinLock);
 
 			pVMUser = pJob->pVMUser;	// save user pointer, gets cleared by AGEXDrv_DMARead_UnMapUserBuffer()
 
