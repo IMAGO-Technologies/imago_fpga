@@ -353,12 +353,12 @@ void AGEXDrv_DMARead_UnMapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob)
 	pJob->pVMUser = 0;
 }
 
-
 // beendet eine DMA, egal ob mit oder ohne Fehler, ob gelaufen oder nicht (läuft auch aus DPC)
 static inline void AGEXDrv_DMARead_EndDMA(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC, const bool isOk, const u16 BufferCounter)
 {	
 	PDMA_READ_CHANNEL pDMAChannel = &pDevData->DMARead_Channel[iDMA];
 	PDMA_READ_TC pTC = &pDMAChannel->TCs[iTC];
+	unsigned long flags;
 
 	dev_dbg(pDevData->dev, "AGEXDrv_DMARead_EndDMA > DMA: %d, TC: %d, Res: %d, Seq: %d\n",
 				   	iDMA, iTC, isOk, BufferCounter);
@@ -367,13 +367,13 @@ static inline void AGEXDrv_DMARead_EndDMA(PDEVICE_DATA pDevData, const u32 iDMA,
 		return;
 	}
 
-	spin_lock(&pDevData->DMARead_SpinLock);
+	flags = AGEXDrv_DMARead_Lock(pDevData);
 
 	// check if current job has completed all SG elements
-	if (isOk && pDevData->DMARead_Channel[iDMA].TCs[iTC].pJob->SGItemsLeft != 0) {
+	if (isOk && pTC->pJob->SGItemsLeft != 0) {
 		// start next transfer for this job
 		AGEXDrv_DMARead_StartNextTransfer_Locked(pDevData, iDMA, iTC);
-		spin_unlock(&pDevData->DMARead_SpinLock);
+		AGEXDrv_DMARead_Unlock(pDevData, flags);
 		return;
 	}
 
@@ -396,7 +396,7 @@ static inline void AGEXDrv_DMARead_EndDMA(PDEVICE_DATA pDevData, const u32 iDMA,
 		pTC->boIsUsed = FALSE;
 	}
 
-	spin_unlock(&pDevData->DMARead_SpinLock);
+	AGEXDrv_DMARead_Unlock(pDevData, flags);
 
 	// notify thread
 	up(&pDMAChannel->WaitSem);
@@ -415,31 +415,34 @@ int AGEXDrv_DMARead_AddJob(PDEVICE_DATA pDevData, u32 iDMA, DMA_READ_JOB *pJob)
 {
 	DMA_READ_CHANNEL *pDMAChannel = &pDevData->DMARead_Channel[iDMA];
 	unsigned int iTC;
+	unsigned long flags;
 
 	pJob->SGItemsLeft = pJob->SGcount;
 	pJob->pSGNext = pJob->SGTable.sgl;
 
-	spin_lock(&pDevData->DMARead_SpinLock);
+	flags = AGEXDrv_DMARead_Lock(pDevData);
 
-	// start transfer if idle
+	// start transfer if a transfer channel is idle
 	for (iTC = 0; iTC < pDevData->DMARead_TCs; iTC++) {
 		if (pDMAChannel->TCs[iTC].boIsUsed == FALSE) {
 			pDMAChannel->TCs[iTC].pJob = pJob;
 			pDMAChannel->TCs[iTC].boIsUsed = TRUE;
+
 			AGEXDrv_DMARead_StartNextTransfer_Locked(pDevData, iDMA, iTC);
-			spin_unlock(&pDevData->DMARead_SpinLock);
+			AGEXDrv_DMARead_Unlock(pDevData, flags);
+
 			return 0;
 		}
 	}
 
 	// add job to Jobs_ToDo FIFO
 	if (kfifo_put(&pDMAChannel->Jobs_ToDo, pJob) == 0) {
-		spin_unlock(&pDevData->DMARead_SpinLock);
+		AGEXDrv_DMARead_Unlock(pDevData, flags);
 		dev_warn(pDevData->dev, "DMARead_AddJob > Error adding buffer into JobToDo FIFO\n");
 		return -ENOMEM;
 	}
 	
-	spin_unlock(&pDevData->DMARead_SpinLock);
+	AGEXDrv_DMARead_Unlock(pDevData, flags);
 
 	return 0;
 }
@@ -456,9 +459,9 @@ void AGEXDrv_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 i
 	s32 			iSG 	= 0;
 	DMA_READ_TC 	*pTC 	= pDevData->DMARead_Channel[iDMA].TCs + iTC;
 	DMA_READ_JOB 	*pJob	= pTC->pJob;
+	u32				tempSG[DMA_READ_TC_TC2TC_SETPBYTES/4];
 
-	pr_devel(MODDEBUGOUTTEXT" AGEXDrv_DMARead_StartNextTransfer_Locked> DMA: %d, TC: %d\n",	iDMA, iTC);
-
+	dev_dbg(pDevData->dev, "AGEXDrv_DMARead_StartNextTransfer_Locked > DMA: %d, TC: %d\n",	iDMA, iTC);
 
 	//> alles gut (sicher ist sicher) kann aber nichts machen
 	if ((iDMA >= pDevData->DMARead_channels) || (iTC >= pDevData->DMARead_TCs) ||
@@ -467,6 +470,10 @@ void AGEXDrv_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 i
 		return;
 	}
 
+	//Flag 	(1DWord)
+	tempSG[0] = DMA_READ_TC_SG_FLAG_START_TRANSFER; 
+	if(pJob->pSGNext == pJob->SGTable.sgl)	//1. SG Element über alles
+		tempSG[0] |= DMA_READ_TC_SG_FLAG_START_TRANSACTION; 
 
 	//> die SGs ins FPGA schreiben
 	/***********************************************************************/
@@ -476,22 +483,12 @@ void AGEXDrv_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 i
 		u32			sg_length	= sg_dma_len(pJob->pSGNext);
 		dma_addr_t  sg_address	= sg_dma_address(pJob->pSGNext);
 			
-
 		//> SG zusammenbauen
-		u32 tempSG[DMA_READ_TC_TC2TC_SETPBYTES/4];
 
-		//Flag 	(1DWord)
-		tempSG[0] = 0; 
-		if(pJob->pSGNext == pJob->SGTable.sgl)	//1. SG Element über alles
-			tempSG[0] |= DMA_READ_TC_SG_FLAG_START_TRANSACTION; 
-
-		if(iSG == 0)							//1. SG Element
-			tempSG[0] |= DMA_READ_TC_SG_FLAG_START_TRANSFER; 
-
-		if( pJob->SGItemsLeft == 1 )				//letzte SG Element über alles (somit auch IRQ auslösen)
+		if (pJob->SGItemsLeft == 1)				//letzte SG Element über alles (somit auch IRQ auslösen)
 			tempSG[0] |= DMA_READ_TC_SG_FLAG_END_TRANSACTION;
 
-		if(iSG == (pDevData->DMARead_SGs-1))	//letzte SG Element, mehr geht nicht ins FPGA FIFO (mit dem SG darf es dann ein IRQ geben)
+		if (iSG == (pDevData->DMARead_SGs-1))	//letzte SG Element, mehr geht nicht ins FPGA FIFO (mit dem SG darf es dann ein IRQ geben)
 			tempSG[0] |= DMA_READ_TC_SG_FLAG_END_TRANSFER; 
 
 		//Size	(1DWord)
@@ -504,14 +501,14 @@ void AGEXDrv_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 i
 #else
 		tempSG[3] = 0;						//HighPart;				
 #endif		
-			
+
 
 		//> stimmt die Ausrichtung und die size? (adr und size) 
 		if(		((sg_length & 0x3) != 0)
 		 	|| 	((sg_address & (PAGE_SIZE-1)) != 0)
 		 	||  (sg_length > DMA_READ_TC_SG_MAX_BYTECOUNT ) )
 		{
-			printk(KERN_ERR MODDEBUGOUTTEXT" AGEXDrv_DMARead_StartNextTransfer_Locked> Invalid alignment or size!\n");
+			dev_err(pDevData->dev, "AGEXDrv_DMARead_StartNextTransfer_Locked > Invalid alignment or size!\n");
 
 			//sollt nie vorkommen und wenn ist es das letzte SG Element (size geht nicht auf)
 			iSG = pDevData->DMARead_SGs;				//das Kaputte Element soll das letzte sein
@@ -525,7 +522,8 @@ void AGEXDrv_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 i
 	
 
 		//> ins FPGA schreiben
-		pr_devel(MODDEBUGOUTTEXT" - DMA SGs> i: %d > 0x%llx, Bytes %d\n", iSG, (u64) sg_address, sg_length);
+		dev_dbg(pDevData->dev, "DMA SGs > i: %d > 0x%llx, Bytes %d\n", iSG, (u64) sg_address, sg_length);
+
 		for (word = 0; word < (DMA_READ_TC_TC2TC_SETPBYTES/4); word++)
 #ifdef __ARM_ARCH_7A__
 			writel_relaxed(tempSG[word], pTC->pDesriptorFifo + word);
@@ -533,14 +531,28 @@ void AGEXDrv_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 i
 			iowrite32(tempSG[word], pTC->pDesriptorFifo + word);
 #endif
 
+		tempSG[0] = 0;
 	}//for max mögliche SGs pro Transfer
 }
 
 
 //Beendet alle DMAs die durch sind (bzw. deren DMATransfer), und versucht neue zu starte
-void AGEXDrv_DMARead_DPC(PDEVICE_DATA pDevData, const u32 isDoneReg, const u32 isOkReg, const u16* pBufferCounters)
+void AGEXDrv_DMARead_DPC(PDEVICE_DATA pDevData)
 {
 	u8 iDMA, iTC, BitShift;
+	u32 IRQReg_A, IRQReg_B;
+	u32 isDoneReg, isOkReg;
+	u32 DMAMask;
+
+	IRQReg_A = ((u32*)pDevData->pVACommonBuffer)[0];
+	IRQReg_B = ((u32*)pDevData->pVACommonBuffer)[1];
+
+	//Bit [3-0] sind reserved, Rest können für ReadDMAs sein
+	DMAMask = pDevData->DMARead_channels * pDevData->DMARead_TCs;
+	DMAMask = (1 << DMAMask)-1;
+
+	isDoneReg = (IRQReg_A >> 4)	 & DMAMask;
+	isOkReg = (~(IRQReg_B >> 4)) & DMAMask & isDoneReg; 
 
 	dev_dbg(pDevData->dev, "AGEXDrv_DMARead_DPC > isDoneReg: 0x%08X, isOkReg: 0x%08X\n", isDoneReg, isOkReg);
 
@@ -550,6 +562,7 @@ void AGEXDrv_DMARead_DPC(PDEVICE_DATA pDevData, const u32 isDoneReg, const u32 i
 	for (iDMA = 0; iDMA < pDevData->DMARead_channels; iDMA++) {
 		for (iTC = 0; iTC < pDevData->DMARead_TCs; iTC++) {
 			bool isDone, isOk;
+			u16 bufferCounter;
 		
 			//> Bits sammeln (damit es besser zum lesen ist)
 			isDone 		= (isDoneReg >> BitShift) & 0x1;
@@ -557,7 +570,8 @@ void AGEXDrv_DMARead_DPC(PDEVICE_DATA pDevData, const u32 isDoneReg, const u32 i
 
 			//> FPGA sagt die DMA ist durch
 			if (isDone) {
-				AGEXDrv_DMARead_EndDMA(pDevData, iDMA, iTC, isOk, pBufferCounters[BitShift]);
+				bufferCounter = *(u16 *)(pDevData->pVACommonBuffer + HOST_BUFFER_DMAREAD_COUNTER_OFFSET + 8 * BitShift);
+				AGEXDrv_DMARead_EndDMA(pDevData, iDMA, iTC, isOk, bufferCounter);
 			}
 
 			//> nächster TC ist beim nächsten Bit (auch wenn es die nächste DMA ist)
@@ -573,11 +587,12 @@ void AGEXDrv_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA)
 	PDMA_READ_CHANNEL pDMAChannel = &pDevData->DMARead_Channel[iDMA];
 	DMA_READ_JOB *pJob = NULL;
 	u8 iTC;
+	unsigned long flags;
 
 	dev_dbg(pDevData->dev, "AGEXDrv_DMARead_Abort_DMAChannel> DMA: %d\n", iDMA);
 
-	spin_lock(&pDevData->DMARead_SpinLock);
-//----------------------------->
+	flags = AGEXDrv_DMARead_Lock(pDevData);
+
 	//> alle Buffers aus .Jobs_ToDo() .Jobs_Done() adden mit FehlerFlag und .WaitSem posten für jeden verschobenen Buffer
 	while (kfifo_get(&pDMAChannel->Jobs_ToDo, &pJob) == 1) {
 		pJob->boIsOk = FALSE;
@@ -592,12 +607,12 @@ void AGEXDrv_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA)
 		up(&pDMAChannel->WaitSem);
 
 		dev_dbg(pDevData->dev, "move JOB .Jobs_ToDo > Jobs_Done\n");
-	}	
+	}
 
 	//> für alle gültigen/laufenden DMAs, bei allen TCs.boIsUsed==true, 
 	//> dann ein „SG“ mit Bit4 (Error) schicken (wird vor dem FIFO im FPGA abgefangen)
 	//> Job/Request offen lassen	
-	for (iTC =0; iTC < pDevData->DMARead_TCs; iTC++) {
+	for (iTC = 0; iTC < pDevData->DMARead_TCs; iTC++) {
 		//gültiger Eintrag mit dem gesuchten Request? (wenn boIsUsed, dann ist auch der Request gültig)
 		if (pDMAChannel->TCs[iTC].boIsUsed) {
 
@@ -610,8 +625,8 @@ void AGEXDrv_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA)
 			iowrite32(0, pDMAChannel->TCs[iTC].pDesriptorFifo + 3);
 		}//if boIsUsed					
 	}//for iTC
-//<-----------------------------
-	spin_unlock(&pDevData->DMARead_SpinLock);
+
+	AGEXDrv_DMARead_Unlock(pDevData, flags);
 }
 
 
@@ -622,6 +637,7 @@ void AGEXDrv_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData,  const u32 iDMA)
 	u8 iTryLoop, iFIFOLoop;
 	const u8 MaxTryLoop = 10; /*max Waiter die abgebrochen werden können*/
 	DMA_READ_JOB *pJob = NULL;
+	unsigned long flags;
 
 	//Note: - sem hat kein FIFO verhalten
 	//		- der sem Zähler gibt die anz von buffern in .Jobs_Done wieder
@@ -644,10 +660,10 @@ void AGEXDrv_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData,  const u32 iDMA)
 
 	for (iTryLoop=0; iTryLoop<MaxTryLoop; iTryLoop++) {
 		// add Dummy-Job to Jobs_Done FIFO
-		spin_lock(&pDevData->DMARead_SpinLock);
+		flags = AGEXDrv_DMARead_Lock(pDevData);
 		if (kfifo_put(&pDMAChannel->Jobs_Done, &pDMAChannel->dummyJob) == 0)
 			printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_DMARead_Abort_DMAWaiter> can't add dummyBuffer(iDMA: %d, i: %d)\n", iDMA, iTryLoop);
-		spin_unlock(&pDevData->DMARead_SpinLock);
+		AGEXDrv_DMARead_Unlock(pDevData, flags);
 
 		// wakeup thread
 		up(&pDMAChannel->WaitSem);
@@ -659,7 +675,7 @@ void AGEXDrv_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData,  const u32 iDMA)
 
 			//> versuchen (dummy/echtes)Bild zu lesen 
 			if (down_trylock(&pDMAChannel->WaitSem) == 0) {
-				spin_lock(&pDevData->DMARead_SpinLock);
+				flags = AGEXDrv_DMARead_Lock(pDevData);
 //---------------------------------------------------------->
 				if (kfifo_get(&pDMAChannel->Jobs_Done, &pJob) == 1) {
 					// dummy-Buffer? => done
@@ -683,7 +699,7 @@ void AGEXDrv_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData,  const u32 iDMA)
 				else
 					printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_DMARead_Abort_DMAWaiter>DMARead wake up, without buffer!\n");
 //<----------------------------------------------------------
-				spin_unlock(&pDevData->DMARead_SpinLock);	
+				AGEXDrv_DMARead_Unlock(pDevData, flags);
 			}
 			else {
 				//TimeOut, FIFO leer, User hat dummyBuffer gelesen => fertig
@@ -702,21 +718,23 @@ int AGEXDrv_DMARead_Reset_DMAChannel(PDEVICE_DATA pDevData, unsigned int dma_cha
 	unsigned int iTC;
 	unsigned int i;
 	int result;
+	unsigned long flags;
 
 	// abort running DMA transfers in FPGA and move jobs from Jobs_ToDo to Jobs_Done FIFO
 	AGEXDrv_DMARead_Abort_DMAChannel(pDevData, dma_channel);
 
 	// Wait for completion of pending transfers
 	for (iTC = 0; iTC < pDevData->DMARead_TCs; iTC++) {
-		spin_lock(&pDevData->DMARead_SpinLock);
+		flags = AGEXDrv_DMARead_Lock(pDevData);
 		if (pDMAChannel->TCs[iTC].boIsUsed) {
-			// reset semaphore count, removing count associated with jobs in Jobs_Done FIFO
+			// reset semaphore count, removing count associated with jobs in Jobs_Done FIFO,
+			// because we only wait once for report of the aborted transfer
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
 			sema_init(&pDMAChannel->WaitSem, 0);
 #else
 			init_MUTEX_LOCKED(&pDMAChannel->WaitSem);
 #endif
-			spin_unlock(&pDevData->DMARead_SpinLock);
+			AGEXDrv_DMARead_Unlock(pDevData, flags);
 
 			// wait
 			result = down_timeout(&pDMAChannel->WaitSem, msecs_to_jiffies(100));
@@ -730,7 +748,7 @@ int AGEXDrv_DMARead_Reset_DMAChannel(PDEVICE_DATA pDevData, unsigned int dma_cha
 			}
 		}
 		else
-			spin_unlock(&pDevData->DMARead_SpinLock);	
+			AGEXDrv_DMARead_Unlock(pDevData, flags);
 	}
 
 	// unmap used job buffers

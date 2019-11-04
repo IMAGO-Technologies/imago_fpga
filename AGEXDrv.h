@@ -251,7 +251,7 @@ typedef struct _DMA_READ_CHANNEL
 	struct semaphore WaitSem;									// counting semapore, increments for each job in Jobs_Done
 
 	DMA_READ_TC TCs[MAX_DMA_READ_CHANNELTCS];					// transfer channel data
-	bool doManualMap;
+	bool			doManualMap;
 }  DMA_READ_CHANNEL, *PDMA_READ_CHANNEL;
 
 
@@ -295,6 +295,7 @@ typedef struct _DEVICE_DATA
 	u8						DMARead_TCs;		// actual number of transfer channels
 	u16  					DMARead_SGs;		// actual number of scatter gather elements
 	spinlock_t				DMARead_SpinLock;	// DMA spinlock
+	bool					setupTcInHWI;								// setup transfer channel in hardware interrupt
 	DMA_READ_CHANNEL		DMARead_Channel[MAX_DMA_READ_DMACHANNELS];	// DMA channel data
 } DEVICE_DATA, *PDEVICE_DATA;
 
@@ -341,7 +342,7 @@ void AGEXDrv_PCI_remove(struct pci_dev *pcidev);
 
 /* DMA functions */
 int AGEXDrv_DMARead_AddJob(PDEVICE_DATA pDevData, u32 iDMA, DMA_READ_JOB *pJob);
-void AGEXDrv_DMARead_DPC(PDEVICE_DATA pDevData, const u32 isDoneReg, const u32 isOkReg, const u16* pBufferCounters);
+void AGEXDrv_DMARead_DPC(PDEVICE_DATA pDevData);
 void AGEXDrv_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC);
 
 bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMAChannel, uintptr_t pVMUser, u64 bufferSize, DMA_READ_JOB **ppJob);
@@ -388,6 +389,23 @@ static inline bool IS_TYPEWITH_SPI(DEVICE_DATA *pDeviceData)
 	return ((pDeviceData->flags & AGEXDRV_FLAG_SPI) != 0);
 }
 
+static inline unsigned long AGEXDrv_DMARead_Lock(DEVICE_DATA *pDevData)
+{
+	unsigned long flags = 0;
+	if (pDevData->setupTcInHWI)
+		spin_lock_irqsave(&pDevData->DMARead_SpinLock, flags);
+	else
+		spin_lock(&pDevData->DMARead_SpinLock);
+	return flags;
+}
+
+static inline void AGEXDrv_DMARead_Unlock(DEVICE_DATA *pDevData, unsigned long flags)
+{
+	if (pDevData->setupTcInHWI)
+		spin_unlock_irqrestore(&pDevData->DMARead_SpinLock, flags);
+	else
+		spin_unlock(&pDevData->DMARead_SpinLock);
+}
 
 #endif /* AGEXDRV_H_ */
 

@@ -628,13 +628,13 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 //......................................................................>
 			
 			// get buffer from jobs done FIFO
-			spin_lock(&pDevData->DMARead_SpinLock);
+			flags = AGEXDrv_DMARead_Lock(pDevData);
 			if (kfifo_get(&pDMAChannel->Jobs_Done, &pJob) == 0) {
-				spin_unlock(&pDevData->DMARead_SpinLock);
+				AGEXDrv_DMARead_Unlock(pDevData, flags);
 				dev_err(pDevData->dev, "Locked_ioctl AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER > DMARead wake up, without buffer!\n");
 				return -EFAULT;
 			}
-			spin_unlock(&pDevData->DMARead_SpinLock);
+			AGEXDrv_DMARead_Unlock(pDevData, flags);
 
 			pVMUser = pJob->pVMUser;	// save user pointer, gets cleared by AGEXDrv_DMARead_UnMapUserBuffer()
 

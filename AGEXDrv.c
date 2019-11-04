@@ -216,8 +216,13 @@ void AGEXDrv_InitDrvData(PDEVICE_DATA pDat)
 
 	/* DMA */
 	//Note: 
-	//	- da wir hier noch nicht wissen ob wie überhaupt eine DMA haben immer init
-	// 	- auch alle möglichen DMAChannels/TCs initen da wir noch nicht wissen wie viele wir haben werden
+	//	- da wir hier noch nicht wissen ob wie ï¿½berhaupt eine DMA haben immer init
+	// 	- auch alle mï¿½glichen DMAChannels/TCs initen da wir noch nicht wissen wie viele wir haben werden
+#ifdef __ARM_ARCH_7A__
+	pDat->setupTcInHWI		= 1;
+#else
+	pDat->setupTcInHWI		= 0;
+#endif
 	pDat->DMARead_channels	= 0;
 	pDat->DMARead_TCs		= 0;
 	pDat->DMARead_SGs		= 0;

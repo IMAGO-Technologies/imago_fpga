@@ -87,35 +87,33 @@ irqreturn_t AGEXDrv_pcie_interrupt(int irq, void *dev_id)
 	PDEVICE_DATA pDevData = (PDEVICE_DATA)dev_id;
 	u32			IRQReg_A;
 	u32			sun_packet[MAX_SUNPACKETSIZE/4];
-	u32			wordCount;
+	irqreturn_t result = IRQ_HANDLED;
 
 	IRQReg_A = ((u32*)pDevData->pVACommonBuffer)[0];
+
+	// check for DMA done flag
+	if (IS_TYPEWITH_DMA2HOST(pDevData) && (IRQReg_A >> 4) != 0) {
+		if (pDevData->setupTcInHWI)
+			AGEXDrv_DMARead_DPC(pDevData);
+		else
+			result = IRQ_WAKE_THREAD;
+	}
 
 	// check for SUN interrupt flag
 	if ((IRQReg_A & 0x1) != 0) {
 		// get SUN Header0/1
 		sun_packet[0] = ((u32*)pDevData->pVACommonBuffer)[2+0];
 		sun_packet[1] = ((u32*)pDevData->pVACommonBuffer)[2+1];
+		sun_packet[2] = ((u32*)pDevData->pVACommonBuffer)[2+2];
 
-		// get SUN packet payload
-		wordCount = sun_packet[1] & 0xFF;
-		if (4 * (2 + wordCount) > sizeof(sun_packet)) {
-			dev_err(pDevData->dev, "AGEXDrv_pcie_thread() > SUN Error: word count is invalid: %d\n", wordCount);
-			return IRQ_HANDLED;
-		}
-		memcpy(&sun_packet[2], ((u32*)pDevData->pVACommonBuffer) + 2 + 2, 4 * wordCount);
-		
 		// process SUN packet
 		InterruptTaskletSun(pDevData, sun_packet);
 	}
 
-	// check for DMA done flag and wake thread if required
-	if (IS_TYPEWITH_DMA2HOST(pDevData) && (IRQReg_A >> 4) != 0)
-		return IRQ_WAKE_THREAD;
+	if (result == IRQ_HANDLED)
+		AGEXDrv_SwitchInterruptOn(pDevData, TRUE);
 
-	AGEXDrv_SwitchInterruptOn(pDevData, TRUE);
-
-	return IRQ_HANDLED;
+	return result;
 }
 
 
@@ -125,33 +123,8 @@ irqreturn_t AGEXDrv_pcie_interrupt(int irq, void *dev_id)
 irqreturn_t AGEXDrv_pcie_thread(int irq, void *dev_id)
 {
 	PDEVICE_DATA pDevData = (PDEVICE_DATA)dev_id;
-	u32 IRQReg_A, IRQReg_B;
-	u32 DMARead_isDone = 0, DMARead_isOK = 0;
-	u16 DMARead_BufferCounters[MAX_DMA_READ_DMACHANNELS*MAX_DMA_READ_CHANNELTCS];
-	s32 i;
-	u32 DMAMask;
 
-	IRQReg_A = ((u32*)pDevData->pVACommonBuffer)[0];
-	IRQReg_B = ((u32*)pDevData->pVACommonBuffer)[1];
-
-	//Bit [3-0] sind reserved, Rest können für ReadDMAs sein
-	DMAMask = pDevData->DMARead_channels * pDevData->DMARead_TCs;
-	DMAMask = (1 << DMAMask)-1;
-
-	DMARead_isDone = (IRQReg_A >> 4)	& DMAMask;
-	DMARead_isOK =  (~(IRQReg_B >> 4))	& DMAMask & DMARead_isDone; 
-
-	// DMA done?
-	if (DMARead_isDone != 0) {
-		//nach den IRQFlags, CPUPaket kommt ein BufferZähler
-		for (i = 0; i < (pDevData->DMARead_channels+pDevData->DMARead_TCs); i++) {
-			u8*	pCommonBuffer = (u8*)pDevData->pVACommonBuffer;
-			pCommonBuffer += HOST_BUFFER_DMAREAD_COUNTER_OFFSET;
-			pCommonBuffer += i*8;	//je 8Byte
-			DMARead_BufferCounters[i] = *((u16*)pCommonBuffer);
-		}
-		AGEXDrv_DMARead_DPC(pDevData, DMARead_isDone, DMARead_isOK, DMARead_BufferCounters);
-	}
+	AGEXDrv_DMARead_DPC(pDevData);
 
 	AGEXDrv_SwitchInterruptOn(pDevData, TRUE);
 
@@ -162,7 +135,6 @@ irqreturn_t AGEXDrv_pci_thread(int irq, void *dev_id)
 {
 	PDEVICE_DATA pDevData = (PDEVICE_DATA)dev_id;
 	u32			sun_packet[MAX_SUNPACKETSIZE/4];
-	u32			wordCount;
 	u32			regVal, fifoLevel;
 
 	BUG_ON(pDevData->DeviceSubType == SubType_Invalid);
@@ -182,14 +154,7 @@ irqreturn_t AGEXDrv_pci_thread(int irq, void *dev_id)
 	// SUN Header0/1 einlesen
 	sun_packet[0] = ioread32(pDevData->pVABAR0);	// Header0
 	sun_packet[1] = ioread32(pDevData->pVABAR0);	// Header1
-
-	// Rest vom SUN Paket einlesen
-	wordCount = sun_packet[1] & 0xFF;
-	if (4 * (2 + wordCount) > sizeof(sun_packet)) {
-		dev_err(pDevData->dev, "AGEXDrv_pci_thread() > SUN Error: wordcount is invalid: %d\n", wordCount);
-		return IRQ_HANDLED;
-	}
-	ioread32_rep(pDevData->pVABAR0, &sun_packet[2], wordCount);
+	sun_packet[2] = ioread32(pDevData->pVABAR0);	// Payload
 
 	// SUN Packet verarbeiten
 	InterruptTaskletSun(pDevData, sun_packet);
@@ -205,7 +170,6 @@ irqreturn_t AGEXDrv_spi_thread(int irq, void *dev_id)
 {
 	PDEVICE_DATA pDevData = (PDEVICE_DATA)dev_id;
 	u32			sun_packet[MAX_SUNPACKETSIZE/4];
-	u32			wordCount;
 	struct spi_transfer transfer;
 	struct spi_message message;
 	struct spi_device *spi;
@@ -231,12 +195,6 @@ irqreturn_t AGEXDrv_spi_thread(int irq, void *dev_id)
 		return IRQ_HANDLED;
 	}
 
-	wordCount = rxbuf[1+4];	// Header1
-	if (wordCount != 1) {
-		dev_err(pDevData->dev, "AGEXDrv_tasklet_SPI() > word count is invalid: %d\n", wordCount);
-		return IRQ_HANDLED;
-	}
-
 	memcpy(sun_packet, &rxbuf[1], 3 * 4);
 
 	// Process SUN packet
@@ -256,8 +214,10 @@ static void InterruptTaskletSun(DEVICE_DATA *pDevData, u32 *sun_packet)
 
 	dev_dbg(pDevData->dev, "InterruptTaskletSun() > packet word count: %d\n", wordCount);
 
-	if (wordCount != 1)
-		dev_warn(pDevData->dev, "InterruptTaskletSun() > received payload size is incorrect: %u words\n", wordCount);
+	if (wordCount != 1) {
+		dev_err(pDevData->dev, "InterruptTaskletSun() > received payload size is incorrect: %u words\n", wordCount);
+		return;
+	}
 
 	spin_lock_irqsave(&pDevData->lock, flags);
 
