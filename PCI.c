@@ -227,7 +227,7 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 			return -EIO;
 		}
 		if (request_threaded_irq(pcidev->irq, AGEXDrv_pcie_interrupt, AGEXDrv_pcie_thread,
-					IRQF_TRIGGER_RISING | IRQF_ONESHOT, MODMODULENAME, pDevData) != 0) {
+					IRQF_TRIGGER_RISING, MODMODULENAME, pDevData) != 0) {
 			printk(KERN_ERR MODDEBUGOUTTEXT" request_threaded_irq failed\n");
 			pDevData->boIsIRQOpen = FALSE;
 			return -EIO;

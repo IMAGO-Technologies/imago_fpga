@@ -22,7 +22,7 @@
 
 //> defines about the Module
 /******************************************************************************************/
-#define MODVERSION "1.1.11.0"
+#define MODVERSION "1.1.12.0"
 #define MODDATECODE __DATE__ " - " __TIME__
 #define MODLICENSE "GPL";
 #define MODDESCRIPTION "IMAGO FPGA / RTCC device driver";
@@ -295,7 +295,8 @@ typedef struct _DEVICE_DATA
 	u8						DMARead_TCs;		// actual number of transfer channels
 	u16  					DMARead_SGs;		// actual number of scatter gather elements
 	spinlock_t				DMARead_SpinLock;	// DMA spinlock
-	bool					setupTcInHWI;								// setup transfer channel in hardware interrupt
+	bool					setupTcInHWI;		// setup transfer channel in hardware interrupt
+	bool					irqEnableInHWI;		// if disabled: DRA7x workaround for IRQ race in old kernels
 	DMA_READ_CHANNEL		DMARead_Channel[MAX_DMA_READ_DMACHANNELS];	// DMA channel data
 } DEVICE_DATA, *PDEVICE_DATA;
 

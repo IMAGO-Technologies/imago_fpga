@@ -55,6 +55,8 @@ void AGEXDrv_SwitchInterruptOn(PDEVICE_DATA pDevData, const bool boTurnOn)
 		}
 	}
 
+	dev_dbg(pDevData->dev, "AGEXDrv_SwitchInterruptOn: %u\n", boTurnOn ? 1 : 0);
+
 	/* IRQ enable flag */
 	iowrite32(boTurnOn ? 1 : 0, pDevData->pVABAR0 + (IS_TYPEWITH_COMMONBUFFER(pDevData) ? ISR_ONOFF_OFFSET_AGEX2 : ISR_ONOFF_OFFSET_AGEX));
 }
@@ -85,14 +87,14 @@ irqreturn_t AGEXDrv_pci_interrupt(int irq, void *dev_id)
 irqreturn_t AGEXDrv_pcie_interrupt(int irq, void *dev_id)
 {
 	PDEVICE_DATA pDevData = (PDEVICE_DATA)dev_id;
-	u32			IRQReg_A;
+	u32			IRQReg_A = ((u32*)pDevData->pVACommonBuffer)[0];
 	u32			sun_packet[MAX_SUNPACKETSIZE/4];
-	irqreturn_t result = IRQ_HANDLED;
+	irqreturn_t result = pDevData->irqEnableInHWI ? IRQ_HANDLED : IRQ_WAKE_THREAD;
 
-	IRQReg_A = ((u32*)pDevData->pVACommonBuffer)[0];
+	dev_dbg(pDevData->dev, "AGEXDrv_pcie_interrupt: IRQReg_A = 0x%08x\n", IRQReg_A);
 
 	// check for DMA done flag
-	if (IS_TYPEWITH_DMA2HOST(pDevData) && (IRQReg_A >> 4) != 0) {
+	if ((IRQReg_A >> 4) != 0) {
 		if (pDevData->setupTcInHWI)
 			AGEXDrv_DMARead_DPC(pDevData);
 		else
@@ -123,8 +125,10 @@ irqreturn_t AGEXDrv_pcie_interrupt(int irq, void *dev_id)
 irqreturn_t AGEXDrv_pcie_thread(int irq, void *dev_id)
 {
 	PDEVICE_DATA pDevData = (PDEVICE_DATA)dev_id;
+	u32			IRQReg_A = ((u32*)pDevData->pVACommonBuffer)[0];
 
-	AGEXDrv_DMARead_DPC(pDevData);
+	if ((IRQReg_A >> 4) != 0 && !pDevData->setupTcInHWI)
+		AGEXDrv_DMARead_DPC(pDevData);
 
 	AGEXDrv_SwitchInterruptOn(pDevData, TRUE);
 

@@ -193,11 +193,11 @@ void AGEXDrv_InitDrvData(PDEVICE_DATA pDat)
 	pDat->boIsDeviceOpen	= FALSE;
 	pDat->dev				= NULL;
 	pDat->DeviceSubType		= SubType_Invalid;
-	#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
 		sema_init(&pDat->DeviceSem,1);		//1<>frei
-	#else
+#else
 		init_MUTEX( &pDat->DeviceSem);
-	#endif
+#endif
 
 	/* SUN */
 	spin_lock_init(&pDat->lock);
@@ -212,7 +212,16 @@ void AGEXDrv_InitDrvData(PDEVICE_DATA pDat)
 	pDat->pVACommonBuffer 	= NULL;
 	pDat->pBACommonBuffer	= 0;
 	pDat->boIsIRQOpen		= FALSE;
-
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
+	// VC-XM / DRA7x PCIe workaround for IRQ race in old kernels:
+	// "dra7xx: PCIe IRQ handling rework" https://lkml.org/lkml/2018/2/9/208
+	// https://github.com/IMAGO-Technologies/linux-visioncam/commit/87263c04ec46afb9c664ba9bde166c40cd32e5cb#diff-3aa30d57b2d8270de9ab785bccd77846
+	// Wenn der naechste FPGA Interrupt ankommt bevor der HWI verlassen wird, so kann
+	// er verloren gehen => FPGA Interrupt erst im IRQ Thread freigeben
+	pDat->irqEnableInHWI	= FALSE;
+#else
+	pDat->irqEnableInHWI	= TRUE;
+#endif
 
 	/* DMA */
 	//Note: 
