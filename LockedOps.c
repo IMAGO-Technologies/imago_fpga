@@ -40,7 +40,7 @@ long Locked_write(PDEVICE_DATA pDevData, const u8 __user * pToUserMem, const siz
 
 	// insert serialID to Header1:
 	deviceID = (((u32*)TempBuffer)[1] >> 20) & (MAX_IRQDEVICECOUNT - 1);
-	((u32*)TempBuffer)[1] |= pDevData->SunDeviceData[deviceID].serialID << 27;
+	((u32*)TempBuffer)[1] |= pDevData->SunDeviceData[deviceID].serialID << 26;
 
 	if (IS_TYPEWITH_PCI(pDevData) || IS_TYPEWITH_COMMONBUFFER(pDevData)) {
 		/* Kernel -> PCI */

@@ -212,7 +212,7 @@ static void InterruptTaskletSun(DEVICE_DATA *pDevData, u32 *sun_packet)
 {
 	u8 wordCount = sun_packet[1] & 0xFF;
 	u8 deviceID = (sun_packet[1] >> 20) & (MAX_IRQDEVICECOUNT-1);
-	u8 serialId = (sun_packet[1] >> 27) & 1;
+	u8 serialId = (sun_packet[1] >> 26) & 1;
 	struct SUN_DEVICE_DATA *pSunDevice = &pDevData->SunDeviceData[deviceID];
 	unsigned long flags;
 
