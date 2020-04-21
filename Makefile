@@ -15,17 +15,21 @@
 #		e.g: ccflags-y += -v
 #
 
+#DEBUG=y
 ifeq ($(DEBUG),y)
-  DEBFLAGS = -O -g -DDEBUG #-Wno-sign-compare  # "-O" is needed to expand inlines
+  DEBFLAGS = -O -g -DDEBUG -Wno-sign-compare  # "-O" is needed to expand inlines
   $(info we use debug flags [${DEBFLAGS}])
 else
   DEBFLAGS = -O2 -Wno-sign-compare 
 endif
 
 ccflags-y := $(DEBFLAGS) -Werror -Wall -Wextra -Wno-unused-parameter -Wno-date-time 
-agexpcidrv-objs := FileOps.o ISRTasklet.o LockedOps.o AGEXDrv.o PCI.o DMARead.o
+agexpcidrv-objs := FileOps.o ISRTasklet.o LockedOps.o AGEXDrv.o DMARead.o
 ifeq ($(ARCH),arm64)
 	agexpcidrv-objs += SPI.o
+endif
+ifeq ($(CONFIG_PCI),y)
+	agexpcidrv-objs += PCI.o
 endif
 obj-m	:= agexpcidrv.o
 

@@ -22,11 +22,11 @@
 
 //> defines about the Module
 /******************************************************************************************/
-#define MODVERSION "1.1.13.0"
+#define MODVERSION "1.1.14.0"
 #define MODDATECODE __DATE__ " - " __TIME__
-#define MODLICENSE "GPL";
-#define MODDESCRIPTION "IMAGO FPGA / RTCC device driver";
-#define MODAUTHOR "IMAGO Technologies GmbH";
+#define MODLICENSE "GPL"
+#define MODDESCRIPTION "IMAGO FPGA / RTCC device driver"
+#define MODAUTHOR "IMAGO Technologies GmbH"
 
 #define MODCLASSNAME	"agexdrv"
 #define MODMODULENAME	"agexpcidrv"
@@ -89,7 +89,8 @@ enum AGEX_DEVICE_SUBTYPE
    	SubType_PCIE_CL		= 7,
 	SubType_AGEX5		= 8,
 	SubType_AGEX5_CL	= 9,
-	SubType_DAYTONA		= 10
+	SubType_DAYTONA		= 10,
+	SubType_VSPV3		= 11
 };
 
 // Device info flags used by struct sAGEXDrv_device_info
@@ -315,6 +316,7 @@ typedef struct _MODULE_DATA
 // globals
 extern MODULE_DATA _ModuleData;
 extern struct sAGEXDrv_device_info AGEXDrv_device_info[];
+extern struct pci_driver AGEXDrv_pci_driver;
 extern struct spi_driver imago_spi_driver;
 
 /*** prototypes ***/

@@ -37,12 +37,17 @@ static const struct of_device_id imago_spi_of_match[] = {
 		.compatible	= "imago,fpga-spi-daytona",
 		.data		= (void *)SubType_DAYTONA,
 	},
+	{
+		.compatible	= "imago,fpga-spi-vspv3",
+		.data		= (void *)SubType_VSPV3,
+	},
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, imago_spi_of_match);
 
 static const struct spi_device_id imago_spi_id[] = {
         {"fpga-spi-daytona", SubType_DAYTONA},
+        {"fpga-spi-vspv3", SubType_VSPV3},
         {}
 };
 MODULE_DEVICE_TABLE(spi, imago_spi_id);
@@ -61,7 +66,7 @@ int imago_spi_probe(struct spi_device *spi)
 	else
 		tempDevSubType = spi_get_device_id(spi)->driver_data;
 
-	if (tempDevSubType != SubType_DAYTONA) {
+	if (tempDevSubType != SubType_DAYTONA && tempDevSubType != SubType_VSPV3) {
 		printk(KERN_WARNING MODDEBUGOUTTEXT" invalid device identifier (%u)\n", tempDevSubType);
 		return -EINVAL;
 	}
@@ -99,7 +104,7 @@ int imago_spi_probe(struct spi_device *spi)
 	/**********************************************************************/
 
 	if (request_threaded_irq(spi->irq, NULL, AGEXDrv_spi_thread,
-				IRQF_TRIGGER_RISING | IRQF_ONESHOT, MODMODULENAME, &_ModuleData.Devs[DevIndex]) != 0) {
+				IRQF_ONESHOT, MODMODULENAME, &_ModuleData.Devs[DevIndex]) != 0) {
 		printk(KERN_ERR MODDEBUGOUTTEXT" request_threaded_irq failed\n");
 		_ModuleData.Devs[DevIndex].boIsIRQOpen = FALSE;
 		return -EIO;

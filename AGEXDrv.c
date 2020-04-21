@@ -32,40 +32,44 @@ MODULE_AUTHOR(MODAUTHOR);
 module_init(AGEXDrv_init);
 module_exit(AGEXDrv_exit);
 
+struct sAGEXDrv_device_info AGEXDrv_device_info[] = {
+	[SubType_AGEX] = {
+		.name = "VisionBox AGE-X",
+		.flags = AGEXDRV_FLAG_PCI},
+	[SubType_AGEX2] = {
+		.name = "VisionBox AGE-X2",
+		.flags = AGEXDRV_FLAG_COMMONBUFFER},
+	[SubType_MVC0] = {
+		.name = "Machine Vision Controller",
+		.flags = AGEXDRV_FLAG_COMMONBUFFER},
+	[SubType_AGEX2_CL] = {
+		.name = "VisionBox AGE-X2 CL",
+		.flags = AGEXDRV_FLAG_COMMONBUFFER | AGEXDRV_FLAG_DMA2HOST | AGEXDRV_FLAG_PCI64BIT},
+	[SubType_VCXM] = {
+		.name = "VisionCam XM",
+		.flags = AGEXDRV_FLAG_COMMONBUFFER | AGEXDRV_FLAG_DMA2HOST},
+	[SubType_LEMANS] = {
+		.name = "VisionBox LE MANS",
+		.flags = AGEXDRV_FLAG_COMMONBUFFER},
+	[SubType_PCIE_CL] = {
+		.name = "PCIe CL",
+		.flags = AGEXDRV_FLAG_COMMONBUFFER | AGEXDRV_FLAG_DMA2HOST | AGEXDRV_FLAG_PCI64BIT},
+	[SubType_AGEX5] = {
+		.name = "VisionBox AGE-X5",
+		.flags = AGEXDRV_FLAG_COMMONBUFFER},
+	[SubType_AGEX5_CL] = {
+		.name = "VisionBox AGE-X5 CL",
+		.flags = AGEXDRV_FLAG_COMMONBUFFER | AGEXDRV_FLAG_DMA2HOST | AGEXDRV_FLAG_PCI64BIT},
+	[SubType_DAYTONA] = {
+		.name = "VisionBox DAYTONA",
+		.flags = AGEXDRV_FLAG_SPI},
+	[SubType_VSPV3] = {
+		.name = "VisionSensor PV3",
+		.flags = AGEXDRV_FLAG_SPI},
+};
+
 //static member (die gleichen für alle devices)
 MODULE_DATA _ModuleData;
-
-//für welche PCI IDs sind wir zuständi?
-static struct pci_device_id AGEXDrv_ids[] = {
-	{ PCI_DEVICE(0x1204/*VendorID (Lattice Semi)*/, 0x0200 /*DeviceID*/),	/* AGE-X1 */
-		.driver_data = SubType_AGEX },
-	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0x0004 /*DeviceID*/),			/* AGE-X2 */
-		.driver_data = SubType_AGEX2 },
-	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xA6E4 /*DeviceID*/),			/* MVC0 */
-		.driver_data = SubType_MVC0 },
-	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0x0010 /*DeviceID*/),			/* AGE-X2-CL */
-		.driver_data = SubType_AGEX2_CL },
-	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0x0005 /*DeviceID*/),			/* VCXM */
-		.driver_data = SubType_VCXM },
-	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xCA72 /*DeviceID*/),			/* LeMans */
-		.driver_data = SubType_LEMANS },
-	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xDECA /*DeviceID*/),			/* PCIe-CL */
-		.driver_data = SubType_PCIE_CL },
-	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xA6E5 /*DeviceID*/),			/* AGE-X5 */
-		.driver_data = SubType_AGEX5 },
-	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xDCA5 /*DeviceID*/),			/* AGE-X5-CL */
-		.driver_data = SubType_AGEX5_CL },
-	{ 0, }
-};
-MODULE_DEVICE_TABLE(pci, AGEXDrv_ids);		//macht dem kernel bekannt was dieses modul für PCI devs kann
-
-//struct mit den PCICallBacks
-static struct pci_driver AGEXDrv_pci_driver = {
-	.name = MODMODULENAME,
-	.id_table = AGEXDrv_ids,
-	.probe = AGEXDrv_PCI_probe,
-	.remove = AGEXDrv_PCI_remove,
-};
 
 
 // "Called when a device is added, removed from this class, or a few other things that generate uevents to add the environment variables."
@@ -127,7 +131,7 @@ int AGEXDrv_init(void)
 	else
 		pr_devel(MODDEBUGOUTTEXT" major %d, minor %d, anz %d\n",MAJOR(_ModuleData.FirstDeviceNumber),MINOR(_ModuleData.FirstDeviceNumber), MAX_DEVICE_COUNT);
 	//sicher ist sicher (wir nutzen den Minor als Index für _ModuleData_Devs[])
-	if( MINOR(_ModuleData.FirstDeviceNumber) != 0){
+	if (MINOR(_ModuleData.FirstDeviceNumber) != 0) {
 		printk(KERN_WARNING MODDEBUGOUTTEXT" start minor must we zero!\n");
 		return -EINVAL;
 	}
@@ -136,21 +140,21 @@ int AGEXDrv_init(void)
 	/* erzeugt eine Sysfs class */
 	/**********************************************************************/
 	_ModuleData.pModuleClass = class_create(THIS_MODULE, MODCLASSNAME);
-	if( IS_ERR(_ModuleData.pModuleClass))
+	if (IS_ERR(_ModuleData.pModuleClass))
 		printk(KERN_WARNING MODDEBUGOUTTEXT" can't create sysfs class!\n");
 	
 	//add the uevend handler
-	if( !IS_ERR(_ModuleData.pModuleClass) )
+	if (!IS_ERR(_ModuleData.pModuleClass))
 		_ModuleData.pModuleClass->dev_uevent = AGEXDRV_dev_uevent;	//send uevents to udev, so it'll create the /dev/node
 
 
 	/* macht dem Kernel den treiber für PCIdevs bekannt */
 	/**********************************************************************/
-	if( pci_register_driver(&AGEXDrv_pci_driver) !=0)
+	if (pci_register_driver(&AGEXDrv_pci_driver) != 0)
 		printk(KERN_WARNING MODDEBUGOUTTEXT" pci_register_driver failed!\n");
 
 #ifdef __aarch64__
-	if( spi_register_driver(&imago_spi_driver) !=0)
+	if (spi_register_driver(&imago_spi_driver) != 0)
 		printk(KERN_WARNING MODDEBUGOUTTEXT" spi_register_driver failed!\n");
 #endif
 	
