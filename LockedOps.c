@@ -40,7 +40,9 @@ long Locked_write(PDEVICE_DATA pDevData, const u8 __user * pToUserMem, const siz
 
 	// insert serialID to Header1:
 	deviceID = (((u32*)TempBuffer)[1] >> 20) & (MAX_IRQDEVICECOUNT - 1);
-	((u32*)TempBuffer)[1] |= pDevData->SunDeviceData[deviceID].serialID << 26;
+	if (deviceID != 0) {
+		((u32*)TempBuffer)[1] |= pDevData->SunDeviceData[deviceID].serialID << 26;
+	}
 
 	if (IS_TYPEWITH_PCI(pDevData) || IS_TYPEWITH_COMMONBUFFER(pDevData)) {
 		/* Kernel -> PCI */
@@ -148,30 +150,28 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 		//	-> kein Fehler wenn ungenutzt oder noch im LongTermRequest noch OutOfRange
 		case AGEXDRV_IOC_RELEASE_DEVICEID:
 		{
-			u8 DeviceID;
+			u8 deviceID;
 
 			if (BufferSizeBytes != 1) {
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n");
 				return -EFBIG;
 			}
 
-			if (get_user(DeviceID, pToUserMem) != 0) {
+			if (get_user(deviceID, pToUserMem) != 0) {
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n");
 				return -EFAULT;
 			}
+			
+			// strip serialID (bit 6)
+			deviceID &= (MAX_IRQDEVICECOUNT - 1);
 
-			//gültig?
-			if (DeviceID >= MAX_IRQDEVICECOUNT)
-			{
-				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> DeviceID out of range!\n");
-				return 0;
-			}
-
-			pSunDevice = &pDevData->SunDeviceData[DeviceID];
+			pSunDevice = &pDevData->SunDeviceData[deviceID];
 
 			spin_lock_irqsave(&pDevData->lock, flags);
-			if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA) {
-				pSunDevice->serialID = !pSunDevice->serialID;		// Pending request is still in FPGA => toggle serial ID
+			if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA ||
+				pSunDevice->requestState == SUN_REQ_STATE_ABORT) {
+				// Pending request is still in FPGA => toggle serial ID
+				pSunDevice->serialID = !pSunDevice->serialID;
 			}
 			pSunDevice->requestState = SUN_REQ_STATE_FREE;
 			spin_unlock_irqrestore(&pDevData->lock, flags);
@@ -189,31 +189,36 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 		// 		noch genutzt
 		case AGEXDRV_IOC_CREATE_DEVICEID:
 		{
-			unsigned int index;
+			unsigned int deviceId;
+			u8 deviceIdUser;
 			
 			if (BufferSizeBytes != 1) {
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n");
 				return -EFBIG;
 			}
 
-			for (index=0; index < MAX_IRQDEVICECOUNT; index++)
+			// DeviceID 0 is reserved to avoid conflicts with register writes without
+			// a DeviceID in Header1
+			for (deviceId = 1; deviceId < MAX_IRQDEVICECOUNT; deviceId++)
 			{
-				if (pDevData->SunDeviceData[index].requestState == SUN_REQ_STATE_FREE)
+				if (pDevData->SunDeviceData[deviceId].requestState == SUN_REQ_STATE_FREE)
 				{
-					pSunDevice = &pDevData->SunDeviceData[index];
+					pSunDevice = &pDevData->SunDeviceData[deviceId];
 
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
-					sema_init(&pDevData->SunDeviceData[index].semResult, 0);
+					sema_init(&pDevData->SunDeviceData[deviceId].semResult, 0);
 #else
-					init_MUTEX_LOCKED(&pDevData->SunDeviceData[index].semResult);
+					init_MUTEX_LOCKED(&pDevData->SunDeviceData[deviceId].semResult);
 #endif
-					if (put_user((u8)index, pToUserMem) != 0) {
+					// add serialID in case the user space uses the DeviceID directly
+					deviceIdUser = deviceId | (pSunDevice->serialID << 6);
+					if (put_user(deviceIdUser, pToUserMem) != 0) {
 						dev_err(pDevData->dev, "Locked_ioctl > put_user() failed\n");
 						return -EFAULT;
 					}
 
 					pSunDevice->requestState = SUN_REQ_STATE_IDLE;
-					dev_dbg(pDevData->dev, "Locked_ioctl > NewDeviceID = %d\n", index);
+					dev_dbg(pDevData->dev, "Locked_ioctl > NewDeviceID = %d\n", deviceId);
 					return 1;
 				}
 			}
@@ -226,7 +231,7 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 		/**********************************************************************/
 		case AGEXDRV_IOC_ABORT_LONGTERM_READ:
 		{
-			u8 DeviceID;
+			u8 deviceID;
 
 			if (BufferSizeBytes != 1) {
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n");
@@ -234,19 +239,22 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 			}
 
 			//DevId lesen
-			if (get_user(DeviceID, pToUserMem) != 0) {
+			if (get_user(deviceID, pToUserMem) != 0) {
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n");
 				return -EFAULT;
 			}
 
-			pSunDevice = &pDevData->SunDeviceData[DeviceID];
+			// strip serialID (bit 6)
+			deviceID &= (MAX_IRQDEVICECOUNT - 1);
+			pSunDevice = &pDevData->SunDeviceData[deviceID];
 
-			dev_dbg(pDevData->dev, "Locked_ioctl > Aborting read for DeviceID %u\n", DeviceID);
+			dev_dbg(pDevData->dev, "Locked_ioctl > Aborting read for DeviceID %u\n", deviceID);
 
 			spin_lock_irqsave(&pDevData->lock, flags);
 			if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA) {
 				pSunDevice->requestState = SUN_REQ_STATE_ABORT;
-				pSunDevice->serialID = !pSunDevice->serialID;		// toggle serial ID
+				// do not toggle serial ID yet, request may still be answered by the FPGA!
+//				pSunDevice->serialID = !pSunDevice->serialID;
 				spin_unlock_irqrestore(&pDevData->lock, flags);
 				up(&pSunDevice->semResult);
 			}

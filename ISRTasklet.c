@@ -235,6 +235,11 @@ static void InterruptTaskletSun(DEVICE_DATA *pDevData, u32 *sun_packet)
 		memcpy(pSunDevice->packet, sun_packet, 3*4);
 		up(&pSunDevice->semResult);
 	}
+	else if (pSunDevice->requestState == SUN_REQ_STATE_ABORT) {
+		// we received the answer from an aborted request => complete silently
+		pSunDevice->requestState = SUN_REQ_STATE_IDLE;
+		spin_unlock_irqrestore(&pDevData->lock, flags);
+	}
 	else {
 		spin_unlock_irqrestore(&pDevData->lock, flags);
 		if (pSunDevice->requestState != SUN_REQ_STATE_INFPGA)

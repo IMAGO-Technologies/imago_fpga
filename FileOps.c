@@ -99,6 +99,7 @@ ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *
 	PDEVICE_DATA pDevData = NULL;
 	struct SUN_DEVICE_DATA *pSunDevice;
 	unsigned long flags;
+	int toggleId = 0;
 
 	/*Wie es geht:
 	 * 1. (locked)
@@ -149,6 +150,8 @@ ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *
 	//args lesen
 	if( get_user(DeviceID, (u32*)buf) != 0)
 		return -EFAULT;
+	// strip serialID (bit 6)
+	DeviceID &= (MAX_IRQDEVICECOUNT - 1);
 	if( get_user(BytesToWrite, (u32*)(buf+1*4) ) != 0)
 		return -EFAULT;
 	if( get_user(TimeOut_ms, (u32*)(buf+2*4) ) != 0)
@@ -167,17 +170,17 @@ ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *
 		return -ERESTARTSYS;
 	}
 
-	if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA)	// should never happen
-		dev_warn(pDevData->dev, "AGEXDrv_read() > pending FPGA request for DeviceID %u, toggling serial ID -> %u\n", DeviceID, pSunDevice->serialID);
 	spin_lock_irqsave(&pDevData->lock, flags);
-	if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA) {
-		// Pending request is still in FPGA (after timeout or reuse of device after killed process) => toggle serial ID
+	if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA ||
+		pSunDevice->requestState == SUN_REQ_STATE_ABORT) {
+		// Pending request is still in FPGA (after timeout or abort) => toggle serial ID
 		pSunDevice->serialID = !pSunDevice->serialID;
-		// requestState is already SUN_REQ_STATE_INFPGA
+		toggleId = 1;
 	}
-	else {
-		pSunDevice->requestState = SUN_REQ_STATE_INFPGA;
-	}
+	pSunDevice->requestState = SUN_REQ_STATE_INFPGA;
+
+	if (toggleId)
+		dev_warn(pDevData->dev, "AGEXDrv_read() > pending FPGA request for DeviceID %u, toggling serial ID -> %u\n", DeviceID, pSunDevice->serialID);
 	spin_unlock_irqrestore(&pDevData->lock, flags);
 
 	// check semaphore
@@ -218,7 +221,10 @@ ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *
 	//abort durch user?
 	spin_lock_irqsave(&pDevData->lock, flags);
 	if (pSunDevice->requestState == SUN_REQ_STATE_ABORT) {
-		pSunDevice->requestState = SUN_REQ_STATE_IDLE;
+		// request was canceled
+		// do not toggle serial ID yet, request may still be answered by the FPGA
+//		pSunDevice->serialID = !pSunDevice->serialID;
+//		pSunDevice->requestState = SUN_REQ_STATE_IDLE;
 		spin_unlock_irqrestore(&pDevData->lock, flags);
 		dev_dbg(pDevData->dev, "AGEXDrv_read() > aborting read for DeviceID: %u\n", DeviceID);
 		return -EINTR;
