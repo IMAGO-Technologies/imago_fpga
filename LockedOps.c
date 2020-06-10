@@ -259,10 +259,12 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 				up(&pSunDevice->semResult);
 			}
 			else if (pSunDevice->requestState == SUN_REQ_STATE_RESULT) {
-				pSunDevice->requestState = SUN_REQ_STATE_ABORT;
+				// avoid race condition: the result may still be processed by read(), so leave it there
+//				pSunDevice->requestState = SUN_REQ_STATE_IDLE;
 				spin_unlock_irqrestore(&pDevData->lock, flags);
 			}
 			else {
+				// already in state SUN_REQ_STATE_ABORT or SUN_REQ_STATE_IDLE
 				spin_unlock_irqrestore(&pDevData->lock, flags);
 			}
 			return 0;

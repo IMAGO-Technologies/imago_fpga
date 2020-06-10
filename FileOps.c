@@ -184,8 +184,10 @@ ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *
 	spin_unlock_irqrestore(&pDevData->lock, flags);
 
 	// check semaphore
-	while (down_trylock(&pSunDevice->semResult) == 0) // should never happen
-		dev_warn(pDevData->dev, "AGEXDrv_read() > clearing unfinished semaphore result for DeviceID %u\n", DeviceID);
+	while (down_trylock(&pSunDevice->semResult) == 0) {
+		// may happen if a previous read() that timed out was answered in the meantime
+		dev_dbg(pDevData->dev, "AGEXDrv_read() > clearing unfinished semaphore result for DeviceID %u\n", DeviceID);
+	}
 
 	res = Locked_write(pDevData, buf+3*4, BytesToWrite);
 	up(&pDevData->DeviceSem);
