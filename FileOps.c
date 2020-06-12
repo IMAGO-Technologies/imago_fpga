@@ -178,10 +178,10 @@ ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *
 		toggleId = 1;
 	}
 	pSunDevice->requestState = SUN_REQ_STATE_INFPGA;
+	spin_unlock_irqrestore(&pDevData->lock, flags);
 
 	if (toggleId)
 		dev_warn(pDevData->dev, "AGEXDrv_read() > pending FPGA request for DeviceID %u, toggling serial ID -> %u\n", DeviceID, pSunDevice->serialID);
-	spin_unlock_irqrestore(&pDevData->lock, flags);
 
 	// check semaphore
 	while (down_trylock(&pSunDevice->semResult) == 0) {
