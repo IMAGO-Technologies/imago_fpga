@@ -361,7 +361,7 @@ int AGEXDrv_DMARead_Reset_DMAChannel(PDEVICE_DATA pDevData, unsigned int dma_cha
 /* module functions */
 int AGEXDrv_init(void);
 void AGEXDrv_exit(void);
-void AGEXDrv_InitDrvData(PDEVICE_DATA pDat);
+void AGEXDrv_InitDrvData(PDEVICE_DATA pDat, u8 SubType);
 
 
 // device uses PCIe interface (common buffer + MSI)

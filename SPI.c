@@ -85,11 +85,9 @@ int imago_spi_probe(struct spi_device *spi)
 	for(i=0; i<MAX_DEVICE_COUNT; i++) {
 		if(!_ModuleData.boIsMinorUsed[i]) {
 			DevIndex = i;
-			AGEXDrv_InitDrvData(&_ModuleData.Devs[DevIndex]);			
-			_ModuleData.Devs[DevIndex].DeviceSubType= tempDevSubType;
+			AGEXDrv_InitDrvData(&_ModuleData.Devs[DevIndex], tempDevSubType);			
 			_ModuleData.Devs[DevIndex].DeviceNumber = MKDEV(MAJOR(_ModuleData.FirstDeviceNumber), DevIndex);
 			_ModuleData.Devs[DevIndex].dev = &spi->dev;
-			_ModuleData.Devs[DevIndex].flags =  AGEXDrv_device_info[tempDevSubType].flags;
 			spi_set_drvdata(spi, &_ModuleData.Devs[DevIndex]);
 			break;
 		}

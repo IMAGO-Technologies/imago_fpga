@@ -111,7 +111,7 @@ int AGEXDrv_init(void)
 	_ModuleData.pModuleClass =  ERR_PTR(-EFAULT);
 
 	for(i=0; i<MAX_DEVICE_COUNT; i++){
-		AGEXDrv_InitDrvData(&_ModuleData.Devs[i]);
+		AGEXDrv_InitDrvData(&_ModuleData.Devs[i], SubType_Invalid);
 		_ModuleData.boIsMinorUsed[i] = FALSE;
 	}
 		
@@ -186,7 +186,7 @@ void AGEXDrv_exit(void)
 }
 
 //setzt alle Felder auf definierte Werte
-void AGEXDrv_InitDrvData(PDEVICE_DATA pDat)
+void AGEXDrv_InitDrvData(PDEVICE_DATA pDat, u8 SubType)
 {
 	int i, iChannel, iTC;
 
@@ -196,7 +196,11 @@ void AGEXDrv_InitDrvData(PDEVICE_DATA pDat)
 	/* Module */
 	pDat->boIsDeviceOpen	= FALSE;
 	pDat->dev				= NULL;
-	pDat->DeviceSubType		= SubType_Invalid;
+	pDat->DeviceSubType		= SubType;
+	if (SubType != SubType_Invalid)
+		pDat->flags				= AGEXDrv_device_info[SubType].flags;
+	else
+		pDat->flags				= 0;
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
 		sema_init(&pDat->DeviceSem,1);		//1<>frei
 #else
@@ -222,7 +226,10 @@ void AGEXDrv_InitDrvData(PDEVICE_DATA pDat)
 	// https://github.com/IMAGO-Technologies/linux-visioncam/commit/87263c04ec46afb9c664ba9bde166c40cd32e5cb#diff-3aa30d57b2d8270de9ab785bccd77846
 	// Wenn der naechste FPGA Interrupt ankommt bevor der HWI verlassen wird, so kann
 	// er verloren gehen => FPGA Interrupt erst im IRQ Thread freigeben
-	pDat->irqEnableInHWI	= FALSE;
+	if (SubType == SubType_VCXM)
+		pDat->irqEnableInHWI	= FALSE;
+	else
+		pDat->irqEnableInHWI	= TRUE;
 #else
 	pDat->irqEnableInHWI	= TRUE;
 #endif

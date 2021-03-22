@@ -103,11 +103,9 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 	for (minor=0; minor<MAX_DEVICE_COUNT; minor++) {
 		if (!_ModuleData.boIsMinorUsed[minor]) {
 			pDevData = &_ModuleData.Devs[minor];
-			AGEXDrv_InitDrvData(pDevData);
-			pDevData->DeviceSubType= tempDevSubType;
+			AGEXDrv_InitDrvData(pDevData, tempDevSubType);
 			pDevData->DeviceNumber = MKDEV(MAJOR(_ModuleData.FirstDeviceNumber), minor);
 			pDevData->dev = &pcidev->dev;
-			pDevData->flags =  AGEXDrv_device_info[tempDevSubType].flags;
 			pci_set_drvdata(pcidev, pDevData);				//damit wir im AGEXDrv_PCI_remove() wissen welches def freigebene werden soll
 			break;
 		}
