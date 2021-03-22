@@ -245,14 +245,11 @@ void AGEXDrv_InitDrvData(PDEVICE_DATA pDat)
 		PDMA_READ_CHANNEL pChannel = &pDat->DMARead_Channel[iChannel];
 
 		memset(pChannel->jobBuffers, 0, sizeof(pChannel->jobBuffers));
-		memset(&pChannel->dummyJob, 0, sizeof(pChannel->dummyJob));
 		INIT_KFIFO(pChannel->Jobs_ToDo);
 		INIT_KFIFO(pChannel->Jobs_Done);
-		#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
-			sema_init(&pChannel->WaitSem,0);		//1<>frei
-		#else
-			init_MUTEX_LOCKED( &pChannel->WaitSem);
-		#endif
+		init_completion(&pChannel->job_complete);
+		pChannel->dmaWaitCount = 0;
+		pChannel->abortWait = 0;
 
 		for(iTC = 0; iTC < MAX_DMA_READ_CHANNELTCS; iTC++)
 		{

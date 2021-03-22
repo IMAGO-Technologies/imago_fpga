@@ -409,7 +409,7 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 				return -EINTR;
 			}
 
-			// return index of pJob jobBuffers to user space
+			// return index of pJob in jobBuffers[] to user space
 			if (put_user((u64)(pJob - pDMAChannel->jobBuffers), (u64 *)pToUserMem) != 0) {
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n");
 				return -EFAULT;
@@ -577,99 +577,119 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 			u32 TimeOut_ms;
 			PDMA_READ_CHANNEL pDMAChannel;
 			DMA_READ_JOB *pJob = NULL;
-			uintptr_t pVMUser;
+			int result = 0;
 
 			if (BufferSizeBytes < (1 + sizeof(u16) + sizeof(u64))) {
-				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n");
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER: Buffer Length to short\n");
 				return -EFBIG;
 			}
 			if (!IS_TYPEWITH_DMA2HOST(pDevData)) {
-				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> No DMA support!\n");
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER: No DMA support!\n");
 				return -EFAULT;
 			}
 
 			//args vom USER
 			if (get_user(iDMAChannel, pToUserMem + 0) != 0) {
-				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n");
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER: get_user faild\n");
 				return -EFAULT;
 			}
 			if (get_user(TimeOut_ms, (u32*)(pToUserMem + 1)) != 0) {
-				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n");
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER: get_user faild\n");
 				return -EFAULT;
 			}
 			if (iDMAChannel >= pDevData->DMARead_channels) {
-				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> DMAChannel is out of range!\n");
+				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER: DMAChannel is out of range!\n");
 				return -EFAULT;
 			}
 
 			pDMAChannel = &pDevData->DMARead_Channel[iDMAChannel];
 
-			//> warten (mit timeout)
-			//IOCTRL lock tempor�r l�sen
+			dev_dbg(pDevData->dev, "Locked_ioctl AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER: DMA: %u, TimeOut_ms: %u\n",
+				iDMAChannel, TimeOut_ms);
+
+			if (pDMAChannel->abortWait) {
+				// check if abort operation is in progress => no additional waiting threads are allowed
+				// (should already be avoided by the library, but is a race condition)
+				if (put_user(0, pToUserMem) ||
+					put_user(0, (u16*)(pToUserMem + 1)) ||
+					put_user(0, (u64*)(pToUserMem + 1 + sizeof(u16)))) {
+					dev_err(pDevData->dev, "Locked_ioctl AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER: put_user() failed\n");
+					return -EFAULT;
+				}
+				return 1 + sizeof(u16) +  sizeof(u64);
+			}
+
+			// wait for DMA completion
+			pDMAChannel->dmaWaitCount++;
+
+			// but first, release IOCTL lock while waiting
 			up(&pDevData->DeviceSem);
-//<......................................................................
-			// aufwachen durch Signal, up vom SWI, oder User [Abort], bzw TimeOut
-			if (TimeOut_ms == 0xFFFFFFFF)
-			{	
-				//Note: unterbrechbar(durch gdb), abbrechbar durch kill -9 & kill -15(term) 
-				//  noch ist nix passiert, Kernel darf den Aufruf wiederhohlen ohne den User zu benachrichtigen							
-				if (down_interruptible(&pDMAChannel->WaitSem) != 0) {
-					dev_dbg(pDevData->dev, "Locked_ioctl AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER > down_interruptible() failed!\n");
-					down(&pDevData->DeviceSem);
-					return -ERESTARTSYS;
+
+			if (TimeOut_ms == 0xFFFFFFFF) {
+				// wait for completion without timeout, interruptible
+				if (wait_for_completion_interruptible(&pDMAChannel->job_complete) != 0) {
+					dev_info(pDevData->dev, "Locked_ioctl AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER: wait_for_completion_interruptible() was interrupted\n");
+					result = -ERESTARTSYS;
 				}
 			}
-			else
-			{
-				//Note: nicht unter(durch GDB) bzw. abbrechbar down_timeout() > __down_timeout() > __down_common(sem, TASK_UNINTERRUPTIBLE, timeout);
-				int waitRes = down_timeout(&pDMAChannel->WaitSem, msecs_to_jiffies(TimeOut_ms));
-				if (waitRes == (-ETIME)) {
-					dev_dbg(pDevData->dev, "Locked_ioctl AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER > timeout\n");
-					down(&pDevData->DeviceSem);
-					return -ETIME;
-				}
-				if (waitRes != 0) {
-					dev_err(pDevData->dev, "Locked_ioctl AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER > down_timeout() failed\n");
-					down(&pDevData->DeviceSem);
-					return -EINTR;
+			else {
+				// wait for completion with timeout, not interruptible
+				if (wait_for_completion_timeout(&pDMAChannel->job_complete, msecs_to_jiffies(TimeOut_ms)) == 0) {
+					dev_dbg(pDevData->dev, "Locked_ioctl AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER: timeout\n");
+					result = -EINTR;
 				}
 			}
+
+			// take IOCTL lock again
 			down(&pDevData->DeviceSem);
-//......................................................................>
-			
+
+			pDMAChannel->dmaWaitCount--;
+
+			if (pDMAChannel->abortWait) {
+				// abort operation has started, don't use valid buffer in Jobs_Done FIFO
+				if (result < 0) {
+					// avoid race condition: abort operation just started after completion timeout or signal,
+					// we need to correct the completion count now:
+					wait_for_completion(&pDMAChannel->job_complete);
+					dev_dbg(pDevData->dev, "Locked_ioctl AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER: abortWait with completion error %d\n", result);
+				}
+				if (put_user(0, pToUserMem) ||
+					put_user(0, (u16*)(pToUserMem + 1)) ||
+					put_user(0, (u64*)(pToUserMem + 1 + sizeof(u16)))) {
+					dev_err(pDevData->dev, "Locked_ioctl: put_user() failed\n");
+					return -EFAULT;
+				}
+				return 1 + sizeof(u16) +  sizeof(u64);
+			}
+			if (result < 0)
+				return result;
+
 			// get buffer from jobs done FIFO
 			flags = AGEXDrv_DMARead_Lock(pDevData);
 			if (kfifo_get(&pDMAChannel->Jobs_Done, &pJob) == 0) {
 				AGEXDrv_DMARead_Unlock(pDevData, flags);
-				dev_err(pDevData->dev, "Locked_ioctl AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER > DMARead wake up, without buffer!\n");
+				dev_err(pDevData->dev, "Locked_ioctl AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER: DMA completed without buffer\n");
 				return -EFAULT;
 			}
 			AGEXDrv_DMARead_Unlock(pDevData, flags);
 
-			pVMUser = pJob->pVMUser;	// save user pointer, gets cleared by AGEXDrv_DMARead_UnMapUserBuffer()
+			// send buffer to user (can also be dummy-Buffer)
+			if (put_user((u8)pJob->boIsOk, pToUserMem) ||
+				put_user(pJob->BufferCounter, (u16*)(pToUserMem + 1)) ||
+				put_user(pJob->pVMUser, (u64*)(pToUserMem + 1 + sizeof(u16)))) {
+				dev_err(pDevData->dev, "Locked_ioctl AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER: put_user() failed\n");
+				return -EFAULT;
+			}
 
-			// unmap buffer or handle cache
+			dev_dbg(pDevData->dev, "Locked_ioctl AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER: return buffer iDMA: %d, res: %d, Seq: %d, VMPtr: %p\n",
+				iDMAChannel, pJob->boIsOk, pJob->BufferCounter, (void*)pJob->pVMUser);
+
+			// unmap buffer (pJob is released) or handle cache
 			if (!pDMAChannel->doManualMap)
 				AGEXDrv_DMARead_UnMapUserBuffer(pDevData, pJob);
 			else
 				dma_sync_sg_for_cpu(pDevData->dev, pJob->SGTable.sgl, pJob->SGTable.nents, DMA_FROM_DEVICE);
 
-			// send buffer to user (can also be dummy-Buffer)
-			if (put_user( (u8) pJob->boIsOk, pToUserMem) != 0) {
-				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n");
-				return -EFAULT;
-			}
-			if (put_user(pJob->BufferCounter, (u16*)(pToUserMem + 1)) != 0) {
-				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n");
-				return -EFAULT;
-			}
-			if (put_user(pVMUser, (u64*)(pToUserMem + 1 + sizeof(u16))) != 0) {
-				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> get_user faild\n");
-				return -EFAULT;
-			}
-
-			pr_devel(MODDEBUGOUTTEXT" Locked_ioctl> DMARead return buffer iDMA: %d, res: %d, Seq: %d, VMPtr: %p\n",
-				iDMAChannel, pJob->boIsOk, pJob->BufferCounter, (void*)pVMUser);
 			return 1 + sizeof(u16) +  sizeof(u64);
 		}
 
@@ -699,11 +719,9 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 
 			//> DMA/UserThreads abbrechen
 			if(cmd == AGEXDRV_IOC_DMAREAD_ABORT_DMA)
-				AGEXDrv_DMARead_Abort_DMAChannel(pDevData, iDMAChannel);
+				return AGEXDrv_DMARead_Abort_DMAChannel(pDevData, iDMAChannel);
 			else
-				AGEXDrv_DMARead_Abort_DMAWaiter(pDevData, iDMAChannel);
-
-			return 0;
+				return AGEXDrv_DMARead_Abort_DMAWaiter(pDevData, iDMAChannel);
 		}
 
 		default:

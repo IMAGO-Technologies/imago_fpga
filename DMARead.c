@@ -354,7 +354,7 @@ void AGEXDrv_DMARead_UnMapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob)
 }
 
 // beendet eine DMA, egal ob mit oder ohne Fehler, ob gelaufen oder nicht (läuft auch aus DPC)
-static inline void AGEXDrv_DMARead_EndDMA(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC, const bool isOk, const u16 BufferCounter)
+static void AGEXDrv_DMARead_EndDMA(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC, const bool isOk, const u16 BufferCounter)
 {	
 	PDMA_READ_CHANNEL pDMAChannel = &pDevData->DMARead_Channel[iDMA];
 	PDMA_READ_TC pTC = &pDMAChannel->TCs[iTC];
@@ -363,7 +363,8 @@ static inline void AGEXDrv_DMARead_EndDMA(PDEVICE_DATA pDevData, const u32 iDMA,
 	dev_dbg(pDevData->dev, "AGEXDrv_DMARead_EndDMA > DMA: %d, TC: %d, Res: %d, Seq: %d\n",
 				   	iDMA, iTC, isOk, BufferCounter);
 	if (pTC->boIsUsed == FALSE) {
-		dev_err(pDevData->dev, " AGEXDrv_DMARead_EndDMA > invalid TC!\n");
+		dev_warn(pDevData->dev, "AGEXDrv_DMARead_EndDMA(): invalid TC, DMA: %d, TC: %d, Res: %d, Seq: %d\n",
+						iDMA, iTC, isOk, BufferCounter);
 		return;
 	}
 
@@ -399,8 +400,7 @@ static inline void AGEXDrv_DMARead_EndDMA(PDEVICE_DATA pDevData, const u32 iDMA,
 	AGEXDrv_DMARead_Unlock(pDevData, flags);
 
 	// notify thread
-	up(&pDMAChannel->WaitSem);
-
+	complete(&pDMAChannel->job_complete);
 }
 
 
@@ -582,7 +582,7 @@ void AGEXDrv_DMARead_DPC(PDEVICE_DATA pDevData)
 
 
 //bricht laufende DMAs ab sowie ungenutzte buffer
-void AGEXDrv_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA)
+int AGEXDrv_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA)
 {
 	PDMA_READ_CHANNEL pDMAChannel = &pDevData->DMARead_Channel[iDMA];
 	DMA_READ_JOB *pJob = NULL;
@@ -593,20 +593,18 @@ void AGEXDrv_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA)
 
 	flags = AGEXDrv_DMARead_Lock(pDevData);
 
-	//> alle Buffers aus .Jobs_ToDo() .Jobs_Done() adden mit FehlerFlag und .WaitSem posten für jeden verschobenen Buffer
+	// move jobs from Jobs_ToDo to Jobs_Done queue and signal completion for each job
 	while (kfifo_get(&pDMAChannel->Jobs_ToDo, &pJob) == 1) {
 		pJob->boIsOk = FALSE;
 
-		//adden (sollte immer passen)
 		if (kfifo_put(&pDMAChannel->Jobs_Done, pJob) == 0) {
 			printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_DMARead_Abort_DMAChannel> can't add Buffer to Jobs_Done, BufferLost\n");
 			break;
 		}
 
-		//thread wecken
-		up(&pDMAChannel->WaitSem);
+		complete(&pDMAChannel->job_complete);
 
-		dev_dbg(pDevData->dev, "move JOB .Jobs_ToDo > Jobs_Done\n");
+		dev_dbg(pDevData->dev, "moving job Jobs_ToDo -> Jobs_Done\n");
 	}
 
 	//> für alle gültigen/laufenden DMAs, bei allen TCs.boIsUsed==true, 
@@ -627,88 +625,45 @@ void AGEXDrv_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA)
 	}//for iTC
 
 	AGEXDrv_DMARead_Unlock(pDevData, flags);
+	return 0;
 }
 
 
-//bricht die Tasks ab, welche auf die DMAs warten (nicht 100% sicher das alle raus sind)
-void AGEXDrv_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData,  const u32 iDMA)
+// Aborts all threads which are waiting for DMA job completion
+int AGEXDrv_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData, const u32 iDMA)
 {
 	PDMA_READ_CHANNEL pDMAChannel = &pDevData->DMARead_Channel[iDMA];
-	u8 iTryLoop, iFIFOLoop;
-	const u8 MaxTryLoop = 10; /*max Waiter die abgebrochen werden können*/
-	DMA_READ_JOB *pJob = NULL;
-	unsigned long flags;
+	int i, threads;
 
-	//Note: - sem hat kein FIFO verhalten
-	//		- der sem Zähler gibt die anz von buffern in .Jobs_Done wieder
-	//		- sem Zähler und FIFO Zähler, sind nicht Atomar verbunden daher
-	//			1. FIFO add, 2. up(), 3. down() FIFO remove()
-	//		- RaceCond, mit DPC new Image
-	//		- diese fn läuft unter dem IOCTRL Lock, daher im FIFO ist immer Platz für 1 Element
-	//
-	//==> wir müssen (dummy)Bilder adden und diese wieder durch ein down() raushohlen, dabei 3 Möglichkeiten
-	// > TimeOut	<> User hat dummyBild weggelesenfertig(nicht 100% sicher)
-	// > dummyBild  <> kein User, fertig(nicht 100% sicher)
-	// > echtesBild <> wieder adden, 
-	// 		Achtung! es könnte im FIFO nur noch echte geben (weil User dummy gelesen hat)
-	// 		aber max FIFO size wiederholen, weil es könnte ja hintem im FIFO sein,
-	// 		nach max FIFO size durchläufen sind wir sicher das, dass dummyBild vom User gelesen wurde
-	//
-	// ==> das ganze m mal wiederhohlen(für den Fall das Waiter aber keine Bild)
+	dev_dbg(pDevData->dev, "AGEXDrv_DMARead_Abort_DMAWaiter> DMA: %u, threads: %u\n", iDMA, pDMAChannel->dmaWaitCount);
 
-	pr_devel(MODDEBUGOUTTEXT" AGEXDrv_DMARead_Abort_DMAWaiter> DMA: %d\n", iDMA);
+	if (pDMAChannel->abortWait) {
+		dev_warn(pDevData->dev, "AGEXDrv_DMARead_Abort_DMAWaiter(): abort DMA operation is already in progress\n");
+		return -EALREADY;
+	}
 
-	for (iTryLoop=0; iTryLoop<MaxTryLoop; iTryLoop++) {
-		// add Dummy-Job to Jobs_Done FIFO
-		flags = AGEXDrv_DMARead_Lock(pDevData);
-		if (kfifo_put(&pDMAChannel->Jobs_Done, &pDMAChannel->dummyJob) == 0)
-			printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_DMARead_Abort_DMAWaiter> can't add dummyBuffer(iDMA: %d, i: %d)\n", iDMA, iTryLoop);
-		AGEXDrv_DMARead_Unlock(pDevData, flags);
+	// set the abortWait flag: signal the abort operation to waiting threads (IOCTL AGEXDRV_IOC_DMAREAD_WAIT_FOR_BUFFER).
+	// important: the number of waiting threads (dmaWaitCount) is not allowed to increase after this point.
+	pDMAChannel->abortWait = 1;
+	threads = pDMAChannel->dmaWaitCount;
 
-		// wakeup thread
-		up(&pDMAChannel->WaitSem);
-		
-		//> dummy wieder auslesen(wenn nicht vom User weggelesen)
-		for (iFIFOLoop = 0; iFIFOLoop < MAX_DMA_READ_JOBFIFO_SIZE; iFIFOLoop++) {
-			//> etwas warten (mit schedule) damit UserThread aufwachen kann
-			usleep_range(1*1000/*min us*/, 2*1000/*max us*/);
+	up(&pDevData->DeviceSem);
 
-			//> versuchen (dummy/echtes)Bild zu lesen 
-			if (down_trylock(&pDMAChannel->WaitSem) == 0) {
-				flags = AGEXDrv_DMARead_Lock(pDevData);
-//---------------------------------------------------------->
-				if (kfifo_get(&pDMAChannel->Jobs_Done, &pJob) == 1) {
-					// dummy-Buffer? => done
-					if (pJob->pVMUser == 0)
-					{
-						pr_devel(MODDEBUGOUTTEXT" - found dummyBuffer [%d:%d]\n",iTryLoop,iFIFOLoop);
-						iFIFOLoop=MAX_DMA_READ_JOBFIFO_SIZE;
-						iTryLoop=MaxTryLoop;
-					}
-					else
-					{
-						//echtes Bild wieder adden(sollte reinpassen)
-						if (kfifo_put(&pDMAChannel->Jobs_Done, pJob) == 0)
-							printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_DMARead_Abort_DMAWaiter> can't add realBuffer\n");
-						else
-							up(&pDMAChannel->WaitSem);
+	// signal semaphore for all threads
+	for (i = 0; i < threads; i++)
+		complete(&pDMAChannel->job_complete);
 
-						pr_devel(MODDEBUGOUTTEXT" - found realBuffer [%d:%d]\n",iTryLoop,iFIFOLoop);
-					}				
-				}
-				else
-					printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_DMARead_Abort_DMAWaiter>DMARead wake up, without buffer!\n");
-//<----------------------------------------------------------
-				AGEXDrv_DMARead_Unlock(pDevData, flags);
-			}
-			else {
-				//TimeOut, FIFO leer, User hat dummyBuffer gelesen => fertig
-				iFIFOLoop=MAX_DMA_READ_JOBFIFO_SIZE;
-				pr_devel(MODDEBUGOUTTEXT" - Jobs_Done FIFO is empty [%d:%d]\n",iTryLoop,iFIFOLoop);
-			}
-		}//for FIFOSize
+	// wait for all threads to wake up and take note of the abortWait flag (dmaWaitCount decreases to 0)
+	while (pDMAChannel->dmaWaitCount != 0) {
+		usleep_range(1*1000, 2*1000);
+	}
 
-	}//for TryLoop
+	down(&pDevData->DeviceSem);
+
+	// abort operation has finished, new waiting threads are allowed again
+	pDMAChannel->abortWait = 0;
+	
+	return 0;
 }
 
 
@@ -717,33 +672,21 @@ int AGEXDrv_DMARead_Reset_DMAChannel(PDEVICE_DATA pDevData, unsigned int dma_cha
 	PDMA_READ_CHANNEL pDMAChannel = &pDevData->DMARead_Channel[dma_channel];
 	unsigned int iTC;
 	unsigned int i;
-	int result;
 	unsigned long flags;
 
 	// abort running DMA transfers in FPGA and move jobs from Jobs_ToDo to Jobs_Done FIFO
 	AGEXDrv_DMARead_Abort_DMAChannel(pDevData, dma_channel);
 
-	// Wait for completion of pending transfers
+	// Wait for completion of pending transfers from FPGA
 	for (iTC = 0; iTC < pDevData->DMARead_TCs; iTC++) {
 		flags = AGEXDrv_DMARead_Lock(pDevData);
 		if (pDMAChannel->TCs[iTC].boIsUsed) {
-			// reset semaphore count, removing count associated with jobs in Jobs_Done FIFO,
+			// reset completion, removing count associated with jobs in Jobs_Done FIFO,
 			// because we only wait once for report of the aborted transfer
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
-			sema_init(&pDMAChannel->WaitSem, 0);
-#else
-			init_MUTEX_LOCKED(&pDMAChannel->WaitSem);
-#endif
+			reinit_completion(&pDMAChannel->job_complete);
 			AGEXDrv_DMARead_Unlock(pDevData, flags);
-
-			// wait
-			result = down_timeout(&pDMAChannel->WaitSem, msecs_to_jiffies(100));
-			if (result == (-ETIME)) {
-				dev_warn(pDevData->dev, "AGEXDrv_DMARead_Reset_DMAChannel(): reset DMA channel timeout waiting for lost image\n");
-				return -EFAULT;
-			}
-			if (result != 0) {
-				dev_warn(pDevData->dev, "AGEXDrv_DMARead_Reset_DMAChannel(): reset DMA channel down_timeout() failed\n");
+			if (wait_for_completion_timeout(&pDMAChannel->job_complete, msecs_to_jiffies(100)) == 0) {
+				dev_err(pDevData->dev, "AGEXDrv_DMARead_Reset_DMAChannel(): DMA timeout waiting for lost job\n");
 				return -EFAULT;
 			}
 		}
@@ -764,12 +707,9 @@ int AGEXDrv_DMARead_Reset_DMAChannel(PDEVICE_DATA pDevData, unsigned int dma_cha
 	INIT_KFIFO(pDMAChannel->Jobs_ToDo);
 	INIT_KFIFO(pDMAChannel->Jobs_Done);
 
-	// Reset semaphore
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
-	sema_init(&pDMAChannel->WaitSem, 0);
-#else
-	init_MUTEX_LOCKED(&pDMAChannel->WaitSem);
-#endif
+	// Reset completion
+	reinit_completion(&pDMAChannel->job_complete);
+	pDMAChannel->dmaWaitCount = 0;
 
 	return 0;
 }

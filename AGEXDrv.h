@@ -22,7 +22,7 @@
 
 //> defines about the Module
 /******************************************************************************************/
-#define MODVERSION "1.1.14.1"
+#define MODVERSION "1.1.15.0"
 #define MODDATECODE __DATE__ " - " __TIME__
 #define MODLICENSE "GPL"
 #define MODDESCRIPTION "IMAGO FPGA / RTCC device driver"
@@ -52,6 +52,7 @@
 #include <linux/device.h>	// for class_create
 #include <linux/fs.h>		// for alloc_chrdev_region /file_*
 #include <linux/semaphore.h>// for up/down ...
+#include <linux/completion.h>
 #include <linux/kfifo.h>	// for kfifo_*
 #include <linux/of_device.h>	// for of*
 #include <linux/pci.h>		// for pci*
@@ -242,14 +243,15 @@ typedef struct _DMA_READ_TC
 // DMA channel structure
 typedef struct _DMA_READ_CHANNEL
 {
-	DMA_READ_JOB jobBuffers[MAX_DMA_READ_JOBFIFO_SIZE-1];				// storage of job buffers, -1 for dummyJob in kfifo
-	DMA_READ_JOB dummyJob;												// dummy job for DMA abort
+	DMA_READ_JOB jobBuffers[MAX_DMA_READ_JOBFIFO_SIZE];				// storage of job buffers
 
 	// job FIFOs store only pointer to jobs:
 	DECLARE_KFIFO(Jobs_ToDo, PDMA_READ_JOB, MAX_DMA_READ_JOBFIFO_SIZE);	// pending transfer jobs
 	DECLARE_KFIFO(Jobs_Done, PDMA_READ_JOB, MAX_DMA_READ_JOBFIFO_SIZE);	// transfer jobs done or aborted
 
-	struct semaphore WaitSem;									// counting semapore, increments for each job in Jobs_Done
+	struct completion job_complete;								// DMA job completion
+	u8 dmaWaitCount;											// number of threads waiting for completion
+	u8 abortWait;												// signal DMA abort event to waiting threads
 
 	DMA_READ_TC TCs[MAX_DMA_READ_CHANNELTCS];					// transfer channel data
 	bool			doManualMap;
@@ -351,8 +353,8 @@ void AGEXDrv_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 i
 bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMAChannel, uintptr_t pVMUser, u64 bufferSize, DMA_READ_JOB **ppJob);
 void AGEXDrv_DMARead_UnMapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob);
 
-void AGEXDrv_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA);
-void AGEXDrv_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData,  const u32 iDMA);
+int AGEXDrv_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA);
+int AGEXDrv_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData,  const u32 iDMA);
 int AGEXDrv_DMARead_Reset_DMAChannel(PDEVICE_DATA pDevData, unsigned int dma_channel);
 
 
