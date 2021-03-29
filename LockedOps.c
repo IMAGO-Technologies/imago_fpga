@@ -311,7 +311,7 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 				return -EFAULT;
 			}
 			//nicht ueber max setzen
-			if ((tmpDMAs > MAX_DMA_READ_DMACHANNELS) || (tmpTCs > MAX_DMA_READ_CHANNELTCS) || (tmpSGs > MAX_DMA_READ_TCSGS)) {
+			if ((tmpDMAs > MAX_DMA_CHANNELS) || (tmpTCs > MAX_DMA_READ_CHANNELTCS) || (tmpSGs > MAX_DMA_READ_TCSGS)) {
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> ConfigDMARead anzDMA/TC/SG too large!\n");
 				return -EFAULT;
 			}
@@ -367,6 +367,7 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 			u64 UserPTR, bufferSize;
 			DMA_READ_CHANNEL *pDMAChannel;
 			DMA_READ_JOB *pJob = NULL;
+			int result;
 
 			if (BufferSizeBytes < (1 + 2 * sizeof(u64))) {
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> Buffer Length to short\n");
@@ -403,10 +404,10 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 			pDMAChannel->doManualMap = true;
 
 			// map buffer
-			if (!AGEXDrv_DMARead_MapUserBuffer(pDevData, pDMAChannel, (uintptr_t)UserPTR, bufferSize, &pJob)) {
+			result = AGEXDrv_DMARead_MapUserBuffer(pDevData, pDMAChannel, (uintptr_t)UserPTR, bufferSize, &pJob);
+			if (result < 0) {
 				AGEXDrv_DMARead_UnMapUserBuffer(pDevData, pJob);
-				dev_warn(pDevData->dev, "Locked_ioctl / AGEXDRV_IOC_DMAREAD_MAP_BUFFER > AGEXDrv_DMARead_MapUserBuffer() failed\n");
-				return -EINTR;
+				return result;
 			}
 
 			// return index of pJob in jobBuffers[] to user space
@@ -448,7 +449,7 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> DMAChannel is out of range!");
 				return -EFAULT;
 			}
-			if (jobIndex > ARRAY_SIZE(pDMAChannel->jobBuffers)) {
+			if (jobIndex > _ModuleData.max_dma_buffers) {
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> jobIndex is out of range!");
 				return -EFAULT;
 			}
@@ -505,10 +506,10 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 			pDMAChannel->doManualMap = false;
 
 			// map user buffer for DMA
-			if (!AGEXDrv_DMARead_MapUserBuffer(pDevData, pDMAChannel, (uintptr_t) UserPTR, bufferSize, &pJob)) {
+			result =  AGEXDrv_DMARead_MapUserBuffer(pDevData, pDMAChannel, (uintptr_t) UserPTR, bufferSize, &pJob);
+			if (result < 0) {
 				AGEXDrv_DMARead_UnMapUserBuffer(pDevData, pJob);
-				printk(KERN_WARNING MODDEBUGOUTTEXT"Locked_ioctl> (AGEXDRV_IOC_DMAREAD_ADD_BUFFER), AGEXDrv_DMARead_MapUserBuffer() failed!\n");
-				return -EINTR;
+				return result;
 			}
 
 			// start DMA if idle, else add job to Jobs_ToDo FIFO
@@ -552,7 +553,7 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> DMAChannel is out of range!");
 				return -EFAULT;
 			}
-			if (jobIndex > ARRAY_SIZE(pDMAChannel->jobBuffers)) {
+			if (jobIndex > _ModuleData.max_dma_buffers) {
 				printk(KERN_WARNING MODDEBUGOUTTEXT" Locked_ioctl> jobIndex is out of range!");
 				return -EFAULT;
 			}

@@ -78,7 +78,7 @@ struct pci_driver AGEXDrv_pci_driver = {
 int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 {
 	u64 bar0_start,bar0_len;
-	int res;
+	int i, res;
 	u8 tempDevSubType;
 	PDEVICE_DATA pDevData = NULL;
 	int minor = -1;
@@ -154,7 +154,7 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 	}
 
 
-	//>DMA(Coherent) Buffer (nicht AGEX1)
+	// allocate coherent DMA buffer for storing interrupt data by the FPGA
 	/**********************************************************************/
 	if (IS_TYPEWITH_COMMONBUFFER(pDevData)) {
 		u8 MaxDAMAddressSize = 32;
@@ -191,24 +191,42 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 			printk(KERN_ERR MODDEBUGOUTTEXT" dma_alloc_coherent failed!\n");
 			return -ENOMEM;
 		}
-
-		if (sizeof(dma_addr_t) == sizeof(u32))
-			pr_devel(MODDEBUGOUTTEXT" DMABuffer> VA: 0x%p, BA: 0x%x, %ld [Bytes]\n", 
-				pDevData->pVACommonBuffer, (u32)pDevData->pBACommonBuffer, PAGE_SIZE);
-		else
-			pr_devel(MODDEBUGOUTTEXT" DMABuffer> VA: 0x%p, BA: 0x%llx, %ld [Bytes]\n",
-				pDevData->pVACommonBuffer, (u64)pDevData->pBACommonBuffer, PAGE_SIZE);
+		pr_devel(MODDEBUGOUTTEXT" DMABuffer> VA: 0x%p, BA: 0x%llx, %ld [Bytes]\n",
+			pDevData->pVACommonBuffer, (u64)pDevData->pBACommonBuffer, PAGE_SIZE);
 		memset(pDevData->pVACommonBuffer, 0 ,PAGE_SIZE);	//es gibt ab 3.2 dma_zalloc_coherent()
 	}
 
 
-	//>DMA2Host Buffer (also CL, VCXM ...)
+	// DMA
 	/**********************************************************************/
 	if (IS_TYPEWITH_DMA2HOST(pDevData)) {
+		for (i = 0; i < MAX_DMA_CHANNELS; i++) {
+			PDMA_READ_CHANNEL pDMAChannel = &pDevData->DMARead_Channel[i];
+
+			// allocate job storage and KFIFO queues
+			pDMAChannel->jobBuffers = kzalloc(_ModuleData.max_dma_buffers * sizeof(DMA_READ_JOB), GFP_KERNEL);
+			if (pDMAChannel->jobBuffers == NULL) {
+				dev_err(pDevData->dev, "kzalloc() failed\n");
+				return -ENOMEM;
+			}
+			res = kfifo_alloc(&pDMAChannel->Jobs_ToDo, _ModuleData.max_dma_buffers * sizeof(DMA_READ_JOB *), GFP_KERNEL);
+			if (res) {
+				dev_err(pDevData->dev, "kfifo_alloc() failed\n");
+				return res;
+			}
+			res = kfifo_alloc(&pDMAChannel->Jobs_Done, _ModuleData.max_dma_buffers * sizeof(DMA_READ_JOB *), GFP_KERNEL);
+			if (res) {
+				dev_err(pDevData->dev, "kfifo_alloc() failed\n");
+				return res;
+			}
+		}
+
 		//damit z.b dma_map_sg() (mit einer IOMMU) nicht zuviel zusammengefasst
 		// aber >nicht< für sg_alloc_table_from_pages()!
-		if( dma_set_max_seg_size(&pcidev->dev, DMA_READ_TC_SG_MAX_BYTECOUNT) != 0 )		
-			{printk(KERN_ERR MODDEBUGOUTTEXT" dma_set_max_seg_size failed!\n"); return -EIO;}
+		if (dma_set_max_seg_size(&pcidev->dev, DMA_READ_TC_SG_MAX_BYTECOUNT) != 0) {
+			printk(KERN_ERR MODDEBUGOUTTEXT" dma_set_max_seg_size failed!\n");
+			return -EIO;
+		}
 	}
 
 	
@@ -320,9 +338,18 @@ void AGEXDrv_PCI_remove(struct pci_dev *pcidev)
 	if (pDevData == NULL) {
 		printk(KERN_WARNING MODDEBUGOUTTEXT" device pointer is zero!\n"); return;}
 
-	// Stop DMA transfers and unmap all buffers
-	for (i = 0; i < pDevData->DMARead_channels; i++) {
-		AGEXDrv_DMARead_Reset_DMAChannel(pDevData, i);
+	if (IS_TYPEWITH_DMA2HOST(pDevData)) {
+		// Stop DMA transfers and unmap all buffers
+		for (i = 0; i < pDevData->DMARead_channels; i++) {
+			AGEXDrv_DMARead_Reset_DMAChannel(pDevData, i);
+		}
+
+		for (i = 0; i < MAX_DMA_CHANNELS; i++) {
+			PDMA_READ_CHANNEL pDMAChannel = &pDevData->DMARead_Channel[i];
+			kfifo_free(&pDMAChannel->Jobs_ToDo);
+			kfifo_free(&pDMAChannel->Jobs_Done);
+			kfree(pDMAChannel->jobBuffers);
+		}
 	}
 
 	//IRQ zuückgeben

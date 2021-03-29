@@ -33,18 +33,19 @@
 ****************************************/
 
 //Init und mapped/pinned den "Job<>UserBuffer", struct ist beim return(min die Flags gültig) wickelt daher beim Fehler nichts rück ab (kann nicht als DPC laufen)
-bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMAChannel, uintptr_t pVMUser, u64 bufferSize, DMA_READ_JOB **ppJob)
+int AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMAChannel, uintptr_t pVMUser, u64 bufferSize, DMA_READ_JOB **ppJob)
 {
 	DMA_READ_JOB	*pJob			= NULL;
 	u32				anzPagesToMap	= (bufferSize + PAGE_SIZE-1) / PAGE_SIZE;
 	int 			pagesPinned		= -1;
 	int 			mappedSGs		= -1;
 	unsigned int	i;
+	int result;
 
-	dev_dbg(pDevData->dev, "MappUserBuffer > (%d[Bytes], %d[Pages] @ 0x%p)\n", (int)bufferSize, anzPagesToMap, (void*)pVMUser);
+	dev_dbg(pDevData->dev, "MappUserBuffer: (%d[Bytes], %d[Pages] @ 0x%p)\n", (int)bufferSize, anzPagesToMap, (void*)pVMUser);
 
 	// search free job entry
-	for (i = 0; i < ARRAY_SIZE(pDMAChannel->jobBuffers); i++) {
+	for (i = 0; i < _ModuleData.max_dma_buffers; i++) {
 		if (pDMAChannel->jobBuffers[i].pVMUser == 0)
 		{
 			pJob = &pDMAChannel->jobBuffers[i];
@@ -53,8 +54,8 @@ bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMA
 	}
 	*ppJob = pJob;
 	if (pJob == NULL) {
-		dev_warn(pDevData->dev, "MappUserBuffer > Not enough space for more DMA buffers");
-		return FALSE;
+		dev_warn(pDevData->dev, "MappUserBuffer: No space for more DMA buffers, see module parameter 'max_dma_buffers' for allocation");
+		return -ENOMEM;
 	}
 
 	//init der Flags(da hier kein cleanUp gemacht wird)
@@ -75,15 +76,16 @@ bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMA
 	//Valid? (hier kein Test ob "Offset=0 & size n * PAGES_SIZE" nur wichtig fürs alloc
 	if (pDevData == NULL || pJob == NULL) {
 		printk(KERN_ERR MODDEBUGOUTTEXT "MappUserBuffer> invalid args!\n");
-		return FALSE;
+		dev_err(pDevData->dev, "MappUserBuffer: invalid arguments");
+		return -EINVAL;
 	}
 	if ((pJob->bufferSize & 0x3) != 0 || pJob->bufferSize <= 4) {
-		printk(KERN_WARNING MODDEBUGOUTTEXT "MappUserBuffer> byte count is wrong!\n");
-		return FALSE;
+		dev_err(pDevData->dev, "MappUserBuffer: byte count is invalid");
+		return -EINVAL;
 	}
 	if ((pJob->pVMUser & (PAGE_SIZE-1)) != 0) {
-		printk(KERN_WARNING MODDEBUGOUTTEXT "MappUserBuffer> page pointer is wrong aligned!\n");
-		return FALSE;
+		dev_err(pDevData->dev, "MappUserBuffer: page pointer is not aligned");
+		return -EINVAL;
 	}
 
 
@@ -92,16 +94,19 @@ bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMA
 	//speicher für die PageList
 	pJob->ppPageList = kmalloc(anzPagesToMap*sizeof(struct page*), GFP_KERNEL);
 	if (pJob->ppPageList == NULL) {
-		printk(KERN_WARNING MODDEBUGOUTTEXT "MappUserBuffer> too many pages!\n");
-		return FALSE;
+		dev_err(pDevData->dev, "MappUserBuffer: too many pages");
+		return -ENOMEM;
 	}
 	pJob->boIsPageListValid = TRUE;
 
 	//pinnen
-	//muss die SEM, für die VMAs fürr den aufrufenden conntext, halten
+	//muss die SEM, für die VMAs für den aufrufenden conntext, halten
 	// 'for read or write' ist eine 'rw_semaphore'
 	down_read(&current->mm->mmap_sem);
 //----------------------------->
+
+// pin_user_pages() and related calls:
+// https://www.kernel.org/doc/html/latest/core-api/pin_user_pages.html
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,9,0)
 // 4.8.17 >>> 4.9.0 (Oct 2016)
@@ -136,15 +141,16 @@ bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMA
 //<-----------------------------
 	up_read(&current->mm->mmap_sem);
 
-	if (pagesPinned <= 0) {
-		printk(KERN_WARNING MODDEBUGOUTTEXT "MappUserBuffer> get_user_pages() failed!\n");
-		return FALSE;
+	if (pagesPinned < 0) {
+		dev_err(pDevData->dev, "MappUserBuffer: get_user_pages() failed");
+		return pagesPinned;
 	}
 	pJob->boIsPinned 		= TRUE;
 	pJob->pagesPinned 	= pagesPinned;
 	if (((u32)pagesPinned) != anzPagesToMap) {
-		printk(KERN_WARNING MODDEBUGOUTTEXT "MappUserBuffer> get_user_pages() failed %d from %d pinned!\n", pagesPinned, anzPagesToMap);
-		return FALSE;
+		dev_err(pDevData->dev, "MappUserBuffer: get_user_pages() %d failed from %d pinned",
+			pagesPinned, anzPagesToMap);
+		return -EFAULT;
 	}
 
 
@@ -176,14 +182,15 @@ bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMA
 	// daher nicht selbst durchlaufen
 	//siehe: http://lwn.net/Articles/256368/ (The chained scatterlist API)
 #if 0 //LINUX_VERSION_CODE > KERNEL_VERSION(3,6,0)
-	if (sg_alloc_table_from_pages(	&pJob->SGTable,				/*header*/
-									pJob->ppPageList,			/*pointer to page array*/
-									pagesPinned,				/*number of pages in page array*/
-									0, 							/*buffer offset*/
-									pJob->bufferSize			/*buffer size [bytes]*/,
-									GFP_KERNEL) != 0) {			/*alloc type*/
-		printk(KERN_WARNING MODDEBUGOUTTEXT "MappUserBuffer> sg_alloc_table() failed!\n");
-		return FALSE;
+	result = sg_alloc_table_from_pages(	&pJob->SGTable,				/*header*/
+										pJob->ppPageList,			/*pointer to page array*/
+										pagesPinned,				/*number of pages in page array*/
+										0, 							/*buffer offset*/
+										pJob->bufferSize			/*buffer size [bytes]*/,
+										GFP_KERNEL);				/*alloc type*/
+	if (result < 0) {			
+		dev_err(pDevData->dev, "MappUserBuffer: sg_alloc_table_from_pages() failed");
+		return result;
 	}
 	pJob->boIsSGValid 	= TRUE;
 #else
@@ -191,11 +198,12 @@ bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMA
 	struct scatterlist *pSGList	= NULL;
 	u32 bytesRemaining = pJob->bufferSize;
 	s32	iSG							= 0;
-	if (sg_alloc_table(	&pJob->SGTable	/*header*/, 
-						pagesPinned 	/*für wie viele Einträge*/, 
-						GFP_KERNEL) != 0) {	/*wie wird die page gealloc*/
-		printk(KERN_WARNING MODDEBUGOUTTEXT "MappUserBuffer> sg_alloc_table() failed!\n");
-		return FALSE;
+	result = sg_alloc_table(&pJob->SGTable	/*header*/, 
+							pagesPinned 	/*für wie viele Einträge*/, 
+							GFP_KERNEL);	/*wie wird die page gealloc*/
+	if (result < 0) {			
+		dev_err(pDevData->dev, "MappUserBuffer: sg_alloc_table() failed");
+		return result;
 	}
 	pJob->boIsSGValid 	= TRUE;
 
@@ -248,8 +256,8 @@ bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMA
 								pJob->SGTable.nents,	/*anz der Buffers*/
 								DMA_FROM_DEVICE); 		/*die Richtung wichtig für cache & bounce buffer*/
 	if (mappedSGs <= 0) {
-		printk(KERN_WARNING MODDEBUGOUTTEXT "MappUserBuffer> dma_map_sg() failed!\n");
-		return FALSE;
+		dev_err(pDevData->dev, "MappUserBuffer: dma_map_sg() failed");
+		return -EFAULT;
 	}
 	pJob->boIsSGMapped = TRUE;
 	pJob->SGcount = mappedSGs;
@@ -257,7 +265,7 @@ bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMA
 	dev_dbg(pDevData->dev, "dma_map_sg() use %d from %d SGs\n", mappedSGs, pJob->SGTable.nents);
 	dev_dbg(pDevData->dev, "first sg element: addr=0x%08x, len=%u\n", (unsigned int)sg_dma_address(pJob->SGTable.sgl), (unsigned int)sg_dma_len(pJob->SGTable.sgl));
 
-	return TRUE;
+	return 0;
 }
 
 
@@ -695,7 +703,7 @@ int AGEXDrv_DMARead_Reset_DMAChannel(PDEVICE_DATA pDevData, unsigned int dma_cha
 	}
 
 	// unmap used job buffers
-	for (i = 0; i < ARRAY_SIZE(pDMAChannel->jobBuffers); i++) {
+	for (i = 0; i < _ModuleData.max_dma_buffers; i++) {
 		if (pDMAChannel->jobBuffers[i].pVMUser != 0) {
 			dev_info(pDevData->dev, "AGEXDrv_DMARead_Reset_DMAChannel(): unmapping lost buffer 0x%lx\n", pDMAChannel->jobBuffers[i].pVMUser);
 			if (pDMAChannel->doManualMap)
@@ -704,8 +712,8 @@ int AGEXDrv_DMARead_Reset_DMAChannel(PDEVICE_DATA pDevData, unsigned int dma_cha
 		}
 	}
 	// reset FIFOs
-	INIT_KFIFO(pDMAChannel->Jobs_ToDo);
-	INIT_KFIFO(pDMAChannel->Jobs_Done);
+	kfifo_reset(&pDMAChannel->Jobs_ToDo);
+	kfifo_reset(&pDMAChannel->Jobs_Done);
 
 	// Reset completion
 	reinit_completion(&pDMAChannel->job_complete);

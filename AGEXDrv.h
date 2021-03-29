@@ -142,13 +142,13 @@ enum AGEX_DEVICE_SUBTYPE
 // register offset for reading interrupt flag and FIFO level
 #define ISR_AVAILABLE_OFFSET (1<<20)
 
-// maximum number of supported DMA channels
-#define MAX_DMA_READ_DMACHANNELS 	4	
+// maximum number of supported DMA channels for each device
+#define MAX_DMA_CHANNELS 2
 // maximum number of transactions for each DMA channel
-#define MAX_DMA_READ_CHANNELTCS		6
+#define MAX_DMA_READ_CHANNELTCS		4
 // maximum number of scatter gather elements per transaction
 #define MAX_DMA_READ_TCSGS			2048
-#if (MAX_DMA_READ_CHANNELTCS*MAX_DMA_READ_DMACHANNELS) > 28
+#if (MAX_DMA_READ_CHANNELTCS * MAX_DMA_CHANNELS) > 28
  #error Too many DMA transfer channels (> 28)
 #endif
 
@@ -164,15 +164,11 @@ enum AGEX_DEVICE_SUBTYPE
 #define DMA_READ_TC_SG_FLAG_ERROR 				(0x10 | DMA_READ_TC_SG_FLAG_END_TRANSACTION)
 
 
-// maximum number of queued jobs for each DMA channel handled by the driver
-#define MAX_DMA_READ_JOBFIFO_SIZE	32
-
-
 //2xDWORD, 		IRQFlags
 //2xDWORD, 		IRQPacket, Header0/Header1
 //128xDWORD, 	IRQPacket, data
 //DMAs*TCsx8,	DMABuffer counters (UINT16)
-#define HOST_BUFFER_SIZE ((4*(2+2+128))+(MAX_DMA_READ_DMACHANNELS*MAX_DMA_READ_CHANNELTCS*8)) 
+#define HOST_BUFFER_SIZE ((4*(2+2+128))+(MAX_DMA_CHANNELS * MAX_DMA_READ_CHANNELTCS*8)) 
 #define HOST_BUFFER_DMAREAD_COUNTER_OFFSET (4*(2+2+128))
 
 
@@ -243,11 +239,11 @@ typedef struct _DMA_READ_TC
 // DMA channel structure
 typedef struct _DMA_READ_CHANNEL
 {
-	DMA_READ_JOB jobBuffers[MAX_DMA_READ_JOBFIFO_SIZE];				// storage of job buffers
+	DMA_READ_JOB *jobBuffers;				// storage of job buffers
 
 	// job FIFOs store only pointer to jobs:
-	DECLARE_KFIFO(Jobs_ToDo, PDMA_READ_JOB, MAX_DMA_READ_JOBFIFO_SIZE);	// pending transfer jobs
-	DECLARE_KFIFO(Jobs_Done, PDMA_READ_JOB, MAX_DMA_READ_JOBFIFO_SIZE);	// transfer jobs done or aborted
+	DECLARE_KFIFO_PTR(Jobs_ToDo, PDMA_READ_JOB);	// pending transfer jobs
+	DECLARE_KFIFO_PTR(Jobs_Done, PDMA_READ_JOB);	// transfer jobs done or aborted
 
 	struct completion job_complete;								// DMA job completion
 	u8 dmaWaitCount;											// number of threads waiting for completion
@@ -300,7 +296,7 @@ typedef struct _DEVICE_DATA
 	spinlock_t				DMARead_SpinLock;	// DMA spinlock
 	bool					setupTcInHWI;		// setup transfer channel in hardware interrupt
 	bool					irqEnableInHWI;		// if disabled: DRA7x workaround for IRQ race in old kernels
-	DMA_READ_CHANNEL		DMARead_Channel[MAX_DMA_READ_DMACHANNELS];	// DMA channel data
+	DMA_READ_CHANNEL		DMARead_Channel[MAX_DMA_CHANNELS];	// DMA channel data
 } DEVICE_DATA, *PDEVICE_DATA;
 
 // module data structure
@@ -311,6 +307,7 @@ typedef struct _MODULE_DATA
 
 	dev_t 			FirstDeviceNumber;	// MAJOR(devNumber),MINOR(devNumber) (eg 240 , 0)
 	struct class	*pModuleClass;		// /sys/class/*
+	uint			max_dma_buffers;	// maximum number of DMA buffers
 
 } MODULE_DATA, *PMODULE_DATA;
 
@@ -350,7 +347,7 @@ int AGEXDrv_DMARead_AddJob(PDEVICE_DATA pDevData, u32 iDMA, DMA_READ_JOB *pJob);
 void AGEXDrv_DMARead_DPC(PDEVICE_DATA pDevData);
 void AGEXDrv_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC);
 
-bool AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMAChannel, uintptr_t pVMUser, u64 bufferSize, DMA_READ_JOB **ppJob);
+int AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMAChannel, uintptr_t pVMUser, u64 bufferSize, DMA_READ_JOB **ppJob);
 void AGEXDrv_DMARead_UnMapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob);
 
 int AGEXDrv_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA);

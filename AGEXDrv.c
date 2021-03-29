@@ -32,6 +32,10 @@ MODULE_AUTHOR(MODAUTHOR);
 module_init(AGEXDrv_init);
 module_exit(AGEXDrv_exit);
 
+static unsigned int max_dma_buffers = 32;
+module_param(max_dma_buffers, uint, 0644);
+MODULE_PARM_DESC(max_dma_buffers, "Maximum number of DMA buffers supported for each DMA channel (default: 32, must be power of 2).");
+
 struct sAGEXDrv_device_info AGEXDrv_device_info[] = {
 	[SubType_AGEX] = {
 		.name = "VisionBox AGE-X",
@@ -105,12 +109,17 @@ int AGEXDrv_init(void)
 	}
 #endif
 
+	if (!is_power_of_2(max_dma_buffers)) {
+		pr_err(MODDEBUGOUTTEXT" module parameter 'max_dma_buffers' must be power of 2\n");
+		return -EINVAL;
+	}
 
 	/* init member */
 	/**********************************************************************/
-	_ModuleData.pModuleClass =  ERR_PTR(-EFAULT);
+	_ModuleData.pModuleClass = ERR_PTR(-EFAULT);
+	_ModuleData.max_dma_buffers = max_dma_buffers;
 
-	for(i=0; i<MAX_DEVICE_COUNT; i++){
+	for (i=0; i<MAX_DEVICE_COUNT; i++) {
 		AGEXDrv_InitDrvData(&_ModuleData.Devs[i], SubType_Invalid);
 		_ModuleData.boIsMinorUsed[i] = FALSE;
 	}
@@ -247,13 +256,11 @@ void AGEXDrv_InitDrvData(PDEVICE_DATA pDat, u8 SubType)
 	pDat->DMARead_TCs		= 0;
 	pDat->DMARead_SGs		= 0;
 	spin_lock_init(&pDat->DMARead_SpinLock);
-	for (iChannel = 0; iChannel < MAX_DMA_READ_DMACHANNELS; iChannel++)
+	for (iChannel = 0; iChannel < MAX_DMA_CHANNELS; iChannel++)
 	{
 		PDMA_READ_CHANNEL pChannel = &pDat->DMARead_Channel[iChannel];
 
-		memset(pChannel->jobBuffers, 0, sizeof(pChannel->jobBuffers));
-		INIT_KFIFO(pChannel->Jobs_ToDo);
-		INIT_KFIFO(pChannel->Jobs_Done);
+		pChannel->jobBuffers = NULL;
 		init_completion(&pChannel->job_complete);
 		pChannel->dmaWaitCount = 0;
 		pChannel->abortWait = 0;
