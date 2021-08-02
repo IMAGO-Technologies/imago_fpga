@@ -222,6 +222,7 @@ void AGEXDrv_InitDrvData(PDEVICE_DATA pDat, u8 SubType)
 	for (i = 0; i<MAX_IRQDEVICECOUNT; i++) {
 		pDat->SunDeviceData[i].requestState = SUN_REQ_STATE_FREE;
 		pDat->SunDeviceData[i].serialID = 0;
+		init_completion(&pDat->SunDeviceData[i].result_complete);
 	}
 
 	pDat->boIsBAR0Requested = FALSE;

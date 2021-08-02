@@ -233,7 +233,7 @@ static void InterruptTaskletSun(DEVICE_DATA *pDevData, u32 *sun_packet)
 		dev_dbg(pDevData->dev, "completing request for DeviceID %u\n", deviceID);
 
 		memcpy(pSunDevice->packet, sun_packet, 3*4);
-		up(&pSunDevice->semResult);
+		complete(&pSunDevice->result_complete);
 	}
 	else if (pSunDevice->requestState == SUN_REQ_STATE_ABORT) {
 		// we received the answer from an aborted request => complete silently

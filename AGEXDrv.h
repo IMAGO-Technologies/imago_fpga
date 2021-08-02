@@ -22,7 +22,7 @@
 
 //> defines about the Module
 /******************************************************************************************/
-#define MODVERSION "1.1.15.0"
+#define MODVERSION "1.1.16.0"
 #define MODDATECODE __DATE__ " - " __TIME__
 #define MODLICENSE "GPL"
 #define MODDESCRIPTION "IMAGO FPGA / RTCC device driver"
@@ -198,7 +198,7 @@ enum SUN_REQ_STATE {
 struct SUN_DEVICE_DATA {
 	enum SUN_REQ_STATE requestState;
 	u8 serialID;
-	struct semaphore semResult;
+	struct completion result_complete;
 	u32	packet[MAX_SUNPACKETSIZE/4];
 };
 

@@ -23,7 +23,6 @@
 
 #include "AGEXDrv.h"
 
-
 //<====================================>
 //	File fns
 //<====================================>
@@ -100,28 +99,8 @@ ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *
 	struct SUN_DEVICE_DATA *pSunDevice;
 	unsigned long flags;
 	int toggleId = 0;
+	u32 restart = 0;
 
-	/*Wie es geht:
-	 * 1. (locked)
-	 * 	- gibt es noch einen freien Platz in der LongTerm Liste, ja -> beide Flags setzen, sem auf unfrei setzen
-	 * 	--> boIsInProcessUse <> es ist eine Anfrage im FPGA
-	 * 	--> process wartet <> ein process is waiting for the sem
-	 * 2. (locked)
-	 * 	- ein write machen (2 DWORD im buffer gibt die anz BytesToWrite an)
-	 * 3.
-	 *  - auf die sem warten, wenn sem fehler, process flag löschen aber eintrag bleibt gültig
-	 * (4.) async
-	 *  - IRQ, von uns -> tasklet starten
-	 *  - tasklet,
-	 *  --> paket auslesen(immer),
-	 *  --> gibt es einen gültigen LongTerm Eintrag ja, daten dort einfüllen, flag löschen
-	 *  --> wenn auf die sem gewarted wird, aufwecken
-	 * 5.
-	 *	- Antwort in UserBuf füllen
-	 *	- beide flags löschen
-	 */
-
-	/* Alles gut? */
 	if (filp == NULL || filp->private_data == NULL)
 		return -EINVAL;
 	pDevData = (PDEVICE_DATA) filp->private_data;
@@ -131,7 +110,7 @@ ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *
 	//mem ok?
 	if (pDevData->boIsIRQOpen == FALSE)
 		return -EFAULT;
-	if (count < (2*4))		//min 2 DWords, 2. is the size
+	if (count < (3 * 4))
 		return -EFAULT;
 
 	//duerfen wir den mem nutzen?
@@ -152,75 +131,75 @@ ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *
 		return -EFAULT;
 	// strip serialID (bit 6)
 	DeviceID &= (MAX_IRQDEVICECOUNT - 1);
-	if( get_user(BytesToWrite, (u32*)(buf+1*4) ) != 0)
+	if (get_user(BytesToWrite, (u32*)(buf+1*4)) != 0)
 		return -EFAULT;
-	if( get_user(TimeOut_ms, (u32*)(buf+2*4) ) != 0)
+	if (get_user(TimeOut_ms, (u32*)(buf+2*4)) != 0)
 		return -EFAULT;	
 	if (count < (BytesToWrite+3*4))
 		return -EFBIG;
+	if (count >= (BytesToWrite+4*4))
+		get_user(restart, (u32*)(buf+BytesToWrite+3*4));
 
 	dev_dbg(pDevData->dev, "AGEXDrv_read() > DeviceID %d, BytesToWrite %d, TimeOut %u\n", DeviceID, BytesToWrite, TimeOut_ms);
 
 	pSunDevice = &pDevData->SunDeviceData[DeviceID];
 
-	//Note: unterbrechbar(durch gdb), abbrechbar durch kill -9 & kill -15(term) 
-	//  noch ist nix passiert, Kernel darf den Aufruf wiederhohlen ohne den User zu benachrichtigen	
-	if (down_interruptible(&pDevData->DeviceSem) != 0) {
-		dev_dbg(pDevData->dev, "AGEXDrv_read() > down_interruptible('DeviceSem') failed!\n");
-		return -ERESTARTSYS;
-	}
-
-	spin_lock_irqsave(&pDevData->lock, flags);
-	if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA ||
-		pSunDevice->requestState == SUN_REQ_STATE_ABORT) {
-		// Pending request is still in FPGA (after timeout or abort) => toggle serial ID
-		pSunDevice->serialID = !pSunDevice->serialID;
-		toggleId = 1;
-	}
-	pSunDevice->requestState = SUN_REQ_STATE_INFPGA;
-	spin_unlock_irqrestore(&pDevData->lock, flags);
-
-	if (toggleId)
-		dev_warn(pDevData->dev, "AGEXDrv_read() > pending FPGA request for DeviceID %u, toggling serial ID -> %u\n", DeviceID, pSunDevice->serialID);
-
-	// check semaphore
-	while (down_trylock(&pSunDevice->semResult) == 0) {
-		// may happen if a previous read() that timed out was answered in the meantime
-		dev_dbg(pDevData->dev, "AGEXDrv_read() > clearing unfinished semaphore result for DeviceID %u\n", DeviceID);
-	}
-
-	res = Locked_write(pDevData, buf+3*4, BytesToWrite);
-	up(&pDevData->DeviceSem);
-	if (res < 0) {
-		printk(KERN_WARNING MODDEBUGOUTTEXT" read, Locked_write() failed (%ld)!\n", res);
-		return res;
-	}
-
-	dev_dbg(pDevData->dev, "AGEXDrv_read() > wait for response for DeviceID %d\n", DeviceID);
-
-	/* warten auf Antwort */
-	// aufwachen durch Signal, up vom SWI, oder User [Abort], bzw TimeOut
-	if (TimeOut_ms == 0xFFFFFFFF) {
-		//Note: nicht unterbrechbar(durch gdb), abbrechbar nur durch kill -9, nicht kill -15(term) 
-		if (down_killable(&pSunDevice->semResult) != 0) {
-			printk(KERN_WARNING MODDEBUGOUTTEXT" AGEXDrv_read() > down_killable() failed!\n");
-			return -EINTR;
-		}
+	if (restart) {
+		dev_dbg(pDevData->dev, "AGEXDrv_read(): restart wait for completion for DeviceID %d\n", DeviceID);
 	} else {
-		//Note: nicht unter(durch GDB) bzw. abbrechbar down_timeout() > __down_timeout() > __down_common(sem, TASK_UNINTERRUPTIBLE, timeout);
-		unsigned long jiffiesTimeOut = msecs_to_jiffies(TimeOut_ms);
-		int waitRes = down_timeout(&pSunDevice->semResult, jiffiesTimeOut);
-		if (waitRes == (-ETIME)) {
-			dev_dbg(pDevData->dev, "AGEXDrv_read() > timeout for DeviceID: %u\n", DeviceID);
-			return -ETIME;
-		} else if (waitRes != 0) {
-			res = -EINTR;
-			dev_warn(pDevData->dev, "AGEXDrv_read() > down() failed for DeviceID: %u\n", DeviceID);
-			return -EINTR;
+		//Note: unterbrechbar(durch gdb), abbrechbar durch kill -9 & kill -15(term) 
+		//  noch ist nix passiert, Kernel darf den Aufruf wiederhohlen ohne den User zu benachrichtigen	
+		if (down_interruptible(&pDevData->DeviceSem) != 0) {
+			dev_dbg(pDevData->dev, "AGEXDrv_read() > down_interruptible('DeviceSem') failed!\n");
+			return -ERESTARTSYS;
 		}
+
+		spin_lock_irqsave(&pDevData->lock, flags);
+		if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA ||
+			pSunDevice->requestState == SUN_REQ_STATE_ABORT) {
+			// Pending request is still in FPGA (after timeout or abort) => toggle serial ID
+			pSunDevice->serialID = !pSunDevice->serialID;
+			toggleId = 1;
+		}
+		pSunDevice->requestState = SUN_REQ_STATE_INFPGA;
+		spin_unlock_irqrestore(&pDevData->lock, flags);
+
+		if (toggleId)
+			dev_warn(pDevData->dev, "AGEXDrv_read() > pending FPGA request for DeviceID %u, toggling serial ID -> %u\n", DeviceID, pSunDevice->serialID);
+
+		// clear pending completions
+		while (try_wait_for_completion(&pSunDevice->result_complete)) {
+			// may happen if a previous read() that timed out was answered in the meantime
+			dev_dbg(pDevData->dev, "AGEXDrv_read(): clearing old completion for DeviceID %u\n", DeviceID);
+		}
+
+		res = Locked_write(pDevData, buf+3*4, BytesToWrite);
+		up(&pDevData->DeviceSem);
+		if (res < 0)
+			return res;
+
+		dev_dbg(pDevData->dev, "AGEXDrv_read() > wait for completion for DeviceID %d\n", DeviceID);
 	}
 
-	//abort durch user?
+	/* wait for completion */
+	if (TimeOut_ms == 0xFFFFFFFF) {
+		res = wait_for_completion_interruptible(&pSunDevice->result_complete);
+	} else {
+		unsigned long jiffies = msecs_to_jiffies(TimeOut_ms);
+		res = wait_for_completion_interruptible_timeout(&pSunDevice->result_complete, jiffies);
+		if (res == 0) {
+			dev_dbg(pDevData->dev, "AGEXDrv_read(): completion timeout for DeviceID: %u\n", DeviceID);
+			return -ETIME;
+		}
+	}
+	if (res == -ERESTARTSYS) {
+		dev_dbg(pDevData->dev, "AGEXDrv_read(): waiting for completion was interrupted for DeviceID: %u\n", DeviceID);
+		// restart must be handled in user space => we return -EAGAIN instead of -ERESTARTSYS:
+		return -EAGAIN;
+	}
+
+
+	// check for abort by user?
 	spin_lock_irqsave(&pDevData->lock, flags);
 	if (pSunDevice->requestState == SUN_REQ_STATE_ABORT) {
 		// request was canceled

@@ -31,10 +31,12 @@ long Locked_write(PDEVICE_DATA pDevData, const u8 __user * pToUserMem, const siz
 	u8 deviceID;
 
 	// User Data -> Kernel
-	if (BytesToWrite > sizeof(TempBuffer))
+	if (BytesToWrite > sizeof(TempBuffer)) {
+		dev_warn(pDevData->dev, "Locked_write(): too many bytes\n");
 		return -EFBIG;
+	}
 	if (copy_from_user (TempBuffer, pToUserMem, BytesToWrite) != 0) {
-		dev_warn(pDevData->dev, "Locked_write(): copy_from_user() faild\n");
+		dev_warn(pDevData->dev, "Locked_write(): copy_from_user() failed\n");
 		return -EFAULT;
 	}
 
@@ -205,10 +207,10 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 				{
 					pSunDevice = &pDevData->SunDeviceData[deviceId];
 
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
-					sema_init(&pDevData->SunDeviceData[deviceId].semResult, 0);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,13,00)
+					reinit_completion(&pDevData->SunDeviceData[deviceId].result_complete);
 #else
-					init_MUTEX_LOCKED(&pDevData->SunDeviceData[deviceId].semResult);
+					INIT_COMPLETION(pDevData->SunDeviceData[deviceId].result_complete);
 #endif
 					// add serialID in case the user space uses the DeviceID directly
 					deviceIdUser = deviceId | (pSunDevice->serialID << 6);
@@ -256,7 +258,7 @@ long Locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, 
 				// do not toggle serial ID yet, request may still be answered by the FPGA!
 //				pSunDevice->serialID = !pSunDevice->serialID;
 				spin_unlock_irqrestore(&pDevData->lock, flags);
-				up(&pSunDevice->semResult);
+				complete(&pSunDevice->result_complete);
 			}
 			else if (pSunDevice->requestState == SUN_REQ_STATE_RESULT) {
 				// avoid race condition: the result may still be processed by read(), so leave it there
