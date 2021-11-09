@@ -28,6 +28,13 @@
 //<====================================>
 
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,0,0)
+#define __access_ok(type, addr, size) access_ok(type, addr, size)
+#else
+#define __access_ok(type, addr, size) access_ok(addr, size)
+#endif
+
+
 int AGEXDrv_open(struct inode *node, struct file *filp)
 {
 	int iMinor;
@@ -67,9 +74,9 @@ long AGEXDrv_unlocked_ioctl (struct file *filp, unsigned int cmd, unsigned long 
 
 	//bei uns ist arg ein Pointer, und testen ob wir ihn nutzen dürfen (richtung aus UserSicht)
 	if (_IOC_DIR(cmd) & _IOC_READ)
-		err = !access_ok(VERIFY_WRITE, (void __user *)arg, _IOC_SIZE(cmd));
+		err = !__access_ok(VERIFY_WRITE, (void __user *)arg, _IOC_SIZE(cmd));
 	else if (_IOC_DIR(cmd) & _IOC_WRITE)
-		err =  !access_ok(VERIFY_READ, (void __user *)arg, _IOC_SIZE(cmd));
+		err =  !__access_ok(VERIFY_READ, (void __user *)arg, _IOC_SIZE(cmd));
 	if (err)
 		return -EFAULT;
 
@@ -114,7 +121,7 @@ ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *
 		return -EFAULT;
 
 	//duerfen wir den mem nutzen?
-	if (!access_ok(VERIFY_WRITE, buf, count))
+	if (!__access_ok(VERIFY_WRITE, buf, count))
 		return -EFAULT;
 
 
@@ -239,7 +246,7 @@ ssize_t AGEXDrv_write(struct file *filp, const char __user *buf, size_t count,lo
 	dev_dbg(pDevData->dev, "AGEXDrv_write() > %d bytes\n", (int)count);
 
 	// is mem access OK?
-	if (!access_ok(VERIFY_READ, buf, count))
+	if (!__access_ok(VERIFY_READ, buf, count))
 		return -EFAULT;
 
 	// write data

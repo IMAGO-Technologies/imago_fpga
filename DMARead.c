@@ -102,7 +102,11 @@ int AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMAC
 	//pinnen
 	//muss die SEM, für die VMAs für den aufrufenden conntext, halten
 	// 'for read or write' ist eine 'rw_semaphore'
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,8,0)
 	down_read(&current->mm->mmap_sem);
+#else
+	mmap_read_lock(current->mm);
+#endif
 //----------------------------->
 
 // pin_user_pages() and related calls:
@@ -139,7 +143,11 @@ int AGEXDrv_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMAC
 		NULL);			/* NULL, oder PointerFeld zu den VMAs welche anzPages/Pointer haltern kann */
 #endif	
 //<-----------------------------
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,8,0)
 	up_read(&current->mm->mmap_sem);
+#else
+	mmap_read_unlock(current->mm);
+#endif
 
 	if (pagesPinned < 0) {
 		dev_err(pDevData->dev, "MappUserBuffer: get_user_pages() failed");

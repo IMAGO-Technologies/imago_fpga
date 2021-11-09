@@ -23,7 +23,7 @@ else
   DEBFLAGS = -O2 -Wno-sign-compare 
 endif
 
-ccflags-y := $(DEBFLAGS) -Werror -Wall -Wextra -Wno-unused-parameter -Wno-date-time 
+ccflags-y := $(DEBFLAGS) -Werror -Wall -Wno-unused-parameter -Wno-date-time 
 agexpcidrv-objs := FileOps.o ISRTasklet.o LockedOps.o AGEXDrv.o DMARead.o
 ifeq ($(ARCH),arm64)
 	agexpcidrv-objs += SPI.o

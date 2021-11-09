@@ -83,7 +83,6 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 	PDEVICE_DATA pDevData = NULL;
 	int minor = -1;
 	struct irq_desc *desc;
-	struct sched_param sched_par;
 
 	pci_set_drvdata(pcidev, NULL);	
 
@@ -260,8 +259,15 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 	}
 	// increase priority of threaded interrupt
 	desc = irq_to_desc(pcidev->irq);
-	sched_par.sched_priority = 86;
-	sched_setscheduler(desc->action->thread, SCHED_FIFO, &sched_par);
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,9,0)
+	{
+		struct sched_param sched_par;
+		sched_par.sched_priority = 86;
+		sched_setscheduler(desc->action->thread, SCHED_FIFO, &sched_par);
+	}
+#else
+	sched_set_fifo(desc->action->thread);
+#endif
 
 	if (IS_TYPEWITH_COMMONBUFFER(pDevData)) {
 		// Adresse fuer Common Buffer im FPGA setzen
