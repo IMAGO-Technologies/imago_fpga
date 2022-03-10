@@ -20,168 +20,184 @@
  *
  */
 
-#include "AGEXDrv.h"
+#include "imago_fpga.h"
+#include <linux/spi/spi.h>
 
-//struct mit den file fns
-struct file_operations AGEXDrv_SPI_fops = {
-	.owner	= THIS_MODULE,
-	.open	= AGEXDrv_open,
-	.read	= AGEXDrv_read,
-	.write	= AGEXDrv_write,
-	.unlocked_ioctl = AGEXDrv_unlocked_ioctl,
-	.llseek = no_llseek,
-};
 
 static const struct of_device_id imago_spi_of_match[] = {
 	{
 		.compatible	= "imago,fpga-spi-daytona",
-		.data		= (void *)SubType_DAYTONA,
+		.data		= (void *)DeviceType_DAYTONA,
 	},
 	{
 		.compatible	= "imago,fpga-spi-vspv3",
-		.data		= (void *)SubType_VSPV3,
+		.data		= (void *)DeviceType_VSPV3,
 	},
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, imago_spi_of_match);
 
 static const struct spi_device_id imago_spi_id[] = {
-        {"fpga-spi-daytona", SubType_DAYTONA},
-        {"fpga-spi-vspv3", SubType_VSPV3},
+        {"fpga-spi-daytona", DeviceType_DAYTONA},
+        {"fpga-spi-vspv3", DeviceType_VSPV3},
         {}
 };
 MODULE_DEVICE_TABLE(spi, imago_spi_id);
 
-int imago_spi_probe(struct spi_device *spi)
+
+// writes FPGA packet
+static long fpga_write(struct _DEVICE_DATA *pDevData, const u8 __user * pToUserMem, const size_t BytesToWrite)
 {
-	int res,i, DevIndex;
-	u8 tempDevSubType;
+	struct spi_transfer transfer;
+	struct spi_message message;
+	struct spi_device *spi = to_spi_device(pDevData->dev);
+	// u8 packet[3 * 4];	// SUN packet:  header0, header1, data
+	u8 deviceID;
+	int result;
+	u8 txbuf[1 + 3 * 4];		// SPI Header + SUN Paket
+
+	txbuf[0] = 0; // SPI Header: in CPU Source-FIFO schreiben
+
+	// User Data -> Kernel
+	if (BytesToWrite > (3 * 4)) {
+		dev_warn(pDevData->dev, "fpga_write(): too many bytes\n");
+		return -EFBIG;
+	}
+	if (copy_from_user(&txbuf[1], pToUserMem, BytesToWrite) != 0) {
+		dev_warn(pDevData->dev, "fpga_write(): copy_from_user() failed\n");
+		return -EFAULT;
+	}
+
+	// insert serialID to Header1:
+	deviceID = (((u32*)&txbuf[1])[1] >> 20) & (MAX_IRQDEVICECOUNT - 1);
+	if (deviceID != 0) {
+		((u32*)&txbuf[1])[1] |= pDevData->SunDeviceData[deviceID].serialID << 26;
+	}
+
+	spi_message_init(&message);
+	memset(&transfer, 0, sizeof(transfer));
+	transfer.tx_buf = txbuf;
+	transfer.len = sizeof(txbuf);
+	spi_message_add_tail(&transfer, &message);
+
+	result = spi_sync(spi, &message);
+	if (result < 0) {
+		dev_err(&spi->dev, "fpga_write(): SPI error %d\n", result);
+		return -EFAULT;
+	}
+
+	return BytesToWrite;
+}
+
+// IRQ thread
+static irqreturn_t spi_thread(int irq, void *dev_id)
+{
+	PDEVICE_DATA pDevData = (PDEVICE_DATA)dev_id;
+	u32			sun_packet[MAX_SUNPACKETSIZE/4];
+	struct spi_transfer transfer;
+	struct spi_message message;
+	struct spi_device *spi;
+	u8 txbuf[1+3*4] = {1 /* message type: read from CPU Target-FIFO */};
+	u8 rxbuf[1+3*4];
+	int result;
+
+	BUG_ON(pDevData->device_type == DeviceType_Invalid);
+
+	spi = to_spi_device(pDevData->dev);
+
+	spi_message_init(&message);
+	memset(&transfer, 0, sizeof(transfer));
+	transfer.tx_buf = txbuf;
+	transfer.rx_buf = rxbuf;
+	transfer.len = sizeof(txbuf);
+	spi_message_add_tail(&transfer, &message);
+
+	result = spi_sync(spi, &message);
+	if (result < 0)
+	{
+		dev_err(pDevData->dev, "AGEXDrv_tasklet_SPI() > SPI error %d\n", result);
+		return IRQ_HANDLED;
+	}
+
+	memcpy(sun_packet, &rxbuf[1], 3 * 4);
+
+	// Process SUN packet
+	imago_sun_interrupt(pDevData, sun_packet);
+
+	return IRQ_HANDLED;
+}
+
+
+static int imago_spi_probe(struct spi_device *spi)
+{
+	PDEVICE_DATA pDevData = NULL;
+	u8 dev_type;
 	const struct of_device_id *of_id;
 
-	pr_devel(MODDEBUGOUTTEXT" imago_spi_probe\n");
+	dev_dbg(&spi->dev, "probe device\n");
 
 	of_id = of_match_device(imago_spi_of_match, &spi->dev);
 	if (of_id)
-		tempDevSubType = (unsigned long)of_id->data;
+		dev_type = (unsigned long)of_id->data;
 	else
-		tempDevSubType = spi_get_device_id(spi)->driver_data;
+		dev_type = spi_get_device_id(spi)->driver_data;
 
-	if (tempDevSubType != SubType_DAYTONA && tempDevSubType != SubType_VSPV3) {
-		printk(KERN_WARNING MODDEBUGOUTTEXT" invalid device identifier (%u)\n", tempDevSubType);
+	if (dev_type == DeviceType_Invalid) {
+		dev_err(&spi->dev, "invalid device identifier (%u)\n", dev_type);
 		return -EINVAL;
 	}
-
-	pr_devel(MODDEBUGOUTTEXT" found '%s' device\n", AGEXDrv_device_info[tempDevSubType].name);
 
 	if (!spi->irq) {
-		printk(KERN_WARNING MODDEBUGOUTTEXT" missing interrupt configuration\n");
+		dev_err(&spi->dev, "missing interrupt configuration\n");
 		return -EINVAL;
 	}
 
+	pDevData = imago_alloc_dev_data(&spi->dev, dev_type);
+	if (pDevData == NULL)
+		return -EINVAL;
 
-	//>freie Minor Nummer?
-	/**********************************************************************/
-	DevIndex =-1;
-	for(i=0; i<MAX_DEVICE_COUNT; i++) {
-		if(!_ModuleData.boIsMinorUsed[i]) {
-			DevIndex = i;
-			AGEXDrv_InitDrvData(&_ModuleData.Devs[DevIndex], tempDevSubType);			
-			_ModuleData.Devs[DevIndex].DeviceNumber = MKDEV(MAJOR(_ModuleData.FirstDeviceNumber), DevIndex);
-			_ModuleData.Devs[DevIndex].dev = &spi->dev;
-			spi_set_drvdata(spi, &_ModuleData.Devs[DevIndex]);
-			break;
-		}
-	}
-	if(DevIndex==-1){
-		printk(KERN_WARNING MODDEBUGOUTTEXT" no free Minor-Number found!\n"); return -EINVAL;}
-	else
-		pr_devel(MODDEBUGOUTTEXT" use major/minor (%d:%d)\n", MAJOR(_ModuleData.Devs[DevIndex].DeviceNumber), MINOR(_ModuleData.Devs[DevIndex].DeviceNumber));
+	pDevData->write = fpga_write;
+	spi_set_drvdata(spi, pDevData);
+
+	dev_dbg(&spi->dev, "using major/minor (%d:%d)\n", MAJOR(pDevData->DeviceNumber), MINOR(pDevData->DeviceNumber));
 
 
-	//>IRQ & tasklet
-	/**********************************************************************/
-
-	if (request_threaded_irq(spi->irq, NULL, AGEXDrv_spi_thread,
-				IRQF_ONESHOT, MODMODULENAME, &_ModuleData.Devs[DevIndex]) != 0) {
-		printk(KERN_ERR MODDEBUGOUTTEXT" request_threaded_irq failed\n");
-		_ModuleData.Devs[DevIndex].boIsIRQOpen = FALSE;
+	// setup interrupt
+	if (request_threaded_irq(spi->irq, NULL, spi_thread,
+				IRQF_ONESHOT, MODMODULENAME, pDevData) != 0) {
+		dev_err(&spi->dev, "request_threaded_irq failed\n");
+		imago_free_dev_data(pDevData);
 		return -EIO;
 	}
 
-	AGEXDrv_SwitchInterruptOn(&_ModuleData.Devs[DevIndex], TRUE);
+	dev_dbg(&spi->dev, "IRQ: %d \n", spi->irq);
+	pDevData->boIsIRQOpen = true;
 
-	pr_devel(MODDEBUGOUTTEXT" IRQ> %d \n", spi->irq);
-	_ModuleData.Devs[DevIndex].boIsIRQOpen = TRUE;
+	// create char device
+	imago_create_device(pDevData);
 
-
-	//>dev init & fügt das es hinzu
-	/**********************************************************************/
-	cdev_init(&_ModuleData.Devs[DevIndex].DeviceCDev, &AGEXDrv_SPI_fops);
-	_ModuleData.Devs[DevIndex].DeviceCDev.owner = THIS_MODULE;
-	_ModuleData.Devs[DevIndex].DeviceCDev.ops 	= &AGEXDrv_SPI_fops;	//notwendig in den quellen wird fops gesetzt?
-
-	//fügt ein device hinzu, nach der fn können FileFns genutzt werden
-	res = cdev_add(&_ModuleData.Devs[DevIndex].DeviceCDev, _ModuleData.Devs[DevIndex].DeviceNumber, 1/*wie viele ab startNum*/);
-	if(res < 0)
-		printk(KERN_WARNING MODDEBUGOUTTEXT" can't add device!\n");
-	else
-		_ModuleData.Devs[DevIndex].boIsDeviceOpen = TRUE;
-
-
-	//> in Sysfs class eintragen
-	/**********************************************************************/			
-	//war mal class_device_create
-	if (!IS_ERR(_ModuleData.pModuleClass)) {		
-		char devName[128];
-		struct device *temp;
-
-		sprintf(devName, "%s%d", MODMODULENAME, MINOR(_ModuleData.Devs[DevIndex].DeviceNumber));
-		temp = device_create(
-				_ModuleData.pModuleClass, 	/* die Type classe */
-				NULL, 			/* pointer zum Eltern, dann wird das dev ein Kind vom parten*/
-				_ModuleData.Devs[DevIndex].DeviceNumber, /* die nummer zum device */
-				NULL,
-				devName			/*string for the device's name */
-				);
-
-		if( IS_ERR(temp))
-			printk(KERN_WARNING MODDEBUGOUTTEXT" can't create sysfs device!\n");
-	}
-
-
-	// init von allem ist durch
-	printk(KERN_INFO MODDEBUGOUTTEXT" SPI probe done\n");
-	_ModuleData.boIsMinorUsed[DevIndex] = TRUE;
+	dev_info(&spi->dev, "probe done\n");
 
 	return 0;
 }
 
 
-int imago_spi_remove(struct spi_device *spi)
+static int imago_spi_remove(struct spi_device *spi)
 {
 	PDEVICE_DATA pDevData = (PDEVICE_DATA)spi_get_drvdata(spi);
 
-	pr_devel(MODDEBUGOUTTEXT" imago_spi_remove\n");
+	dev_dbg(&spi->dev, "imago_spi_remove\n");
 
 	if (pDevData == NULL) {
-		printk(KERN_WARNING MODDEBUGOUTTEXT" imago_spi_remove> device data is invalid!\n");
+		dev_warn(&spi->dev, "imago_spi_remove: device data is invalid\n");
 		return -ENODEV;
 	}
 
 	//IRQ zuückgeben
-	if(pDevData->boIsIRQOpen) {
-		AGEXDrv_SwitchInterruptOn(pDevData, FALSE);
+	if (pDevData->boIsIRQOpen)
 		free_irq(spi->irq, pDevData);
-	}
 	
-	//device in der sysfs class löschen
-	if (!IS_ERR(_ModuleData.pModuleClass))	
-		device_destroy(_ModuleData.pModuleClass, pDevData->DeviceNumber);
-
-	//device löschen
-	if(pDevData->boIsDeviceOpen)
-		cdev_del(&pDevData->DeviceCDev);
-	pDevData->boIsDeviceOpen = FALSE;
+	imago_free_dev_data(pDevData);
 
 	return 0;
 }

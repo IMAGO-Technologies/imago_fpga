@@ -1,9 +1,7 @@
 /*
- * FileOps.c
+ * File operations
  *
- * handel the file read/write/io actions
- *
- * Copyright (C) 201x IMAGO Technologies GmbH
+ * Copyright (C) IMAGO Technologies GmbH
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -18,14 +16,9 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  *
- *
  */
 
-#include "AGEXDrv.h"
-
-//<====================================>
-//	File fns
-//<====================================>
+#include "imago_fpga.h"
 
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5,0,0)
@@ -35,41 +28,40 @@
 #endif
 
 
-int AGEXDrv_open(struct inode *node, struct file *filp)
+static int imago_open(struct inode *node, struct file *filp)
 {
 	int iMinor;
 	if (node == NULL || filp == NULL)
 		return -EINVAL; 
 	iMinor = iminor(node);
 
-	pr_devel(MODDEBUGOUTTEXT" open (Minor:%d)\n", iMinor);
+	pr_devel(MODMODULENAME": open (Minor: %d)\n", iMinor);
 
 	//setzt ins "file" den Context
 	if (iMinor >= MAX_DEVICE_COUNT)
 		return -EINVAL;
-	filp->private_data = &_ModuleData.Devs[iMinor];
+	filp->private_data = _ModuleData.dev_data[iMinor];
 
 	return 0;
 }
 
-
 //Note: alte ioctl war unter "big kernel lock"
 //http://lwn.net/Articles/119652/
-long AGEXDrv_unlocked_ioctl (struct file *filp, unsigned int cmd, unsigned long arg)
+static long imago_unlocked_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	int err = 0;
 	long ret = 0;
 	PDEVICE_DATA pDevData = NULL;
 
 	//Note: beim 1. write bekommen wir ein CMD:1, Type 'T', Size: 0 <-> FIONBIO (linux/include/asm-i386/ioctls.h, line 41)
-	pr_devel(MODDEBUGOUTTEXT" ioctl (CMD %d, MAGIC %c, size %d)\n", _IOC_NR(cmd), _IOC_TYPE(cmd), _IOC_SIZE(cmd));
+	pr_devel(MODMODULENAME": ioctl (CMD %d, MAGIC %c, size %d)\n", _IOC_NR(cmd), _IOC_TYPE(cmd), _IOC_SIZE(cmd));
 
 	/* Alles gut */
 	if (filp == NULL || filp->private_data == NULL)
 		return -EINVAL;
 	pDevData = (PDEVICE_DATA) filp->private_data;
 	//ist ist das CMD eins für uns?
-	if (_IOC_TYPE(cmd) != AGEXDRV_IOC_MAGIC)
+	if (_IOC_TYPE(cmd) != IMAGO_IOC_MAGIC)
 		return -ENOTTY;
 
 	//bei uns ist arg ein Pointer, und testen ob wir ihn nutzen dÃ¼rfen (richtung aus UserSicht)
@@ -85,12 +77,12 @@ long AGEXDrv_unlocked_ioctl (struct file *filp, unsigned int cmd, unsigned long 
 	//Note: unterbrechbar(durch gdb), abbrechbar durch kill -9 & kill -15(term) 
 	//  noch ist nix passiert, Kernel darf den Aufruf wiederhohlen ohne den User zu benachrichtigen
 	if (down_interruptible(&pDevData->DeviceSem) != 0) {
-		pr_devel(MODDEBUGOUTTEXT" AGEXDrv_unlocked_ioctl(), down_interruptible() failed!\n");
+		dev_dbg(pDevData->dev, "imago_unlocked_ioctl(): down_interruptible() failed!\n");
 		return -ERESTARTSYS;
 	}
 //----------------------------->
 	//hier wird das CMD ausgeführt
-	ret = Locked_ioctl(pDevData, cmd, (u8 __user *) arg, _IOC_SIZE(cmd) );
+	ret = imago_locked_ioctl(pDevData, cmd, (u8 __user *) arg, _IOC_SIZE(cmd) );
 //<-----------------------------
 	up(&pDevData->DeviceSem);
 
@@ -98,7 +90,7 @@ long AGEXDrv_unlocked_ioctl (struct file *filp, unsigned int cmd, unsigned long 
 	return ret;
 }
 
-ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *pos)
+static ssize_t imago_read(struct file *filp, char __user *buf, size_t count, loff_t *pos)
 {
 	u32 TimeOut_ms, BytesToWrite, DeviceID;
 	long res;	
@@ -112,10 +104,10 @@ ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *
 		return -EINVAL;
 	pDevData = (PDEVICE_DATA) filp->private_data;
 
-	dev_dbg(pDevData->dev, "AGEXDrv_read() > %d Bytes\n", (int)count);
+	dev_dbg(pDevData->dev, "imago_read() > %d Bytes\n", (int)count);
 
 	//mem ok?
-	if (pDevData->boIsIRQOpen == FALSE)
+	if (!pDevData->boIsIRQOpen)
 		return -EFAULT;
 	if (count < (3 * 4))
 		return -EFAULT;
@@ -147,17 +139,17 @@ ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *
 	if (count >= (BytesToWrite+4*4))
 		get_user(restart, (u32*)(buf+BytesToWrite+3*4));
 
-	dev_dbg(pDevData->dev, "AGEXDrv_read() > DeviceID %d, BytesToWrite %d, TimeOut %u\n", DeviceID, BytesToWrite, TimeOut_ms);
+	dev_dbg(pDevData->dev, "imago_read() > DeviceID %d, BytesToWrite %d, TimeOut %u\n", DeviceID, BytesToWrite, TimeOut_ms);
 
 	pSunDevice = &pDevData->SunDeviceData[DeviceID];
 
 	if (restart) {
-		dev_dbg(pDevData->dev, "AGEXDrv_read(): restart wait for completion for DeviceID %d\n", DeviceID);
+		dev_dbg(pDevData->dev, "imago_read(): restart wait for completion for DeviceID %d\n", DeviceID);
 	} else {
 		//Note: unterbrechbar(durch gdb), abbrechbar durch kill -9 & kill -15(term) 
 		//  noch ist nix passiert, Kernel darf den Aufruf wiederhohlen ohne den User zu benachrichtigen	
 		if (down_interruptible(&pDevData->DeviceSem) != 0) {
-			dev_dbg(pDevData->dev, "AGEXDrv_read() > down_interruptible('DeviceSem') failed!\n");
+			dev_dbg(pDevData->dev, "imago_read() > down_interruptible('DeviceSem') failed!\n");
 			return -ERESTARTSYS;
 		}
 
@@ -172,20 +164,20 @@ ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *
 		spin_unlock_irqrestore(&pDevData->lock, flags);
 
 		if (toggleId)
-			dev_warn(pDevData->dev, "AGEXDrv_read() > pending FPGA request for DeviceID %u, toggling serial ID -> %u\n", DeviceID, pSunDevice->serialID);
+			dev_warn(pDevData->dev, "imago_read() > pending FPGA request for DeviceID %u, toggling serial ID -> %u\n", DeviceID, pSunDevice->serialID);
 
 		// clear pending completions
 		while (try_wait_for_completion(&pSunDevice->result_complete)) {
 			// may happen if a previous read() that timed out was answered in the meantime
-			dev_dbg(pDevData->dev, "AGEXDrv_read(): clearing old completion for DeviceID %u\n", DeviceID);
+			dev_dbg(pDevData->dev, "imago_read(): clearing old completion for DeviceID %u\n", DeviceID);
 		}
 
-		res = Locked_write(pDevData, buf+3*4, BytesToWrite);
+		res = pDevData->write(pDevData, buf+3*4, BytesToWrite);
 		up(&pDevData->DeviceSem);
 		if (res < 0)
 			return res;
 
-		dev_dbg(pDevData->dev, "AGEXDrv_read() > wait for completion for DeviceID %d\n", DeviceID);
+		dev_dbg(pDevData->dev, "imago_read() > wait for completion for DeviceID %d\n", DeviceID);
 	}
 
 	/* wait for completion */
@@ -195,12 +187,12 @@ ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *
 		unsigned long jiffies = msecs_to_jiffies(TimeOut_ms);
 		res = wait_for_completion_interruptible_timeout(&pSunDevice->result_complete, jiffies);
 		if (res == 0) {
-			dev_dbg(pDevData->dev, "AGEXDrv_read(): completion timeout for DeviceID: %u\n", DeviceID);
+			dev_dbg(pDevData->dev, "imago_read(): completion timeout for DeviceID: %u\n", DeviceID);
 			return -ETIME;
 		}
 	}
 	if (res == -ERESTARTSYS) {
-		dev_dbg(pDevData->dev, "AGEXDrv_read(): waiting for completion was interrupted for DeviceID: %u\n", DeviceID);
+		dev_dbg(pDevData->dev, "imago_read(): waiting for completion was interrupted for DeviceID: %u\n", DeviceID);
 		// restart must be handled in user space => we return -EAGAIN instead of -ERESTARTSYS:
 		return -EAGAIN;
 	}
@@ -214,12 +206,12 @@ ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *
 //		pSunDevice->serialID = !pSunDevice->serialID;
 //		pSunDevice->requestState = SUN_REQ_STATE_IDLE;
 		spin_unlock_irqrestore(&pDevData->lock, flags);
-		dev_dbg(pDevData->dev, "AGEXDrv_read() > aborting read for DeviceID: %u\n", DeviceID);
+		dev_dbg(pDevData->dev, "imago_read() > aborting read for DeviceID: %u\n", DeviceID);
 		return -EINTR;
 	}
 	else if (pSunDevice->requestState != SUN_REQ_STATE_RESULT) {
 		spin_unlock_irqrestore(&pDevData->lock, flags);
-		dev_warn(pDevData->dev, "AGEXDrv_read() > unexpected request state (%u)\n", pSunDevice->requestState);
+		dev_warn(pDevData->dev, "imago_read() > unexpected request state (%u)\n", pSunDevice->requestState);
 		return -EFAULT;
 	}
 
@@ -233,7 +225,7 @@ ssize_t AGEXDrv_read(struct file *filp, char __user *buf, size_t count, loff_t *
 	return 3*4;
 }
 
-ssize_t AGEXDrv_write(struct file *filp, const char __user *buf, size_t count,loff_t *pos)
+static ssize_t imago_write(struct file *filp, const char __user *buf, size_t count,loff_t *pos)
 {
 	long res;
 	PDEVICE_DATA pDevData = NULL;
@@ -243,7 +235,7 @@ ssize_t AGEXDrv_write(struct file *filp, const char __user *buf, size_t count,lo
 		return -EINVAL;
 	pDevData = (PDEVICE_DATA) filp->private_data;
 
-	dev_dbg(pDevData->dev, "AGEXDrv_write() > %d bytes\n", (int)count);
+	dev_dbg(pDevData->dev, "imago_write() > %d bytes\n", (int)count);
 
 	// is mem access OK?
 	if (!__access_ok(VERIFY_READ, buf, count))
@@ -253,15 +245,63 @@ ssize_t AGEXDrv_write(struct file *filp, const char __user *buf, size_t count,lo
 	//Note: unterbrechbar(durch gdb), abbrechbar durch kill -9 & kill -15(term) 
 	//  noch ist nix passiert, Kernel darf den Aufruf wiederhohlen ohne den User zu benachrichtigen
 	if (down_interruptible(&pDevData->DeviceSem) != 0) {
-		dev_dbg(pDevData->dev, "AGEXDrv_write() > down_interruptible('DeviceSem') failed!\n");
+		dev_dbg(pDevData->dev, "imago_write() > down_interruptible('DeviceSem') failed!\n");
 		return -ERESTARTSYS;
 	}
 //----------------------------->
-	res = Locked_write(pDevData, buf, count);
+	res = pDevData->write(pDevData, buf, count);
 //<-----------------------------
 	up(&pDevData->DeviceSem);
 
 	return res;
 }
 
+
+static struct file_operations fpga_ops = {
+	.owner = THIS_MODULE,
+	.open = imago_open,
+	.read = imago_read,
+	.write = imago_write,
+	.unlocked_ioctl = imago_unlocked_ioctl,
+	.llseek = no_llseek,
+};
+
+
+// Helper function for creating a char device
+void imago_create_device(PDEVICE_DATA pDevData)
+{
+	int res;
+
+	cdev_init(&pDevData->DeviceCDev, &fpga_ops);
+	pDevData->DeviceCDev.owner = THIS_MODULE;
+	pDevData->DeviceCDev.ops 	= &fpga_ops;	//notwendig in den quellen wird fops gesetzt?
+
+	//fügt ein device hinzu, nach der fn können FileFns genutzt werden
+	res = cdev_add(&pDevData->DeviceCDev, pDevData->DeviceNumber, 1/*wie viele ab startNum*/);
+	if (res < 0)
+		dev_warn(pDevData->dev, "cdev_add() failed\n");
+	else
+		pDevData->boIsDeviceOpen = true;
+
+
+	//> in Sysfs class eintragen
+	/**********************************************************************/			
+	//war mal class_device_create
+	if (!IS_ERR(_ModuleData.pModuleClass)) {		
+		// char devName[128];
+		struct device *dev;
+
+		// sprintf(devName, "%s%d", MODMODULENAME, MINOR(pDevData->DeviceNumber));
+		dev = device_create(
+				_ModuleData.pModuleClass, 	/* die Type classe */
+				NULL, 			/* pointer zum Eltern, dann wird das dev ein Kind vom parten*/
+				pDevData->DeviceNumber, /* die nummer zum device */
+				NULL,
+				MODMODULENAME"%d", MINOR(pDevData->DeviceNumber)
+				);
+
+		if (IS_ERR(dev))
+			dev_warn(pDevData->dev, "error creating sysfs device (%ld)\n", PTR_ERR(dev));
+	}
+}
 

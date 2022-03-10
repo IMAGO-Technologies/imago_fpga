@@ -1,7 +1,5 @@
 /*
- * PCI.c
- *
- * PCI(e) Probe code
+ * PCI(e) code
  *
  * Copyright (C) 201x IMAGO Technologies GmbH
  *
@@ -18,56 +16,245 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  *
- *
  */
 
-#include "AGEXDrv.h"
+#include "imago_fpga.h"
 #include <linux/irq.h>
+#include <linux/pci.h>
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,11,0)
 	#include <uapi/linux/sched/types.h>	/* For struct sched_param */
 #endif
 
-//struct mit den file fns
-struct file_operations AGEXDrv_fops = {
-	.owner	= THIS_MODULE,
-	.open	= AGEXDrv_open,
-	.read	= AGEXDrv_read,
-	.write	= AGEXDrv_write,
-	.unlocked_ioctl = AGEXDrv_unlocked_ioctl,
-	.llseek = no_llseek,
-};
+
+// register offset for interrupt enable
+#define ISR_ONOFF_OFFSET_AGEX (1<<20)
+#define ISR_ONOFF_OFFSET_AGEX2 (0x10010)
+// register offset for setting the address of interrupt data
+#define ISR_COMMONBUFFER_ADR_AGEX2 (0x10000)
+// register offset for reading interrupt flag and FIFO level
+#define ISR_AVAILABLE_OFFSET (1<<20)
+
+//2xDWORD, 		IRQFlags
+//2xDWORD, 		IRQPacket, Header0/Header1
+//128xDWORD, 	IRQPacket, data
+//DMAs*TCsx8,	DMABuffer counters (UINT16)
+#define HOST_BUFFER_SIZE ((4*(2+2+128))+(MAX_DMA_CHANNELS * MAX_DMA_READ_CHANNELTCS*8)) 
+
 
 //für welche PCI IDs sind wir zuständi?
-static struct pci_device_id AGEXDrv_ids[] = {
+static struct pci_device_id pci_ids[] = {
 	{ PCI_DEVICE(0x1204/*VendorID (Lattice Semi)*/, 0x0200 /*DeviceID*/),	/* AGE-X1 */
-		.driver_data = SubType_AGEX },
+		.driver_data = DeviceType_AGEX },
 	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0x0004 /*DeviceID*/),			/* AGE-X2 */
-		.driver_data = SubType_AGEX2 },
+		.driver_data = DeviceType_AGEX2 },
 	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xA6E4 /*DeviceID*/),			/* MVC0 */
-		.driver_data = SubType_MVC0 },
+		.driver_data = DeviceType_MVC0 },
 	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0x0010 /*DeviceID*/),			/* AGE-X2-CL */
-		.driver_data = SubType_AGEX2_CL },
+		.driver_data = DeviceType_AGEX2_CL },
 	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0x0005 /*DeviceID*/),			/* VCXM */
-		.driver_data = SubType_VCXM },
+		.driver_data = DeviceType_VCXM },
 	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xCA72 /*DeviceID*/),			/* LeMans */
-		.driver_data = SubType_LEMANS },
+		.driver_data = DeviceType_LEMANS },
 	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xDECA /*DeviceID*/),			/* PCIe-CL */
-		.driver_data = SubType_PCIE_CL },
+		.driver_data = DeviceType_PCIE_CL },
 	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xA6E5 /*DeviceID*/),			/* AGE-X5 */
-		.driver_data = SubType_AGEX5 },
+		.driver_data = DeviceType_AGEX5 },
 	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xDCA5 /*DeviceID*/),			/* AGE-X5-CL */
-		.driver_data = SubType_AGEX5_CL },
+		.driver_data = DeviceType_AGEX5_CL },
 	{ 0, }
 };
-MODULE_DEVICE_TABLE(pci, AGEXDrv_ids);		//macht dem kernel bekannt was dieses modul für PCI devs kann
+MODULE_DEVICE_TABLE(pci, pci_ids);		//macht dem kernel bekannt was dieses modul für PCI devs kann
 
-//struct mit den PCICallBacks
-struct pci_driver AGEXDrv_pci_driver = {
-	.name = MODMODULENAME,
-	.id_table = AGEXDrv_ids,
-	.probe = AGEXDrv_PCI_probe,
-	.remove = AGEXDrv_PCI_remove,
-};
+
+// writes FPGA packet
+static long fpga_write(struct _DEVICE_DATA *pDevData, const u8 __user * pToUserMem, const size_t BytesToWrite)
+{
+	u8 TempBuffer[4*(3+1)];		// +1 damit bei PCIe immer 64 Bit sind
+	u8 deviceID;
+
+	// User Data -> Kernel
+	if (BytesToWrite > sizeof(TempBuffer)) {
+		dev_warn(pDevData->dev, "fpga_write(): too many bytes\n");
+		return -EFBIG;
+	}
+	if (copy_from_user (TempBuffer, pToUserMem, BytesToWrite) != 0) {
+		dev_warn(pDevData->dev, "fpga_write(): copy_from_user() failed\n");
+		return -EFAULT;
+	}
+
+	// insert serialID to Header1:
+	deviceID = (((u32*)TempBuffer)[1] >> 20) & (MAX_IRQDEVICECOUNT - 1);
+	if (deviceID != 0) {
+		((u32*)TempBuffer)[1] |= pDevData->SunDeviceData[deviceID].serialID << 26;
+	}
+
+	/* Kernel -> PCI */
+	//Notes:
+	// -für die AGEX muss sich die Adr nicht ändern
+	// -bei der AGEX2 müssen es 32Bit mit steigender Adr sein
+	//
+	// aus include/asm-generic/iomap.h für ioread/writeX_rep
+	// "...They do _not_ update the port address. If you
+	//	want MMIO that copies stuff laid out in MMIO
+	//	memory across multiple ports, use "memcpy_toio()..."
+	//
+	// aber auch memcpy_toio() macht nicht immer 32Bit
+	// "http://www.gossamer-threads.com/lists/linux/kernel/650995?do=post_view_threaded#650995"
+	if (BytesToWrite % 4) {
+		u32 ByteIndex =0;
+		for(; ByteIndex < BytesToWrite; ByteIndex++)
+			iowrite8(TempBuffer[ByteIndex], pDevData->pVABAR0+ByteIndex);
+	}
+	else {
+		u32 WordsToCopy = BytesToWrite/4;
+		u32 WordIndex;
+		for (WordIndex = 0; WordIndex < WordsToCopy; WordIndex++)
+			iowrite32(((u32*)TempBuffer)[WordIndex], pDevData->pVABAR0 + WordIndex*4 );
+	}
+
+	return BytesToWrite;
+}
+
+
+//Schaltet im PCI-Geraet die Ints ab/zu
+static void pci_enable_interrupt(PDEVICE_DATA pDevData, bool enable)
+{
+	if (pDevData == NULL || pDevData->device_type == DeviceType_Invalid || pDevData->pVABAR0 == NULL)
+		return;
+
+	//der DPC ist/ muss durch sein
+	//(kann aber erst hier gesetzt werden da sonst race cond mit CommonBuffer Clear, IRQEnable und DPCFlag)
+	if (enable) {
+
+		if (IS_TYPEWITH_COMMONBUFFER(pDevData)) {
+			//nur um ganz sicher zu sein
+			if( (pDevData->pVACommonBuffer == NULL) || (pDevData->pBACommonBuffer == 0) )
+				return;
+
+			//> das IRQ Flag löschen (2 Word [Flags])
+			//ACHTUNG! die 3 Word [Header0/Header1/Data[0]] nicht überschreiben da alte VCXM/CL-PCIe FPGAs während ein DMA IRQ behandelt wurde
+			//	schon das SUNPaket in den CommonBuffer geschrieben haben, 
+			//	nach dem setzen des "IRQ-Enable Bits" im FPGA hat dieser dann das FLAG gesetzt und den MSI geschickt
+			memset(pDevData->pVACommonBuffer, 0, 2 * sizeof(u32));
+			smp_mb();	//nop bei x86
+		}
+	}
+
+	dev_dbg(pDevData->dev, "pci_enable_interrupt: %u\n", enable ? 1 : 0);
+
+	/* IRQ enable flag */
+	iowrite32(enable ? 1 : 0, pDevData->pVABAR0 + (IS_TYPEWITH_COMMONBUFFER(pDevData) ? ISR_ONOFF_OFFSET_AGEX2 : ISR_ONOFF_OFFSET_AGEX));
+}
+
+// Interrupts
+
+// PCI interrupt
+static irqreturn_t pci_interrupt(int irq, void *dev_id)
+{
+	u32 regVal;
+	PDEVICE_DATA pDevData = (PDEVICE_DATA)dev_id;
+
+	BUG_ON(pDevData == NULL || pDevData->pVABAR0 == NULL || pDevData->device_type == DeviceType_Invalid);
+
+	// check the FPGA interrupt flag (cleared whein FIFO is empty or when interrupt is disabled)
+	regVal = ioread32(pDevData->pVABAR0 + ISR_AVAILABLE_OFFSET);
+	if ((regVal & 0x1) == 0)
+		return IRQ_NONE;	// not our interrupt
+
+	// disable interrupt in FPGA
+	pci_enable_interrupt(pDevData, false);
+
+	// wake up thread
+	return IRQ_WAKE_THREAD;
+}
+
+// PCIe interrupt
+static irqreturn_t pcie_interrupt(int irq, void *dev_id)
+{
+	PDEVICE_DATA pDevData = (PDEVICE_DATA)dev_id;
+	u32			IRQReg_A = ((u32*)pDevData->pVACommonBuffer)[0];
+	u32			sun_packet[MAX_SUNPACKETSIZE/4];
+	irqreturn_t result = pDevData->irqEnableInHWI ? IRQ_HANDLED : IRQ_WAKE_THREAD;
+
+	dev_dbg(pDevData->dev, "pcie_interrupt: IRQReg_A = 0x%08x\n", IRQReg_A);
+
+	// check for DMA done flag
+	if ((IRQReg_A >> 4) != 0) {
+		if (pDevData->setupTcInHWI)
+			imago_DMARead_DPC(pDevData);
+		else
+			result = IRQ_WAKE_THREAD;
+	}
+
+	// check for SUN interrupt flag
+	if ((IRQReg_A & 0x1) != 0) {
+		// get SUN Header0/1
+		sun_packet[0] = ((u32*)pDevData->pVACommonBuffer)[2+0];
+		sun_packet[1] = ((u32*)pDevData->pVACommonBuffer)[2+1];
+		sun_packet[2] = ((u32*)pDevData->pVACommonBuffer)[2+2];
+
+		// process SUN packet
+		imago_sun_interrupt(pDevData, sun_packet);
+	}
+
+	if (result == IRQ_HANDLED)
+		pci_enable_interrupt(pDevData, true);
+
+	return result;
+}
+
+
+// IRQ threads
+
+// PCI
+static irqreturn_t pci_thread(int irq, void *dev_id)
+{
+	PDEVICE_DATA pDevData = (PDEVICE_DATA)dev_id;
+	u32			sun_packet[MAX_SUNPACKETSIZE/4];
+	u32			regVal, fifoLevel;
+
+	BUG_ON(pDevData->device_type == DeviceType_Invalid);
+	BUG_ON(pDevData->pVABAR0 == NULL);
+
+	// AGEX hat ein FIFO => FIFO-Fuellstand einlesen
+	regVal = ioread32(pDevData->pVABAR0 + ISR_AVAILABLE_OFFSET);
+
+	// im Bit 0 steht das Interrupt-Flag, danach der Fuellstand
+	fifoLevel = (regVal >> 1) & 0x1FF;
+	if (fifoLevel < 3) {
+		// sollte nicht auftreten
+		dev_err(pDevData->dev, "pci_thread() > SUN Error: FIFO level to small: %d\n", fifoLevel);
+		return IRQ_HANDLED;
+	}
+
+	// SUN Header0/1 einlesen
+	sun_packet[0] = ioread32(pDevData->pVABAR0);	// Header0
+	sun_packet[1] = ioread32(pDevData->pVABAR0);	// Header1
+	sun_packet[2] = ioread32(pDevData->pVABAR0);	// Payload
+
+	// process SUN packet
+	imago_sun_interrupt(pDevData, sun_packet);
+
+	/* Re-enable the interrupt */
+	/**********************************************************************/
+	pci_enable_interrupt(pDevData, true);
+
+	return IRQ_HANDLED;
+}
+
+// PCIe: only process DMA interrupts, SUN packets are already handled by the pcie_interrupt
+static irqreturn_t pcie_thread(int irq, void *dev_id)
+{
+	PDEVICE_DATA pDevData = (PDEVICE_DATA)dev_id;
+	u32			IRQReg_A = ((u32*)pDevData->pVACommonBuffer)[0];
+
+	if ((IRQReg_A >> 4) != 0 && !pDevData->setupTcInHWI)
+		imago_DMARead_DPC(pDevData);
+
+	pci_enable_interrupt(pDevData, true);
+
+	return IRQ_HANDLED;
+}
 
 
 //<====================================>
@@ -75,51 +262,41 @@ struct pci_driver AGEXDrv_pci_driver = {
 //		wegen Hot-Plug gibt es CallBacks
 //<====================================>
 //wird aufgerufen wenn der kernel denkt das der treiber das PCIDev unterstützt, 0 ja <0 nein
-int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
+static int imago_pci_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 {
 	u64 bar0_start,bar0_len;
 	int i, res;
-	u8 tempDevSubType;
+	u8 dev_type;
 	PDEVICE_DATA pDevData = NULL;
-	int minor = -1;
 	struct irq_desc *desc;
 
 	pci_set_drvdata(pcidev, NULL);	
 
-	pr_devel(MODDEBUGOUTTEXT" AGEXDrv_PCI_probe\n");
+	dev_dbg(&pcidev->dev, "imago_pci_probe\n");
 
-	tempDevSubType = id->driver_data;
-	if (tempDevSubType == SubType_Invalid) {
-		printk(KERN_WARNING MODDEBUGOUTTEXT" unknown device identifier (%u)\n", tempDevSubType);
+	dev_type = id->driver_data;
+	if (dev_type == DeviceType_Invalid) {
+		dev_warn(&pcidev->dev, "invalid device identifier (%u)\n", dev_type);
 		return -EINVAL;
 	}
 
-	pr_devel(MODDEBUGOUTTEXT" found '%s' device\n", AGEXDrv_device_info[tempDevSubType].name);
 
-
-	//>freie Minor Nummer?
-	/**********************************************************************/
-	for (minor=0; minor<MAX_DEVICE_COUNT; minor++) {
-		if (!_ModuleData.boIsMinorUsed[minor]) {
-			pDevData = &_ModuleData.Devs[minor];
-			AGEXDrv_InitDrvData(pDevData, tempDevSubType);
-			pDevData->DeviceNumber = MKDEV(MAJOR(_ModuleData.FirstDeviceNumber), minor);
-			pDevData->dev = &pcidev->dev;
-			pci_set_drvdata(pcidev, pDevData);				//damit wir im AGEXDrv_PCI_remove() wissen welches def freigebene werden soll
-			break;
-		}
-	}
-	if (pDevData == NULL) {
-		printk(KERN_WARNING MODDEBUGOUTTEXT" no free Minor-Number found!\n");
+	pDevData = imago_alloc_dev_data(&pcidev->dev, dev_type);
+	if (pDevData == NULL)
 		return -EINVAL;
-	}
 
-	pr_devel(MODDEBUGOUTTEXT" use major/minor (%d:%d)\n", MAJOR(pDevData->DeviceNumber), MINOR(pDevData->DeviceNumber));
+	pDevData->write = fpga_write;
+	pci_set_drvdata(pcidev, pDevData);				//damit wir im imago_pci_remove() wissen welches def freigebene werden soll
+
+	dev_dbg(&pcidev->dev, "using major/minor (%d:%d)\n", MAJOR(pDevData->DeviceNumber), MINOR(pDevData->DeviceNumber));
 
 	//>PCI device on(setzt Bits im PCI Config Mem)
 	/**********************************************************************/
 	if (pci_enable_device(pcidev) < 0) {
-		printk(KERN_ERR MODDEBUGOUTTEXT" pci_enable_device failed\n"); return -EIO;}
+		dev_err(&pcidev->dev, "pci_enable_device failed\n");
+		imago_free_dev_data(pDevData);
+		return -EIO;
+	}
 
 	//Enable PCI Bus Master
 	pci_set_master(pcidev);
@@ -131,25 +308,26 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 	bar0_start = pci_resource_start(pcidev, 0);
 	bar0_len = pci_resource_len(pcidev, 0);
 	if (!(pci_resource_flags(pcidev, 0) & IORESOURCE_MEM)) {
-		printk(KERN_WARNING MODDEBUGOUTTEXT" invalid bar0\n");
+		dev_warn(&pcidev->dev, "invalid bar0\n");
+		imago_free_dev_data(pDevData);
 		return -ENODEV;
 	}
-	else
-		pr_devel(MODDEBUGOUTTEXT" bar0> 0x%llx, %llu [Bytes]\n", bar0_start, bar0_len);
+
+	dev_dbg(&pcidev->dev, "bar0: 0x%llx, %llu bytes\n", bar0_start, bar0_len);
 
 	//bar0 mappen request_region(); request_mem_region() macht kein mapping sondern 'nur' eine 'reservation'
-	if (request_mem_region(bar0_start, bar0_len,MODMODULENAME) == NULL) {
-		pDevData->boIsBAR0Requested = FALSE;
-		printk(KERN_ERR MODDEBUGOUTTEXT" request_mem_region failed!\n");
+	if (request_mem_region(bar0_start, bar0_len, MODMODULENAME) == NULL) {
+		dev_err(&pcidev->dev, "request_mem_region failed\n");
+		imago_free_dev_data(pDevData);
 		return -EBUSY;
 	}
 	else {
-		pDevData->boIsBAR0Requested = TRUE;
+		pDevData->boIsBAR0Requested = true;
 		pDevData->pVABAR0 = ioremap(bar0_start,bar0_len); //das setzen der adr zeigt auch an das wir (R/W) fns aufs device schreiben dürfen
 		if (pDevData->pVABAR0 == NULL)
-			printk(KERN_ERR MODDEBUGOUTTEXT" ioremap failed!\n");
+			dev_err(&pcidev->dev, "ioremap failed\n");
 		else
-			pr_devel(MODDEBUGOUTTEXT" map bar0> 0x%llx to 0x%p\n", bar0_start, pDevData->pVABAR0);
+			dev_dbg(&pcidev->dev, "map bar0 0x%llx to 0x%p\n", bar0_start, pDevData->pVABAR0);
 	}
 
 
@@ -165,13 +343,15 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 		// "...By default, the kernel assumes that your device can address the full 32-bits...
 		//  ... It is good style to do this even if your device holds the default setting ..."
 		if (dma_set_mask(&pcidev->dev, DMA_BIT_MASK(MaxDAMAddressSize) ) != 0) {
-			printk(KERN_ERR MODDEBUGOUTTEXT" dma_set_mask failed!\n");
+			dev_err(&pcidev->dev, "dma_set_mask failed!\n");
+			imago_free_dev_data(pDevData);
 			return -EIO;
 		}
 		//ab 2.6.34
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,34)
 		if (dma_set_coherent_mask(&pcidev->dev, DMA_BIT_MASK(MaxDAMAddressSize) ) != 0) {
-			printk(KERN_ERR MODDEBUGOUTTEXT" dma_set_coherent_mask failed!\n");
+			dev_err(&pcidev->dev, "dma_set_coherent_mask failed!\n");
+			imago_free_dev_data(pDevData);
 			return -EIO;
 		}
 #endif
@@ -187,10 +367,11 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 														&pDevData->pBACommonBuffer,
 														GFP_KERNEL);	/* zone wird über die maske eingestellt, sonst nur noch ob GFP_ATOMIC)*/
 		if (pDevData->pVACommonBuffer == 0) {
-			printk(KERN_ERR MODDEBUGOUTTEXT" dma_alloc_coherent failed!\n");
+			dev_err(&pcidev->dev, "dma_alloc_coherent failed!\n");
+			imago_free_dev_data(pDevData);
 			return -ENOMEM;
 		}
-		pr_devel(MODDEBUGOUTTEXT" DMABuffer> VA: 0x%p, BA: 0x%llx, %ld [Bytes]\n",
+		dev_dbg(&pcidev->dev, "DMABuffer> VA: 0x%p, BA: 0x%llx, %ld bytes\n",
 			pDevData->pVACommonBuffer, (u64)pDevData->pBACommonBuffer, PAGE_SIZE);
 		memset(pDevData->pVACommonBuffer, 0 ,PAGE_SIZE);	//es gibt ab 3.2 dma_zalloc_coherent()
 	}
@@ -206,16 +387,19 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 			pDMAChannel->jobBuffers = kzalloc(_ModuleData.max_dma_buffers * sizeof(DMA_READ_JOB), GFP_KERNEL);
 			if (pDMAChannel->jobBuffers == NULL) {
 				dev_err(pDevData->dev, "kzalloc() failed\n");
+				imago_free_dev_data(pDevData);
 				return -ENOMEM;
 			}
 			res = kfifo_alloc(&pDMAChannel->Jobs_ToDo, _ModuleData.max_dma_buffers * sizeof(DMA_READ_JOB *), GFP_KERNEL);
 			if (res) {
 				dev_err(pDevData->dev, "kfifo_alloc() failed\n");
+				imago_free_dev_data(pDevData);
 				return res;
 			}
 			res = kfifo_alloc(&pDMAChannel->Jobs_Done, _ModuleData.max_dma_buffers * sizeof(DMA_READ_JOB *), GFP_KERNEL);
 			if (res) {
 				dev_err(pDevData->dev, "kfifo_alloc() failed\n");
+				imago_free_dev_data(pDevData);
 				return res;
 			}
 		}
@@ -223,40 +407,41 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 		//damit z.b dma_map_sg() (mit einer IOMMU) nicht zuviel zusammengefasst
 		// aber >nicht< für sg_alloc_table_from_pages()!
 		if (dma_set_max_seg_size(&pcidev->dev, DMA_READ_TC_SG_MAX_BYTECOUNT) != 0) {
-			printk(KERN_ERR MODDEBUGOUTTEXT" dma_set_max_seg_size failed!\n");
+			dev_err(&pcidev->dev, "dma_set_max_seg_size failed!\n");
+			imago_free_dev_data(pDevData);
 			return -EIO;
 		}
 	}
 
 	
-	//>IRQ & tasklet
-	/**********************************************************************/
-
+	// setup interrupt
 	if (IS_TYPEWITH_COMMONBUFFER(pDevData)) {
 		// PCIe interface
 		// enable MSI
 		// http://www.mjmwired.net/kernel/Documentation/MSI-HOWTO.txt
 		// "... to call this API before calling request_irq()..."
 		if (pci_enable_msi(pcidev) != 0) {
-			printk(KERN_ERR MODDEBUGOUTTEXT"pci_enable_msi failed!\n");
+			dev_err(&pcidev->dev, "pci_enable_msi failed\n");
+			imago_free_dev_data(pDevData);
 			return -EIO;
 		}
-		if (request_threaded_irq(pcidev->irq, AGEXDrv_pcie_interrupt, AGEXDrv_pcie_thread,
+		if (request_threaded_irq(pcidev->irq, pcie_interrupt, pcie_thread,
 					IRQF_TRIGGER_RISING, MODMODULENAME, pDevData) != 0) {
-			printk(KERN_ERR MODDEBUGOUTTEXT" request_threaded_irq failed\n");
-			pDevData->boIsIRQOpen = FALSE;
+			dev_err(&pcidev->dev, "request_threaded_irq failed\n");
+			imago_free_dev_data(pDevData);
 			return -EIO;
 		}
 	}
 	else {
 		// PCI interface
-		if (request_threaded_irq(pcidev->irq, AGEXDrv_pci_interrupt, AGEXDrv_pci_thread,
+		if (request_threaded_irq(pcidev->irq, pci_interrupt, pci_thread,
 					IRQF_SHARED, MODMODULENAME, pDevData) != 0) {
-			printk(KERN_ERR MODDEBUGOUTTEXT" request_threaded_irq failed\n");
-			pDevData->boIsIRQOpen = FALSE;
+			dev_err(&pcidev->dev, "request_threaded_irq failed\n");
+			imago_free_dev_data(pDevData);
 			return -EIO;
 		}
 	}
+
 	// increase priority of threaded interrupt
 	desc = irq_to_desc(pcidev->irq);
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5,9,0)
@@ -281,73 +466,37 @@ int AGEXDrv_PCI_probe(struct pci_dev *pcidev, const struct pci_device_id *id)
 #endif		
 	}
 	
-	// Interrupts im FPGA einschalten
-	AGEXDrv_SwitchInterruptOn(pDevData, TRUE);
+	// enable PCI interrupts
+	pci_enable_interrupt(pDevData, true);
 
-	pr_devel(MODDEBUGOUTTEXT" IRQ> %d \n",pcidev->irq);
-	pDevData->boIsIRQOpen = TRUE;
+	dev_dbg(&pcidev->dev, "IRQ %d\n", pcidev->irq);
+	pDevData->boIsIRQOpen = true;
 
+	// create char device
+	imago_create_device(pDevData);
 
-	//>dev init & fügt das es hinzu
-	/**********************************************************************/
-	cdev_init(&pDevData->DeviceCDev, &AGEXDrv_fops);
-	pDevData->DeviceCDev.owner = THIS_MODULE;
-	pDevData->DeviceCDev.ops 	= &AGEXDrv_fops;	//notwendig in den quellen wird fops gesetzt?
-
-	//fügt ein device hinzu, nach der fn können FileFns genutzt werden
-	res = cdev_add(&pDevData->DeviceCDev, pDevData->DeviceNumber, 1/*wie viele ab startNum*/);
-	if (res < 0)
-		printk(KERN_WARNING MODDEBUGOUTTEXT" can't add device!\n");
-	else
-		pDevData->boIsDeviceOpen = TRUE;
-
-
-	//> in Sysfs class eintragen
-	/**********************************************************************/			
-	//war mal class_device_create
-	if (!IS_ERR(_ModuleData.pModuleClass)) {		
-		char devName[128];
-		struct device *temp;
-
-		sprintf(devName, "%s%d", MODMODULENAME, MINOR(pDevData->DeviceNumber));
-		temp = device_create(
-				_ModuleData.pModuleClass, 	/* die Type classe */
-				NULL, 			/* pointer zum Eltern, dann wird das dev ein Kind vom parten*/
-				pDevData->DeviceNumber, /* die nummer zum device */
-				NULL,
-				devName			/*string for the device's name */
-				);
-
-		if (IS_ERR(temp))
-			printk(KERN_WARNING MODDEBUGOUTTEXT" can't create sysfs device!\n");
-	}
-
-
-	// init von allem ist durch
 	dev_info(pDevData->dev, "probe done (0x%04x:0x%04x <> %d:%d)\n",
 		id->vendor, id->device, MAJOR(pDevData->DeviceNumber), MINOR(pDevData->DeviceNumber));
-	_ModuleData.boIsMinorUsed[minor] = TRUE;
 
 	return 0;
 }
 
 
-//wird aufgerufen wenn das PCIdev removed wird
-void AGEXDrv_PCI_remove(struct pci_dev *pcidev)
+static void imago_pci_remove(struct pci_dev *pcidev)
 {
 	//Note: wenn PCI_remove() aufgerufen wird, 
 	// darf kein UserThread mehr im Teiber sein bzw. noch reinspringen weil sonst... bum 	
 	u32 i;
 	PDEVICE_DATA pDevData = (PDEVICE_DATA)pci_get_drvdata(pcidev);
-	pr_devel(MODDEBUGOUTTEXT" AGEXDrv_PCI_remove (%d:%d)\n", MAJOR(pDevData->DeviceNumber), MINOR(pDevData->DeviceNumber));
+	dev_dbg(&pcidev->dev, "imago_pci_remove (%d:%d)\n", MAJOR(pDevData->DeviceNumber), MINOR(pDevData->DeviceNumber));
 
 	if (pDevData == NULL) {
-		printk(KERN_WARNING MODDEBUGOUTTEXT" device pointer is zero!\n"); return;}
+		dev_warn(&pcidev->dev, "device pointer is zero!\n"); return;}
 
 	if (IS_TYPEWITH_DMA2HOST(pDevData)) {
 		// Stop DMA transfers and unmap all buffers
 		for (i = 0; i < pDevData->DMARead_channels; i++) {
-			AGEXDrv_DMARead_Reset_DMAChannel(pDevData, i);
+			imago_DMARead_Reset_DMAChannel(pDevData, i);
 		}
 
 		for (i = 0; i < MAX_DMA_CHANNELS; i++) {
@@ -360,7 +509,7 @@ void AGEXDrv_PCI_remove(struct pci_dev *pcidev)
 
 	//IRQ zuückgeben
 	if(pDevData->boIsIRQOpen) {
-		AGEXDrv_SwitchInterruptOn(pDevData, FALSE);
+		pci_enable_interrupt(pDevData, false);
 		free_irq(pcidev->irq, pDevData);
 		if (IS_TYPEWITH_COMMONBUFFER(pDevData))
 			pci_disable_msi(pcidev);
@@ -373,7 +522,7 @@ void AGEXDrv_PCI_remove(struct pci_dev *pcidev)
 
 	if(pDevData->boIsBAR0Requested)
 		release_mem_region( pci_resource_start(pcidev, 0), pci_resource_len(pcidev, 0) );
-	pDevData->boIsBAR0Requested = FALSE;
+	pDevData->boIsBAR0Requested = false;
 
 	if( 	( IS_TYPEWITH_COMMONBUFFER(pDevData) )
 		&& 	(pDevData->pVACommonBuffer != NULL) )
@@ -383,14 +532,12 @@ void AGEXDrv_PCI_remove(struct pci_dev *pcidev)
 	//das pci_dev nicht mehr für PCI nutzen (bzw. setzt Bits im PCIConfigMem)??
 	pci_disable_device(pcidev);
 
-	//device in der sysfs class löschen
-	if(!IS_ERR(_ModuleData.pModuleClass))	
-		device_destroy(_ModuleData.pModuleClass, pDevData->DeviceNumber);
-
-	//device löschen
-	if(pDevData->boIsDeviceOpen)
-		cdev_del(&pDevData->DeviceCDev);
-	pDevData->boIsDeviceOpen = FALSE;
-
+	imago_free_dev_data(pDevData);
 }
 
+struct pci_driver imago_pci_driver = {
+	.name = "imago-fpga-pci",
+	.id_table = pci_ids,
+	.probe = imago_pci_probe,
+	.remove = imago_pci_remove,
+};
