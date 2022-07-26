@@ -30,6 +30,7 @@ typedef u8 IOCTLBUFFER[128];
 #define IOC_DMAREAD_CONFIG				_IOW(IMAGO_IOC_MAGIC, 6, IOCTLBUFFER)
 #define IOC_DMAREAD_ADD_BUFFER			_IOW(IMAGO_IOC_MAGIC, 7, IOCTLBUFFER)
 #define IOC_DMAREAD_WAIT_FOR_BUFFER		_IOWR(IMAGO_IOC_MAGIC, 8, IOCTLBUFFER)
+#define IOC_DMAREAD_WAIT_FOR_BUFFER_TS	_IOC(_IOC_READ|_IOC_WRITE, IMAGO_IOC_MAGIC, 8, 19)
 #define IOC_DMAREAD_ABORT_DMA			_IOW(IMAGO_IOC_MAGIC, 9, u8)
 #define IOC_DMAREAD_ABORT_WAITER		_IOW(IMAGO_IOC_MAGIC, 10, u8)
 #define IOC_DMAREAD_RESETCHANNEL		_IOW(IMAGO_IOC_MAGIC, 11, u8)
@@ -472,47 +473,56 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 
 		// wait for DMA completion
 		case IOC_DMAREAD_WAIT_FOR_BUFFER:
+		case IOC_DMAREAD_WAIT_FOR_BUFFER_TS:
 		{
-			u8 	iDMAChannel;
-			u32 TimeOut_ms;
 			PDMA_READ_CHANNEL pDMAChannel;
 			DMA_READ_JOB *pJob = NULL;
 			int result = 0;
+			struct {
+				u8 iDMAChannel;
+				u32 timeOut_ms;
+				u32 reserved;
+			} __attribute__((packed)) ctl_in;
+			struct s_ctl_out {
+				u8 success;
+				u16 buffer_counter;
+				u64 pVMUser;
+				u64 timestamp;
+			} __attribute__((packed)) ctl_out = {0, 0, 0, 0};
+			int bytes_out;
+			
+			// compatibility with old library: result size must have fixed value
+			if (cmd == IOC_DMAREAD_WAIT_FOR_BUFFER)
+				bytes_out = offsetof(struct s_ctl_out, timestamp);
+			else
+				bytes_out = sizeof(ctl_out);
 
 			if (!IS_TYPEWITH_DMA2HOST(pDevData)) {
-				dev_warn(pDevData->dev, "Locked_ioctl IOC_DMAREAD_WAIT_FOR_BUFFER: No DMA support!\n");
+				dev_err(pDevData->dev, "Locked_ioctl IOC_DMAREAD_WAIT_FOR_BUFFER: No DMA support!\n");
 				return -EFAULT;
 			}
-
-			//args vom USER
-			if (__get_user(iDMAChannel, pToUserMem + 0) != 0) {
-				dev_warn(pDevData->dev, "Locked_ioctl IOC_DMAREAD_WAIT_FOR_BUFFER: get_user faild\n");
+			if (__copy_from_user(&ctl_in, pToUserMem, sizeof(ctl_in))) {
+				dev_err(pDevData->dev, "Locked_ioctl IOC_DMAREAD_WAIT_FOR_BUFFER: copy_from_user() faild\n");
 				return -EFAULT;
 			}
-			if (__get_user(TimeOut_ms, (u32*)(pToUserMem + 1)) != 0) {
-				dev_warn(pDevData->dev, "Locked_ioctl IOC_DMAREAD_WAIT_FOR_BUFFER: get_user faild\n");
-				return -EFAULT;
-			}
-			if (iDMAChannel >= pDevData->DMARead_channels) {
+			if (ctl_in.iDMAChannel >= pDevData->DMARead_channels) {
 				dev_warn(pDevData->dev, "Locked_ioctl IOC_DMAREAD_WAIT_FOR_BUFFER: DMAChannel is out of range!\n");
 				return -EFAULT;
 			}
 
-			pDMAChannel = &pDevData->DMARead_Channel[iDMAChannel];
+			pDMAChannel = &pDevData->DMARead_Channel[ctl_in.iDMAChannel];
 
 			dev_dbg(pDevData->dev, "Locked_ioctl IOC_DMAREAD_WAIT_FOR_BUFFER: DMA: %u, TimeOut_ms: %u\n",
-				iDMAChannel, TimeOut_ms);
+				ctl_in.iDMAChannel, ctl_in.timeOut_ms);
 
 			if (pDMAChannel->abortWait) {
 				// check if abort operation is in progress => no additional waiting threads are allowed
 				// (should already be avoided by the library, but is a race condition)
-				if (__put_user(0, pToUserMem) ||
-					__put_user(0, (u16*)(pToUserMem + 1)) ||
-					__put_user(0, (u64*)(pToUserMem + 1 + sizeof(u16)))) {
-					dev_err(pDevData->dev, "Locked_ioctl IOC_DMAREAD_WAIT_FOR_BUFFER: put_user() failed\n");
+				if (copy_to_user(pToUserMem, &ctl_out, bytes_out)) {
+					dev_err(pDevData->dev, "Locked_ioctl IOC_DMAREAD_WAIT_FOR_BUFFER: copy_to_user() failed\n");
 					return -EFAULT;
 				}
-				return 1 + sizeof(u16) +  sizeof(u64);
+				return bytes_out;
 			}
 
 			// wait for DMA completion
@@ -521,7 +531,7 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 			// but first, release IOCTL lock while waiting
 			up(&pDevData->DeviceSem);
 
-			if (TimeOut_ms == 0xFFFFFFFF) {
+			if (ctl_in.timeOut_ms == 0xFFFFFFFF) {
 				// wait for completion without timeout, interruptible
 				if (wait_for_completion_interruptible(&pDMAChannel->job_complete) != 0) {
 					dev_info(pDevData->dev, "Locked_ioctl IOC_DMAREAD_WAIT_FOR_BUFFER: wait_for_completion_interruptible() was interrupted\n");
@@ -530,7 +540,7 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 			}
 			else {
 				// wait for completion with timeout, not interruptible
-				if (wait_for_completion_timeout(&pDMAChannel->job_complete, msecs_to_jiffies(TimeOut_ms)) == 0) {
+				if (wait_for_completion_timeout(&pDMAChannel->job_complete, msecs_to_jiffies(ctl_in.timeOut_ms)) == 0) {
 					dev_dbg(pDevData->dev, "Locked_ioctl IOC_DMAREAD_WAIT_FOR_BUFFER: timeout\n");
 					result = -EINTR;
 				}
@@ -549,13 +559,11 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 					wait_for_completion(&pDMAChannel->job_complete);
 					dev_dbg(pDevData->dev, "Locked_ioctl IOC_DMAREAD_WAIT_FOR_BUFFER: abortWait with completion error %d\n", result);
 				}
-				if (__put_user(0, pToUserMem) ||
-					__put_user(0, (u16*)(pToUserMem + 1)) ||
-					__put_user(0, (u64*)(pToUserMem + 1 + sizeof(u16)))) {
-					dev_err(pDevData->dev, "Locked_ioctl: put_user() failed\n");
+				if (__copy_to_user(pToUserMem, &ctl_out, bytes_out)) {
+					dev_err(pDevData->dev, "Locked_ioctl: copy_to_user() failed\n");
 					return -EFAULT;
 				}
-				return 1 + sizeof(u16) +  sizeof(u64);
+				return bytes_out;
 			}
 			if (result < 0)
 				return result;
@@ -570,15 +578,17 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 			imago_DMARead_Unlock(pDevData, flags);
 
 			// send buffer to user (can also be dummy-Buffer)
-			if (__put_user((u8)pJob->boIsOk, pToUserMem) ||
-				__put_user(pJob->BufferCounter, (u16*)(pToUserMem + 1)) ||
-				__put_user(pJob->pVMUser, (u64*)(pToUserMem + 1 + sizeof(u16)))) {
-				dev_err(pDevData->dev, "Locked_ioctl IOC_DMAREAD_WAIT_FOR_BUFFER: put_user() failed\n");
+			ctl_out.success = pJob->boIsOk;
+			ctl_out.buffer_counter = pJob->BufferCounter;
+			ctl_out.pVMUser = pJob->pVMUser;
+			ctl_out.timestamp = pJob->timestamp;
+			if (copy_to_user(pToUserMem, &ctl_out, bytes_out)) {
+				dev_err(pDevData->dev, "Locked_ioctl IOC_DMAREAD_WAIT_FOR_BUFFER: copy_to_user() failed\n");
 				return -EFAULT;
 			}
 
 			dev_dbg(pDevData->dev, "Locked_ioctl IOC_DMAREAD_WAIT_FOR_BUFFER: return buffer iDMA: %d, res: %d, Seq: %d, VMPtr: %p\n",
-				iDMAChannel, pJob->boIsOk, pJob->BufferCounter, (void*)pJob->pVMUser);
+				ctl_in.iDMAChannel, pJob->boIsOk, pJob->BufferCounter, (void*)pJob->pVMUser);
 
 			// unmap buffer (pJob is released) or handle cache
 			if (!pDMAChannel->doManualMap)
@@ -586,7 +596,7 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 			else
 				dma_sync_sg_for_cpu(pDevData->dev, pJob->SGTable.sgl, pJob->SGTable.nents, DMA_FROM_DEVICE);
 
-			return 1 + sizeof(u16) +  sizeof(u64);
+			return bytes_out;
 		}
 
 		// abort DMA transfer

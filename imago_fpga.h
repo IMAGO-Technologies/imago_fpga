@@ -150,6 +150,7 @@ typedef struct _DMA_READ_JOB
 	// job status, valid only if in Jobs_Done FIFO
 	bool				boIsOk;				// no errors
 	u16 				BufferCounter; 		// buffer counter comming from FPGA
+	u64					timestamp;
 
 	// pinned user buffer
 	bool				boIsPageListValid;	// page list 'ppPageList' is allocated

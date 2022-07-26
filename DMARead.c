@@ -403,6 +403,7 @@ static void imago_DMARead_EndDMA(PDEVICE_DATA pDevData, const u32 iDMA, const u3
 	// copy job data from finished TC
 	pTC->pJob->boIsOk			= isOk;
 	pTC->pJob->BufferCounter	= BufferCounter;
+	pTC->pJob->timestamp		= div_u64(ktime_get_ns(), NSEC_PER_USEC);
 
 	// add job to Jobs_Done FIFO
 	if (kfifo_put(&pDMAChannel->Jobs_Done, pTC->pJob) == 0) {
