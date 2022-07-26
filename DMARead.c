@@ -276,8 +276,25 @@ int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMACha
 	pJob->boIsSGMapped = true;
 	pJob->SGcount = mappedSGs;
 
-	dev_dbg(pDevData->dev, "dma_map_sg() use %d from %d SGs\n", mappedSGs, pJob->SGTable.nents);
+	dev_dbg(pDevData->dev, "dma_map_sg(): %d SG list entries mapped to %d regions\n", pJob->SGTable.nents, mappedSGs);
 	dev_dbg(pDevData->dev, "first sg element: addr=0x%08x, len=%u\n", (unsigned int)sg_dma_address(pJob->SGTable.sgl), (unsigned int)sg_dma_len(pJob->SGTable.sgl));
+
+#ifdef __ARM_ARCH_7A__
+	// VisionCam XM: do not turn off update of DMA in HWI to avoid dropped sensor frames
+#else
+	if (pDevData->setupTcInHWI && _ModuleData.dma_update_in_hwi == -1) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,6,0)
+		// there should only be one mapped region if an IOMMU is present
+		if (pDevData->dev->iommu_group == NULL)
+#endif
+		{
+			if (pJob->SGTable.nents > 16) {
+				pDevData->setupTcInHWI = 0;
+				dev_dbg(pDevData->dev, "dma_map_sg(): using threaded interrupt for DMA update\n");
+			}
+		}
+	}
+#endif
 
 	return 0;
 }

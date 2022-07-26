@@ -132,15 +132,11 @@ DEVICE_DATA *imago_alloc_dev_data(struct device *dev, u8 dev_type)
 	pDevData->irqEnableInHWI	= true;
 #endif
 
-	/* DMA */
-	//Note: 
-	//	- da wir hier noch nicht wissen ob wie �berhaupt eine DMA haben immer init
-	// 	- auch alle m�glichen DMAChannels/TCs initen da wir noch nicht wissen wie viele wir haben werden
-#ifdef __ARM_ARCH_7A__
-	pDevData->setupTcInHWI		= 1;
-#else
-	pDevData->setupTcInHWI		= 0;
-#endif
+	// DMA
+	if (_ModuleData.dma_update_in_hwi == 0)
+		pDevData->setupTcInHWI		= 0;
+	else
+		pDevData->setupTcInHWI		= 1;
 	pDevData->DMARead_channels	= 0;
 	pDevData->DMARead_TCs		= 0;
 	pDevData->DMARead_SGs		= 0;

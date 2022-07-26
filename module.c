@@ -35,6 +35,10 @@ static unsigned int max_dma_buffers = 32;
 module_param(max_dma_buffers, uint, 0644);
 MODULE_PARM_DESC(max_dma_buffers, "Maximum number of DMA buffers supported for each DMA channel (default: 32, must be power of 2).");
 
+static int dma_update_in_hwi = -1;
+module_param(dma_update_in_hwi, int, 0644);
+MODULE_PARM_DESC(dma_update_in_hwi, "Update DMA transfer in irq (0: no, use threaded irq; 1: yes; -1: auto/default).");
+
 
 //static member (die gleichen für alle devices)
 MODULE_DATA _ModuleData;
@@ -43,10 +47,11 @@ MODULE_DATA _ModuleData;
 // "Called when a device is added, removed from this class, or a few other things that generate uevents to add the environment variables."
 static int dev_uevent(struct device *dev, struct kobj_uevent_env *env)
 {
-	dev_dbg(dev, "udev event\n");
-    if (add_uevent_var(env, "DEVMODE=%#o", 0666) != 0)
-		dev_warn(dev, "add_uevent_var() failed\n");
-    return 0;
+	// do not use dev_dbg(), because of "i2c: prevent endless uevent loop with CONFIG_I2C_DEBUG_CORE":
+	// https://patchwork.ozlabs.org/project/linux-i2c/patch/1458748247-9219-1-git-send-email-jglauber@cavium.com/
+	pr_devel("uevent: device: %s\n", dev_name(dev));
+
+	return add_uevent_var(env, "DEVMODE=%#o", 0666);
 }
 
 
@@ -85,6 +90,7 @@ static int __init imago_module_init(void)
 	memset(&_ModuleData, 0, sizeof(_ModuleData));
 	_ModuleData.pModuleClass = ERR_PTR(-EFAULT);
 	_ModuleData.max_dma_buffers = max_dma_buffers;
+	_ModuleData.dma_update_in_hwi = dma_update_in_hwi;
 
 	// for (i=0; i<MAX_DEVICE_COUNT; i++) {
 		// imago_init_dev_data(&_ModuleData.Devs[i], NULL, DeviceType_Invalid);

@@ -245,7 +245,7 @@ typedef struct _MODULE_DATA
 	dev_t 			FirstDeviceNumber;				// MAJOR(devNumber),MINOR(devNumber) (eg 240 , 0)
 	struct class	*pModuleClass;					// /sys/class/*
 	uint			max_dma_buffers;				// maximum number of DMA buffers
-
+	int				dma_update_in_hwi;
 } MODULE_DATA, *PMODULE_DATA;
 
 
