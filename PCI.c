@@ -140,7 +140,7 @@ static void pci_enable_interrupt(PDEVICE_DATA pDevData, bool enable)
 		}
 	}
 
-	dev_dbg(pDevData->dev, "pci_enable_interrupt: %u\n", enable ? 1 : 0);
+	// dev_dbg(pDevData->dev, "pci_enable_interrupt: %u\n", enable ? 1 : 0);
 
 	/* IRQ enable flag */
 	iowrite32(enable ? 1 : 0, pDevData->pVABAR0 + (IS_TYPEWITH_COMMONBUFFER(pDevData) ? ISR_ONOFF_OFFSET_AGEX2 : ISR_ONOFF_OFFSET_AGEX));
@@ -443,14 +443,15 @@ static int imago_pci_probe(struct pci_dev *pcidev, const struct pci_device_id *i
 	}
 
 	// increase priority of threaded interrupt
-	desc = irq_to_desc(pcidev->irq);
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5,9,0)
 	{
 		struct sched_param sched_par;
 		sched_par.sched_priority = 86;
+		desc = irq_to_desc(pcidev->irq);
 		sched_setscheduler(desc->action->thread, SCHED_FIFO, &sched_par);
 	}
 #else
+	desc = irq_data_to_desc(irq_get_irq_data(pcidev->irq));
 	sched_set_fifo(desc->action->thread);
 #endif
 
