@@ -109,14 +109,16 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUse
 
 			pSunDevice = &pDevData->SunDeviceData[deviceID];
 
-			spin_lock_irqsave(&pDevData->lock, flags);
+			dev_dbg(pDevData->dev, "Locked_ioctl IOC_RELEASE_DEVICEID: %u\n", deviceID);
+
+			raw_spin_lock_irqsave(&pDevData->lock, flags);
 			if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA ||
 				pSunDevice->requestState == SUN_REQ_STATE_ABORT) {
 				// Pending request is still in FPGA => toggle serial ID
 				pSunDevice->serialID = !pSunDevice->serialID;
 			}
 			pSunDevice->requestState = SUN_REQ_STATE_FREE;
-			spin_unlock_irqrestore(&pDevData->lock, flags);
+			raw_spin_unlock_irqrestore(&pDevData->lock, flags);
 
 			return 0;
 		}
@@ -192,22 +194,22 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUse
 
 			dev_dbg(pDevData->dev, "Locked_ioctl > Aborting read for DeviceID %u\n", deviceID);
 
-			spin_lock_irqsave(&pDevData->lock, flags);
+			raw_spin_lock_irqsave(&pDevData->lock, flags);
 			if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA) {
 				pSunDevice->requestState = SUN_REQ_STATE_ABORT;
 				// do not toggle serial ID yet, request may still be answered by the FPGA!
 //				pSunDevice->serialID = !pSunDevice->serialID;
-				spin_unlock_irqrestore(&pDevData->lock, flags);
+				raw_spin_unlock_irqrestore(&pDevData->lock, flags);
 				complete(&pSunDevice->result_complete);
 			}
 			else if (pSunDevice->requestState == SUN_REQ_STATE_RESULT) {
 				// avoid race condition: the result may still be processed by read(), so leave it there
 //				pSunDevice->requestState = SUN_REQ_STATE_IDLE;
-				spin_unlock_irqrestore(&pDevData->lock, flags);
+				raw_spin_unlock_irqrestore(&pDevData->lock, flags);
 			}
 			else {
 				// already in state SUN_REQ_STATE_ABORT or SUN_REQ_STATE_IDLE
-				spin_unlock_irqrestore(&pDevData->lock, flags);
+				raw_spin_unlock_irqrestore(&pDevData->lock, flags);
 			}
 			return 0;
 		}

@@ -15,8 +15,8 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.*
  */
 
-#ifndef AGEXDRV_H_
-#define AGEXDRV_H_
+#ifndef IMAGO_FPGA_H_
+#define IMAGO_FPGA_H_
 
 // module definitions
 /******************************************************************************************/
@@ -209,7 +209,7 @@ typedef struct _DEVICE_DATA
 
 	//> IDs/MetaInfos fuer ein read	
 	//***************************************************************/
-	spinlock_t				lock;
+	raw_spinlock_t			lock;
 	struct SUN_DEVICE_DATA	SunDeviceData[MAX_IRQDEVICECOUNT];
 
 	//> BAR0
@@ -231,7 +231,7 @@ typedef struct _DEVICE_DATA
 	u8						DMARead_channels;	// actual number of DMA channels
 	u8						DMARead_TCs;		// actual number of transfer channels
 	u16  					DMARead_SGs;		// actual number of scatter gather elements
-	spinlock_t				DMARead_SpinLock;	// DMA spinlock
+	raw_spinlock_t			DMARead_SpinLock;	// DMA spinlock
 	bool					setupTcInHWI;		// setup transfer channel in hardware interrupt
 	bool					irqEnableInHWI;		// if disabled: DRA7x workaround for IRQ race in old kernels
 	DMA_READ_CHANNEL		DMARead_Channel[MAX_DMA_CHANNELS];	// DMA channel data
@@ -302,19 +302,19 @@ static inline unsigned long imago_DMARead_Lock(DEVICE_DATA *pDevData)
 {
 	unsigned long flags = 0;
 	if (pDevData->setupTcInHWI)
-		spin_lock_irqsave(&pDevData->DMARead_SpinLock, flags);
+		raw_spin_lock_irqsave(&pDevData->DMARead_SpinLock, flags);
 	else
-		spin_lock(&pDevData->DMARead_SpinLock);
+		raw_spin_lock(&pDevData->DMARead_SpinLock);
 	return flags;
 }
 
 static inline void imago_DMARead_Unlock(DEVICE_DATA *pDevData, unsigned long flags)
 {
 	if (pDevData->setupTcInHWI)
-		spin_unlock_irqrestore(&pDevData->DMARead_SpinLock, flags);
+		raw_spin_unlock_irqrestore(&pDevData->DMARead_SpinLock, flags);
 	else
-		spin_unlock(&pDevData->DMARead_SpinLock);
+		raw_spin_unlock(&pDevData->DMARead_SpinLock);
 }
 
-#endif /* AGEXDRV_H_ */
+#endif /* IMAGO_FPGA_H_ */
 

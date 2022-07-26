@@ -425,8 +425,11 @@ static int imago_pci_probe(struct pci_dev *pcidev, const struct pci_device_id *i
 			imago_free_dev_data(pDevData);
 			return -EIO;
 		}
+
+		// PREEMP_RT: use IRQF_NO_THREAD to avoid force-threaded interrupt of the primary handler
+		// which would disable bh/preempt and therefore compete with other force-threaded interrupts
 		if (request_threaded_irq(pcidev->irq, pcie_interrupt, pcie_thread,
-					IRQF_TRIGGER_RISING, MODMODULENAME, pDevData) != 0) {
+					IRQF_TRIGGER_RISING | IRQF_NO_THREAD, MODMODULENAME, pDevData) != 0) {
 			dev_err(&pcidev->dev, "request_threaded_irq failed\n");
 			imago_free_dev_data(pDevData);
 			return -EIO;

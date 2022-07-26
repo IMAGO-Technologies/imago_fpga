@@ -37,12 +37,12 @@ void imago_sun_interrupt(DEVICE_DATA *pDevData, u32 *sun_packet)
 		return;
 	}
 
-	spin_lock_irqsave(&pDevData->lock, flags);
+	raw_spin_lock_irqsave(&pDevData->lock, flags);
 
 	if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA && pSunDevice->serialID == serialId) {
 		pSunDevice->requestState = SUN_REQ_STATE_RESULT;
 
-		spin_unlock_irqrestore(&pDevData->lock, flags);
+		raw_spin_unlock_irqrestore(&pDevData->lock, flags);
 
 		dev_dbg(pDevData->dev, "completing request for DeviceID %u\n", deviceID);
 
@@ -52,10 +52,10 @@ void imago_sun_interrupt(DEVICE_DATA *pDevData, u32 *sun_packet)
 	else if (pSunDevice->requestState == SUN_REQ_STATE_ABORT) {
 		// we received the answer from an aborted request => complete silently
 		pSunDevice->requestState = SUN_REQ_STATE_IDLE;
-		spin_unlock_irqrestore(&pDevData->lock, flags);
+		raw_spin_unlock_irqrestore(&pDevData->lock, flags);
 	}
 	else {
-		spin_unlock_irqrestore(&pDevData->lock, flags);
+		raw_spin_unlock_irqrestore(&pDevData->lock, flags);
 		if (pSunDevice->requestState != SUN_REQ_STATE_INFPGA)
 			dev_warn(pDevData->dev, "imago_sun_interrupt() > Unexpected state (%u) for DeviceID=%u, dropping packet\n", pSunDevice->requestState, deviceID);
 		else

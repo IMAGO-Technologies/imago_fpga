@@ -89,12 +89,10 @@ DEVICE_DATA *imago_alloc_dev_data(struct device *dev, u8 dev_type)
 		return NULL;
 	}
 
-	//Note: darf nicht wegen  SG... 
-	//memset(pDat, 0, sizeof(DEVICE_DATA));
-
 	/* Module */
 	pDevData->boIsDeviceOpen	= false;
 	pDevData->dev				= dev;
+
 	pDevData->device_type		= dev_type;
 	if (dev_type != DeviceType_Invalid)
 		pDevData->flags				= device_info[dev_type].flags;
@@ -107,7 +105,7 @@ DEVICE_DATA *imago_alloc_dev_data(struct device *dev, u8 dev_type)
 #endif
 
 	/* SUN */
-	spin_lock_init(&pDevData->lock);
+	raw_spin_lock_init(&pDevData->lock);
 
 	for (i = 0; i<MAX_IRQDEVICECOUNT; i++) {
 		pDevData->SunDeviceData[i].requestState = SUN_REQ_STATE_FREE;
@@ -146,23 +144,19 @@ DEVICE_DATA *imago_alloc_dev_data(struct device *dev, u8 dev_type)
 	pDevData->DMARead_channels	= 0;
 	pDevData->DMARead_TCs		= 0;
 	pDevData->DMARead_SGs		= 0;
-	spin_lock_init(&pDevData->DMARead_SpinLock);
-	for (iChannel = 0; iChannel < MAX_DMA_CHANNELS; iChannel++)
-	{
+	raw_spin_lock_init(&pDevData->DMARead_SpinLock);
+	for (iChannel = 0; iChannel < MAX_DMA_CHANNELS; iChannel++) {
 		PDMA_READ_CHANNEL pChannel = &pDevData->DMARead_Channel[iChannel];
-
 		pChannel->jobBuffers = NULL;
 		init_completion(&pChannel->job_complete);
 		pChannel->dmaWaitCount = 0;
 		pChannel->abortWait = 0;
 
-		for(iTC = 0; iTC < MAX_DMA_READ_CHANNELTCS; iTC++)
-		{
+		for (iTC = 0; iTC < MAX_DMA_READ_CHANNELTCS; iTC++) {
 			PDMA_READ_TC pTC = pChannel->TCs+iTC;
-
-			pTC->boIsUsed 					= false;
-		}//for TCs
-	}//for DMAChannesl
+			pTC->boIsUsed = false;
+		}
+	}
 	
 	return pDevData;
 }

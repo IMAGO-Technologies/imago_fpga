@@ -153,7 +153,7 @@ static ssize_t imago_read(struct file *filp, char __user *buf, size_t count, lof
 			return -ERESTARTSYS;
 		}
 
-		spin_lock_irqsave(&pDevData->lock, flags);
+		raw_spin_lock_irqsave(&pDevData->lock, flags);
 		if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA ||
 			pSunDevice->requestState == SUN_REQ_STATE_ABORT) {
 			// Pending request is still in FPGA (after timeout or abort) => toggle serial ID
@@ -161,7 +161,7 @@ static ssize_t imago_read(struct file *filp, char __user *buf, size_t count, lof
 			toggleId = 1;
 		}
 		pSunDevice->requestState = SUN_REQ_STATE_INFPGA;
-		spin_unlock_irqrestore(&pDevData->lock, flags);
+		raw_spin_unlock_irqrestore(&pDevData->lock, flags);
 
 		if (toggleId)
 			dev_warn(pDevData->dev, "imago_read() > pending FPGA request for DeviceID %u, toggling serial ID -> %u\n", DeviceID, pSunDevice->serialID);
@@ -199,18 +199,18 @@ static ssize_t imago_read(struct file *filp, char __user *buf, size_t count, lof
 
 
 	// check for abort by user?
-	spin_lock_irqsave(&pDevData->lock, flags);
+	raw_spin_lock_irqsave(&pDevData->lock, flags);
 	if (pSunDevice->requestState == SUN_REQ_STATE_ABORT) {
 		// request was canceled
 		// do not toggle serial ID yet, request may still be answered by the FPGA
 //		pSunDevice->serialID = !pSunDevice->serialID;
 //		pSunDevice->requestState = SUN_REQ_STATE_IDLE;
-		spin_unlock_irqrestore(&pDevData->lock, flags);
+		raw_spin_unlock_irqrestore(&pDevData->lock, flags);
 		dev_dbg(pDevData->dev, "imago_read() > aborting read for DeviceID: %u\n", DeviceID);
 		return -EINTR;
 	}
 	else if (pSunDevice->requestState != SUN_REQ_STATE_RESULT) {
-		spin_unlock_irqrestore(&pDevData->lock, flags);
+		raw_spin_unlock_irqrestore(&pDevData->lock, flags);
 		dev_warn(pDevData->dev, "imago_read() > unexpected request state (%u)\n", pSunDevice->requestState);
 		return -EFAULT;
 	}
@@ -220,7 +220,7 @@ static ssize_t imago_read(struct file *filp, char __user *buf, size_t count, lof
 	}
 
 	pSunDevice->requestState = SUN_REQ_STATE_IDLE;
-	spin_unlock_irqrestore(&pDevData->lock, flags);
+	raw_spin_unlock_irqrestore(&pDevData->lock, flags);
 
 	return 3*4;
 }
