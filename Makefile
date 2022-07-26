@@ -25,11 +25,12 @@ endif
 
 ccflags-y := $(DEBFLAGS) -Werror -Wall -Wno-unused-parameter -Wno-date-time 
 imago_fpga-objs := FileOps.o sun_irq.o ioctl.o module.o device.o DMARead.o
-ifeq ($(CONFIG_PCI),y)
+ifneq ($(CONFIG_PCI),)
 	imago_fpga-objs += PCI.o
 endif
 ifeq ($(ARCH),arm64)
-ifeq ($(CONFIG_SPI_MASTER),y)
+# SPI: Daytona, VS-PV3
+ifneq ($(CONFIG_SPI_MASTER),)
 	imago_fpga-objs += SPI.o
 endif
 endif

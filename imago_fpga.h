@@ -56,6 +56,10 @@
 #include <linux/delay.h>	// for usleep_range
 #include <linux/uaccess.h>	// for copy_to_user
 
+#ifndef IS_ENABLED
+#define IS_ENABLED(option) defined(option) || defined(option##_MODULE)
+#endif
+
 
 /*** defines ***/
 /******************************************************************************************/
