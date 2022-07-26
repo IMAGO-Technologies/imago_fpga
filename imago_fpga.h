@@ -257,7 +257,7 @@ extern struct spi_driver imago_spi_driver;
 /******************************************************************************************/
 DEVICE_DATA *imago_alloc_dev_data(struct device *dev, u8 dev_type);
 void imago_free_dev_data(DEVICE_DATA *pDevData);
-long imago_locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, const u32 BufferSizeBytes);
+long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem);
 void imago_create_device(PDEVICE_DATA pDevData);
 void imago_sun_interrupt(PDEVICE_DATA pDevData, u32 *sun_packet);
 

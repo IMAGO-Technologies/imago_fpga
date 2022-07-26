@@ -38,7 +38,7 @@ typedef u8 IOCTLBUFFER[128];
 #define IOC_DMAREAD_ADD_MAPPED_BUFFER	_IOW(IMAGO_IOC_MAGIC, 14, IOCTLBUFFER)
 
 
-long imago_locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUserMem, const u32 BufferSizeBytes)
+long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 {
 	struct SUN_DEVICE_DATA *pSunDevice;
 	unsigned long flags;
@@ -48,10 +48,6 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUse
 		/* Gibt die Version als String zurück */
 		/**********************************************************************/
 		case IOC_GET_VERSION:
-			if (BufferSizeBytes < sizeof(MODVERSION)) {
-				dev_warn(pDevData->dev, "Locked_ioctl> Buffer Length to short\n");
-				return -EFBIG;
-			}
 			if (copy_to_user(pToUserMem, MODVERSION, sizeof(MODVERSION)) != 0) {
 				dev_warn(pDevData->dev, "Locked_ioctl> copy_to_user faild\n");
 				return -EFAULT;
@@ -62,10 +58,6 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUse
 		/* Gibt das Build date/time als String zurück */
 		/**********************************************************************/
 		case IOC_GET_BUILD_DATE:
-			if (sizeof(MODDATECODE) > BufferSizeBytes ) {
-				dev_warn(pDevData->dev, "Locked_ioctl> Buffer Length to short\n");
-				return -EFBIG;
-			}
 			if (copy_to_user(pToUserMem, MODDATECODE, sizeof(MODDATECODE)) != 0) {
 				dev_warn(pDevData->dev, "Locked_ioctl> copy_to_user faild\n");
 				return -EFAULT;
@@ -76,15 +68,14 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUse
 		/* Gibt SubType zurück */
 		/**********************************************************************/
 		case IOC_GET_SUBTYPE:
-			if (sizeof(pDevData->device_type) > BufferSizeBytes ) {
-				dev_warn(pDevData->dev, "Locked_ioctl> Buffer Length to short\n");
-				return -EFBIG;
-			}
-			if (copy_to_user(pToUserMem, &pDevData->device_type, sizeof(pDevData->device_type)) != 0) {
-				dev_warn(pDevData->dev, "Locked_ioctl> copy_to_user faild\n");
+		{
+			u8 device_type = pDevData->device_type;
+			if (__put_user(device_type, pToUserMem) != 0) {
+				dev_err(pDevData->dev, "Locked_ioctl > put_user() failed\n");
 				return -EFAULT;
 			}
-			return sizeof(pDevData->device_type);
+			return sizeof(device_type);
+		}
 
 
 		/* Markiert die DeviceID als frei*/
@@ -94,19 +85,13 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUse
 		{
 			u8 deviceID;
 
-			if (BufferSizeBytes != 1) {
-				dev_warn(pDevData->dev, "Locked_ioctl> Buffer Length to short\n");
-				return -EFBIG;
-			}
-
-			if (get_user(deviceID, pToUserMem) != 0) {
-				dev_warn(pDevData->dev, "Locked_ioctl> get_user faild\n");
+			if (__get_user(deviceID, pToUserMem) != 0) {
+				dev_warn(pDevData->dev, "Locked_ioctl> get_user failed\n");
 				return -EFAULT;
 			}
 			
 			// strip serialID (bit 6)
 			deviceID &= (MAX_IRQDEVICECOUNT - 1);
-
 			pSunDevice = &pDevData->SunDeviceData[deviceID];
 
 			dev_dbg(pDevData->dev, "Locked_ioctl IOC_RELEASE_DEVICEID: %u\n", deviceID);
@@ -136,11 +121,6 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUse
 			unsigned int deviceId;
 			u8 deviceIdUser;
 			
-			if (BufferSizeBytes != 1) {
-				dev_warn(pDevData->dev, "Locked_ioctl> Buffer Length to short\n");
-				return -EFBIG;
-			}
-
 			// DeviceID 0 is reserved to avoid conflicts with register writes without
 			// a DeviceID in Header1
 			for (deviceId = 1; deviceId < MAX_IRQDEVICECOUNT; deviceId++)
@@ -156,14 +136,14 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUse
 #endif
 					// add serialID in case the user space uses the DeviceID directly
 					deviceIdUser = deviceId | (pSunDevice->serialID << 6);
-					if (put_user(deviceIdUser, pToUserMem) != 0) {
+					if (__put_user(deviceIdUser, pToUserMem) != 0) {
 						dev_err(pDevData->dev, "Locked_ioctl > put_user() failed\n");
 						return -EFAULT;
 					}
 
 					pSunDevice->requestState = SUN_REQ_STATE_IDLE;
 					dev_dbg(pDevData->dev, "Locked_ioctl > NewDeviceID = %d\n", deviceId);
-					return 1;
+					return sizeof(deviceIdUser);
 				}
 			}
 
@@ -177,14 +157,9 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUse
 		{
 			u8 deviceID;
 
-			if (BufferSizeBytes != 1) {
-				dev_warn(pDevData->dev, "Locked_ioctl> Buffer Length to short\n");
-				return -EFBIG;
-			}
-
 			//DevId lesen
-			if (get_user(deviceID, pToUserMem) != 0) {
-				dev_warn(pDevData->dev, "Locked_ioctl> get_user faild\n");
+			if (__get_user(deviceID, pToUserMem) != 0) {
+				dev_warn(pDevData->dev, "Locked_ioctl> get_user failed\n");
 				return -EFAULT;
 			}
 
@@ -224,24 +199,20 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUse
 			u16 tmpDMAs, tmpTCs, tmpSGs;
 			u8 iDMA, iTC;
 
-			if (BufferSizeBytes < (3*2)) {
-				dev_warn(pDevData->dev, "Locked_ioctl> Buffer Length to short\n");
-				return -EFBIG;
-			}
 			if (!IS_TYPEWITH_DMA2HOST(pDevData)) {				
 				dev_warn(pDevData->dev, "Locked_ioctl> No DMA support!\n");
 				return -EFAULT;
 			}
-			if (get_user(tmpDMAs, (u16*)(pToUserMem + 0)) != 0) {
-				dev_warn(pDevData->dev, "Locked_ioctl> get_user faild\n");
+			if (__get_user(tmpDMAs, (u16*)(pToUserMem + 0)) != 0) {
+				dev_warn(pDevData->dev, "Locked_ioctl> get_user failed\n");
 				return -EFAULT;
 			}
-			if (get_user(tmpTCs,(u16*)(pToUserMem + 2)) != 0) {
-				dev_warn(pDevData->dev, "Locked_ioctl> get_user faild\n");
+			if (__get_user(tmpTCs,(u16*)(pToUserMem + 2)) != 0) {
+				dev_warn(pDevData->dev, "Locked_ioctl> get_user failed\n");
 				return -EFAULT;
 			}
-			if (get_user(tmpSGs,(u16*)(pToUserMem + 4)) != 0) {
-				dev_warn(pDevData->dev, "Locked_ioctl> get_user faild\n");
+			if (__get_user(tmpSGs,(u16*)(pToUserMem + 4)) != 0) {
+				dev_warn(pDevData->dev, "Locked_ioctl> get_user failed\n");
 				return -EFAULT;
 			}
 
@@ -288,16 +259,12 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUse
 		{
 			u8 iDMAChannel;
 
-			if (BufferSizeBytes < 1) {
-				dev_warn(pDevData->dev, "Locked_ioctl> Buffer Length to short\n");
-				return -EFBIG;
-			}
 			if (!IS_TYPEWITH_DMA2HOST(pDevData)) {
 				dev_warn(pDevData->dev, "Locked_ioctl> No DMA support!\n");
 				return -EFAULT;
 			}
-			if (get_user(iDMAChannel, pToUserMem) != 0) {
-				dev_warn(pDevData->dev, "Locked_ioctl> get_user faild\n");
+			if (__get_user(iDMAChannel, pToUserMem) != 0) {
+				dev_warn(pDevData->dev, "Locked_ioctl> get_user failed\n");
 				return -EFAULT;
 			}
 			if (iDMAChannel >= pDevData->DMARead_channels) {
@@ -317,24 +284,20 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUse
 			DMA_READ_JOB *pJob = NULL;
 			int result;
 
-			if (BufferSizeBytes < (1 + 2 * sizeof(u64))) {
-				dev_warn(pDevData->dev, "Locked_ioctl> Buffer Length to short\n");
-				return -EFBIG;
-			}
 			if (!IS_TYPEWITH_DMA2HOST(pDevData)) {
 				dev_warn(pDevData->dev, "Locked_ioctl> No DMA support!\n");
 				return -EFAULT;
 			}
-			if (get_user(iDMAChannel, pToUserMem) != 0) {
-				dev_warn(pDevData->dev, "Locked_ioctl> get_user faild\n");
+			if (__get_user(iDMAChannel, pToUserMem) != 0) {
+				dev_warn(pDevData->dev, "Locked_ioctl> get_user failed\n");
 				return -EFAULT;
 			}
-			if (get_user(UserPTR, (u64*)(pToUserMem + 1)) != 0) {
-				dev_warn(pDevData->dev, "Locked_ioctl> get_user faild\n");
+			if (__get_user(UserPTR, (u64*)(pToUserMem + 1)) != 0) {
+				dev_warn(pDevData->dev, "Locked_ioctl> get_user failed\n");
 				return -EFAULT;
 			}
-			if (get_user(bufferSize, (u64*)(pToUserMem + sizeof(u64) + 1)) != 0) {
-				dev_warn(pDevData->dev, "Locked_ioctl> get_user faild\n");
+			if (__get_user(bufferSize, (u64*)(pToUserMem + sizeof(u64) + 1)) != 0) {
+				dev_warn(pDevData->dev, "Locked_ioctl> get_user failed\n");
 				return -EFAULT;
 			}
 		
@@ -359,8 +322,8 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUse
 			}
 
 			// return index of pJob in jobBuffers[] to user space
-			if (put_user((u64)(pJob - pDMAChannel->jobBuffers), (u64 *)pToUserMem) != 0) {
-				dev_warn(pDevData->dev, "Locked_ioctl> get_user faild\n");
+			if (__put_user((u64)(pJob - pDMAChannel->jobBuffers), (u64 *)pToUserMem) != 0) {
+				dev_warn(pDevData->dev, "Locked_ioctl> put_user failed\n");
 				return -EFAULT;
 			}
 
@@ -375,22 +338,18 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUse
 			PDMA_READ_CHANNEL pDMAChannel;
 			DMA_READ_JOB *pJob;
 
-			if (BufferSizeBytes < (1 + sizeof(u16))) {
-				dev_warn(pDevData->dev, "Locked_ioctl> Buffer Length to short\n");
-				return -EFBIG;
-			}
 			if (!IS_TYPEWITH_DMA2HOST(pDevData)) {
 				dev_warn(pDevData->dev, "Locked_ioctl> No DMA support!\n");
 				return -EFAULT;
 			}
 
 			//> Args vom User lesen und testen
-			if (get_user(iDMAChannel, pToUserMem) != 0) {
-				dev_warn(pDevData->dev, "Locked_ioctl> get_user faild\n");
+			if (__get_user(iDMAChannel, pToUserMem) != 0) {
+				dev_warn(pDevData->dev, "Locked_ioctl> get_user failed\n");
 				return -EFAULT;
 			}
-			if (get_user(jobIndex, (u64*)(pToUserMem + 1)) != 0) {
-				dev_warn(pDevData->dev, "Locked_ioctl> get_user faild\n");
+			if (__get_user(jobIndex, (u64*)(pToUserMem + 1)) != 0) {
+				dev_warn(pDevData->dev, "Locked_ioctl> get_user failed\n");
 				return -EFAULT;
 			}
 			if (iDMAChannel >= pDevData->DMARead_channels) {
@@ -419,26 +378,22 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUse
 			DMA_READ_JOB *pJob = NULL;
 			int result;
 
-			if (BufferSizeBytes < (1 + 2 * sizeof(u64))) {
-				dev_warn(pDevData->dev, "Locked_ioctl> Buffer Length to short\n");
-				return -EFBIG;
-			}
 			if (!IS_TYPEWITH_DMA2HOST(pDevData)) {
 				dev_warn(pDevData->dev, "Locked_ioctl> No DMA support!\n");
 				return -EFAULT;
 			}
 
 			//> Args vom User lesen und testen
-			if (get_user(iDMAChannel, pToUserMem) != 0) {
-				dev_warn(pDevData->dev, "Locked_ioctl> get_user faild\n");
+			if (__get_user(iDMAChannel, pToUserMem) != 0) {
+				dev_warn(pDevData->dev, "Locked_ioctl> get_user failed\n");
 				return -EFAULT;
 			}
-			if (get_user(UserPTR, (u64*)(pToUserMem + 1)) != 0) {
-				dev_warn(pDevData->dev, "Locked_ioctl> get_user faild\n");
+			if (__get_user(UserPTR, (u64*)(pToUserMem + 1)) != 0) {
+				dev_warn(pDevData->dev, "Locked_ioctl> get_user failed\n");
 				return -EFAULT;
 			}
-			if (get_user(bufferSize, (u64*)(pToUserMem + sizeof(u64) + 1)) != 0) {
-				dev_warn(pDevData->dev, "Locked_ioctl> get_user faild\n");
+			if (__get_user(bufferSize, (u64*)(pToUserMem + sizeof(u64) + 1)) != 0) {
+				dev_warn(pDevData->dev, "Locked_ioctl> get_user failed\n");
 				return -EFAULT;
 			}
 			if (iDMAChannel >= pDevData->DMARead_channels) {
@@ -479,22 +434,18 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUse
 			DMA_READ_JOB *pJob;
 			int result;
 
-			if (BufferSizeBytes < (1 + sizeof(u64))) {
-				dev_warn(pDevData->dev, "Locked_ioctl> Buffer Length to short\n");
-				return -EFBIG;
-			}
 			if (!IS_TYPEWITH_DMA2HOST(pDevData)) {
 				dev_warn(pDevData->dev, "Locked_ioctl> No DMA support!\n");
 				return -EFAULT;
 			}
 
 			//> Args vom User lesen und testen
-			if (get_user(iDMAChannel, pToUserMem) != 0) {
-				dev_warn(pDevData->dev, "Locked_ioctl> get_user faild\n");
+			if (__get_user(iDMAChannel, pToUserMem) != 0) {
+				dev_warn(pDevData->dev, "Locked_ioctl> get_user failed\n");
 				return -EFAULT;
 			}
-			if (get_user(jobIndex, (u64*)(pToUserMem + 1)) != 0) {
-				dev_warn(pDevData->dev, "Locked_ioctl> get_user faild\n");
+			if (__get_user(jobIndex, (u64*)(pToUserMem + 1)) != 0) {
+				dev_warn(pDevData->dev, "Locked_ioctl> get_user failed\n");
 				return -EFAULT;
 			}
 			if (iDMAChannel >= pDevData->DMARead_channels) {
@@ -528,21 +479,17 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUse
 			DMA_READ_JOB *pJob = NULL;
 			int result = 0;
 
-			if (BufferSizeBytes < (1 + sizeof(u16) + sizeof(u64))) {
-				dev_warn(pDevData->dev, "Locked_ioctl IOC_DMAREAD_WAIT_FOR_BUFFER: Buffer Length to short\n");
-				return -EFBIG;
-			}
 			if (!IS_TYPEWITH_DMA2HOST(pDevData)) {
 				dev_warn(pDevData->dev, "Locked_ioctl IOC_DMAREAD_WAIT_FOR_BUFFER: No DMA support!\n");
 				return -EFAULT;
 			}
 
 			//args vom USER
-			if (get_user(iDMAChannel, pToUserMem + 0) != 0) {
+			if (__get_user(iDMAChannel, pToUserMem + 0) != 0) {
 				dev_warn(pDevData->dev, "Locked_ioctl IOC_DMAREAD_WAIT_FOR_BUFFER: get_user faild\n");
 				return -EFAULT;
 			}
-			if (get_user(TimeOut_ms, (u32*)(pToUserMem + 1)) != 0) {
+			if (__get_user(TimeOut_ms, (u32*)(pToUserMem + 1)) != 0) {
 				dev_warn(pDevData->dev, "Locked_ioctl IOC_DMAREAD_WAIT_FOR_BUFFER: get_user faild\n");
 				return -EFAULT;
 			}
@@ -559,9 +506,9 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUse
 			if (pDMAChannel->abortWait) {
 				// check if abort operation is in progress => no additional waiting threads are allowed
 				// (should already be avoided by the library, but is a race condition)
-				if (put_user(0, pToUserMem) ||
-					put_user(0, (u16*)(pToUserMem + 1)) ||
-					put_user(0, (u64*)(pToUserMem + 1 + sizeof(u16)))) {
+				if (__put_user(0, pToUserMem) ||
+					__put_user(0, (u16*)(pToUserMem + 1)) ||
+					__put_user(0, (u64*)(pToUserMem + 1 + sizeof(u16)))) {
 					dev_err(pDevData->dev, "Locked_ioctl IOC_DMAREAD_WAIT_FOR_BUFFER: put_user() failed\n");
 					return -EFAULT;
 				}
@@ -602,9 +549,9 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUse
 					wait_for_completion(&pDMAChannel->job_complete);
 					dev_dbg(pDevData->dev, "Locked_ioctl IOC_DMAREAD_WAIT_FOR_BUFFER: abortWait with completion error %d\n", result);
 				}
-				if (put_user(0, pToUserMem) ||
-					put_user(0, (u16*)(pToUserMem + 1)) ||
-					put_user(0, (u64*)(pToUserMem + 1 + sizeof(u16)))) {
+				if (__put_user(0, pToUserMem) ||
+					__put_user(0, (u16*)(pToUserMem + 1)) ||
+					__put_user(0, (u64*)(pToUserMem + 1 + sizeof(u16)))) {
 					dev_err(pDevData->dev, "Locked_ioctl: put_user() failed\n");
 					return -EFAULT;
 				}
@@ -623,9 +570,9 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUse
 			imago_DMARead_Unlock(pDevData, flags);
 
 			// send buffer to user (can also be dummy-Buffer)
-			if (put_user((u8)pJob->boIsOk, pToUserMem) ||
-				put_user(pJob->BufferCounter, (u16*)(pToUserMem + 1)) ||
-				put_user(pJob->pVMUser, (u64*)(pToUserMem + 1 + sizeof(u16)))) {
+			if (__put_user((u8)pJob->boIsOk, pToUserMem) ||
+				__put_user(pJob->BufferCounter, (u16*)(pToUserMem + 1)) ||
+				__put_user(pJob->pVMUser, (u64*)(pToUserMem + 1 + sizeof(u16)))) {
 				dev_err(pDevData->dev, "Locked_ioctl IOC_DMAREAD_WAIT_FOR_BUFFER: put_user() failed\n");
 				return -EFAULT;
 			}
@@ -649,16 +596,12 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, const u32 cmd, u8 __user * pToUse
 		{
 			//> Args vom User lesen und testen
 			u8 	iDMAChannel;
-			if (BufferSizeBytes < 1) {
-				dev_warn(pDevData->dev, "Locked_ioctl> Buffer Length to short\n");
-				return -EFBIG;
-			}
 			if (!IS_TYPEWITH_DMA2HOST(pDevData)) {
 				dev_warn(pDevData->dev, "Locked_ioctl> No DMA support!\n");
 				return -EFAULT;
 			}
-			if (get_user(iDMAChannel, pToUserMem) != 0) {
-				dev_warn(pDevData->dev, "Locked_ioctl> get_user faild\n");
+			if (__get_user(iDMAChannel, pToUserMem) != 0) {
+				dev_warn(pDevData->dev, "Locked_ioctl> get_user failed\n");
 				return -EFAULT;
 			}
 			if (iDMAChannel >= pDevData->DMARead_channels) {

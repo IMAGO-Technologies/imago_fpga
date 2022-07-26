@@ -22,9 +22,9 @@
 
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5,0,0)
-#define __access_ok(type, addr, size) access_ok(type, addr, size)
+#define __access_ok__(type, addr, size) access_ok(type, addr, size)
 #else
-#define __access_ok(type, addr, size) access_ok(addr, size)
+#define __access_ok__(type, addr, size) access_ok(addr, size)
 #endif
 
 
@@ -49,13 +49,12 @@ static int imago_open(struct inode *node, struct file *filp)
 //http://lwn.net/Articles/119652/
 static long imago_unlocked_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
-	int err = 0;
 	long ret = 0;
 	PDEVICE_DATA pDevData = NULL;
+	void __user *pUser = (void __user *)arg;
 
 	//Note: beim 1. write bekommen wir ein CMD:1, Type 'T', Size: 0 <-> FIONBIO (linux/include/asm-i386/ioctls.h, line 41)
 	pr_devel(MODMODULENAME": ioctl (CMD %d, MAGIC %c, size %d)\n", _IOC_NR(cmd), _IOC_TYPE(cmd), _IOC_SIZE(cmd));
-
 	/* Alles gut */
 	if (filp == NULL || filp->private_data == NULL)
 		return -EINVAL;
@@ -64,25 +63,21 @@ static long imago_unlocked_ioctl(struct file *filp, unsigned int cmd, unsigned l
 	if (_IOC_TYPE(cmd) != IMAGO_IOC_MAGIC)
 		return -ENOTTY;
 
-	//bei uns ist arg ein Pointer, und testen ob wir ihn nutzen dÃ¼rfen (richtung aus UserSicht)
-	if (_IOC_DIR(cmd) & _IOC_READ)
-		err = !__access_ok(VERIFY_WRITE, (void __user *)arg, _IOC_SIZE(cmd));
-	else if (_IOC_DIR(cmd) & _IOC_WRITE)
-		err =  !__access_ok(VERIFY_READ, (void __user *)arg, _IOC_SIZE(cmd));
-	if (err)
+	if ((_IOC_DIR(cmd) & _IOC_READ) && !__access_ok__(VERIFY_WRITE, pUser, _IOC_SIZE(cmd)))
 		return -EFAULT;
-
+	if ((_IOC_DIR(cmd) & _IOC_WRITE) && !__access_ok__(VERIFY_READ, pUser, _IOC_SIZE(cmd)))
+		return -EFAULT;
 
 	/* jetzt die CMDs auswerten */
 	//Note: unterbrechbar(durch gdb), abbrechbar durch kill -9 & kill -15(term) 
 	//  noch ist nix passiert, Kernel darf den Aufruf wiederhohlen ohne den User zu benachrichtigen
 	if (down_interruptible(&pDevData->DeviceSem) != 0) {
-		dev_dbg(pDevData->dev, "imago_unlocked_ioctl(): down_interruptible() failed!\n");
+		dev_dbg(pDevData->dev, "imago_unlocked_ioctl(): down_interruptible() failed\n");
 		return -ERESTARTSYS;
 	}
 //----------------------------->
 	//hier wird das CMD ausgeführt
-	ret = imago_locked_ioctl(pDevData, cmd, (u8 __user *) arg, _IOC_SIZE(cmd) );
+	ret = imago_locked_ioctl(pDevData, cmd, pUser);
 //<-----------------------------
 	up(&pDevData->DeviceSem);
 
@@ -113,7 +108,7 @@ static ssize_t imago_read(struct file *filp, char __user *buf, size_t count, lof
 		return -EFAULT;
 
 	//duerfen wir den mem nutzen?
-	if (!__access_ok(VERIFY_WRITE, buf, count))
+	if (!__access_ok__(VERIFY_WRITE, buf, count))
 		return -EFAULT;
 
 
@@ -238,7 +233,7 @@ static ssize_t imago_write(struct file *filp, const char __user *buf, size_t cou
 	dev_dbg(pDevData->dev, "imago_write() > %d bytes\n", (int)count);
 
 	// is mem access OK?
-	if (!__access_ok(VERIFY_READ, buf, count))
+	if (!__access_ok__(VERIFY_READ, buf, count))
 		return -EFAULT;
 
 	// write data
