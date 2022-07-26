@@ -42,6 +42,22 @@ static int imago_open(struct inode *node, struct file *filp)
 		return -EINVAL;
 	filp->private_data = _ModuleData.dev_data[iMinor];
 
+	get_device(_ModuleData.dev_data[iMinor]->sub_dev);
+
+	return 0;
+}
+
+static int imago_release(struct inode *inode, struct file *filp)
+{
+	PDEVICE_DATA pDevData = NULL;
+	if (filp == NULL || filp->private_data == NULL)
+		return -EINVAL;
+
+	pDevData = (PDEVICE_DATA) filp->private_data;
+
+	// dev_info(pDevData->dev, "imago_release()\n");
+	put_device(pDevData->sub_dev);
+
 	return 0;
 }
 
@@ -53,13 +69,15 @@ static long imago_unlocked_ioctl(struct file *filp, unsigned int cmd, unsigned l
 	PDEVICE_DATA pDevData = NULL;
 	void __user *pUser = (void __user *)arg;
 
-	//Note: beim 1. write bekommen wir ein CMD:1, Type 'T', Size: 0 <-> FIONBIO (linux/include/asm-i386/ioctls.h, line 41)
-	pr_devel(MODMODULENAME": ioctl (CMD %d, MAGIC %c, size %d)\n", _IOC_NR(cmd), _IOC_TYPE(cmd), _IOC_SIZE(cmd));
-	/* Alles gut */
 	if (filp == NULL || filp->private_data == NULL)
 		return -EINVAL;
 	pDevData = (PDEVICE_DATA) filp->private_data;
-	//ist ist das CMD eins für uns?
+
+	if (!pDevData->boIsDeviceOpen) {
+		dev_warn(pDevData->dev, "imago_unlocked_ioctl(): device is not ready\n");
+		return -ENODEV;
+	}
+
 	if (_IOC_TYPE(cmd) != IMAGO_IOC_MAGIC)
 		return -ENOTTY;
 
@@ -68,17 +86,14 @@ static long imago_unlocked_ioctl(struct file *filp, unsigned int cmd, unsigned l
 	if ((_IOC_DIR(cmd) & _IOC_WRITE) && !__access_ok__(VERIFY_READ, pUser, _IOC_SIZE(cmd)))
 		return -EFAULT;
 
-	/* jetzt die CMDs auswerten */
-	//Note: unterbrechbar(durch gdb), abbrechbar durch kill -9 & kill -15(term) 
-	//  noch ist nix passiert, Kernel darf den Aufruf wiederhohlen ohne den User zu benachrichtigen
 	if (down_interruptible(&pDevData->DeviceSem) != 0) {
 		dev_dbg(pDevData->dev, "imago_unlocked_ioctl(): down_interruptible() failed\n");
+		// the operation can be restarted by the kernel
 		return -ERESTARTSYS;
 	}
-//----------------------------->
-	//hier wird das CMD ausgeführt
+
 	ret = imago_locked_ioctl(pDevData, cmd, pUser);
-//<-----------------------------
+
 	up(&pDevData->DeviceSem);
 
 
@@ -101,11 +116,13 @@ static ssize_t imago_read(struct file *filp, char __user *buf, size_t count, lof
 		return -EINVAL;
 	pDevData = (PDEVICE_DATA) filp->private_data;
 
-	dev_dbg(pDevData->dev, "imago_read() > %d Bytes\n", (int)count);
+	if (!pDevData->boIsDeviceOpen) {
+		dev_warn(pDevData->dev, "imago_read(): device is not ready\n");
+		return -ENODEV;
+	}
 
-	//mem ok?
-	if (!pDevData->boIsIRQOpen)
-		return -EFAULT;
+	// dev_dbg(pDevData->dev, "imago_read(): %d bytes\n", (int)count);
+
 	if (count < (3 * 4))
 		return -EFAULT;
 
@@ -247,12 +264,16 @@ static ssize_t imago_write(struct file *filp, const char __user *buf, size_t cou
 	long res;
 	PDEVICE_DATA pDevData = NULL;
 
-	/* Alles gut? */
 	if (filp == NULL || filp->private_data == NULL)
 		return -EINVAL;
 	pDevData = (PDEVICE_DATA) filp->private_data;
 
-	dev_dbg(pDevData->dev, "imago_write() > %d bytes\n", (int)count);
+	if (!pDevData->boIsDeviceOpen) {
+		dev_warn(pDevData->dev, "imago_write(): device is not ready\n");
+		return -ENODEV;
+	}
+
+	dev_dbg(pDevData->dev, "imago_write(): %d bytes\n", (int)count);
 
 	// is mem access OK?
 	if (!__access_ok__(VERIFY_READ, buf, count))
@@ -273,52 +294,13 @@ static ssize_t imago_write(struct file *filp, const char __user *buf, size_t cou
 	return res;
 }
 
-
-static struct file_operations fpga_ops = {
+struct file_operations fpga_ops = {
 	.owner = THIS_MODULE,
 	.open = imago_open,
+	.release = imago_release,
 	.read = imago_read,
 	.write = imago_write,
 	.unlocked_ioctl = imago_unlocked_ioctl,
 	.llseek = no_llseek,
 };
-
-
-// Helper function for creating a char device
-void imago_create_device(PDEVICE_DATA pDevData)
-{
-	int res;
-
-	cdev_init(&pDevData->DeviceCDev, &fpga_ops);
-	pDevData->DeviceCDev.owner = THIS_MODULE;
-	pDevData->DeviceCDev.ops 	= &fpga_ops;	//notwendig in den quellen wird fops gesetzt?
-
-	//fügt ein device hinzu, nach der fn können FileFns genutzt werden
-	res = cdev_add(&pDevData->DeviceCDev, pDevData->DeviceNumber, 1/*wie viele ab startNum*/);
-	if (res < 0)
-		dev_warn(pDevData->dev, "cdev_add() failed\n");
-	else
-		pDevData->boIsDeviceOpen = true;
-
-
-	//> in Sysfs class eintragen
-	/**********************************************************************/			
-	//war mal class_device_create
-	if (!IS_ERR(_ModuleData.pModuleClass)) {		
-		// char devName[128];
-		struct device *dev;
-
-		// sprintf(devName, "%s%d", MODMODULENAME, MINOR(pDevData->DeviceNumber));
-		dev = device_create(
-				_ModuleData.pModuleClass, 	/* die Type classe */
-				NULL, 			/* pointer zum Eltern, dann wird das dev ein Kind vom parten*/
-				pDevData->DeviceNumber, /* die nummer zum device */
-				NULL,
-				MODMODULENAME"%d", MINOR(pDevData->DeviceNumber)
-				);
-
-		if (IS_ERR(dev))
-			dev_warn(pDevData->dev, "error creating sysfs device (%ld)\n", PTR_ERR(dev));
-	}
-}
 

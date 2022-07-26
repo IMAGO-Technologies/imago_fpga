@@ -122,22 +122,26 @@ static int __init imago_module_init(void)
 	/* erzeugt eine Sysfs class */
 	/**********************************************************************/
 	_ModuleData.pModuleClass = class_create(THIS_MODULE, "agexdrv");
-	if (IS_ERR(_ModuleData.pModuleClass))
-		pr_warning(MODMODULENAME": error creating sysfs class\n");
-	
-	//add the uevend handler
-	if (!IS_ERR(_ModuleData.pModuleClass))
-		_ModuleData.pModuleClass->dev_uevent = dev_uevent;	//send uevents to udev, so it'll create the /dev/node
+	if (IS_ERR(_ModuleData.pModuleClass)) {
+		pr_err(MODMODULENAME": error creating sysfs class\n");
+		return PTR_ERR(_ModuleData.pModuleClass);
+	}
+
+	// add the uevent handler
+	_ModuleData.pModuleClass->dev_uevent = dev_uevent;	//send uevents to udev, so it'll create the /dev/node
 
 
-	/* macht dem Kernel den treiber für PCIdevs bekannt */
-	/**********************************************************************/
+	// register drivers
+#if IS_ENABLED(CONFIG_PCI)
 	if (pci_register_driver(&imago_pci_driver) != 0)
-		pr_warning(MODMODULENAME": pci_register_driver failed!\n");
+		pr_warn(MODMODULENAME": pci_register_driver failed!\n");
+#endif
 
-#if defined(__aarch64__) && defined(CONFIG_SPI_MASTER)
+#ifdef __aarch64__
+#if IS_ENABLED(CONFIG_SPI_MASTER)
 	if (spi_register_driver(&imago_spi_driver) != 0)
-		pr_warning(MODMODULENAME": spi_register_driver failed!\n");
+		pr_warn(MODMODULENAME": spi_register_driver failed!\n");
+#endif
 #endif
 
 	pr_info(MODMODULENAME": init done (%s [%s])\n", MODDATECODE, MODVERSION);
@@ -151,19 +155,18 @@ static void __exit imago_module_exit(void)
 {
 	pr_devel(MODMODULENAME": imago_module_exit()\n");
 
-#if defined(__aarch64__) && defined(CONFIG_SPI_MASTER)
+#ifdef __aarch64__
+#if IS_ENABLED(CONFIG_SPI_MASTER)
 	spi_unregister_driver(&imago_spi_driver);
 #endif
+#endif
 
-	//wir können uns nicht mehr um PCIdevs kümmern:-)
+#if IS_ENABLED(CONFIG_PCI)
 	pci_unregister_driver(&imago_pci_driver);
+#endif
 
-	//gibt Sysfs class frei
-	if(!IS_ERR(_ModuleData.pModuleClass))
-		class_destroy(_ModuleData.pModuleClass);
+	class_destroy(_ModuleData.pModuleClass);
 
-	//gibt die dev Nnummern frei
-	//Note: "cleanup_module is never called if registering failed"
 	unregister_chrdev_region(_ModuleData.FirstDeviceNumber, MAX_DEVICE_COUNT);
 }
 

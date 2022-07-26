@@ -470,14 +470,17 @@ static int imago_pci_probe(struct pci_dev *pcidev, const struct pci_device_id *i
 #endif		
 	}
 	
-	// enable PCI interrupts
-	pci_enable_interrupt(pDevData, true);
-
-	dev_dbg(&pcidev->dev, "IRQ %d\n", pcidev->irq);
-	pDevData->boIsIRQOpen = true;
+	dev_dbg(&pcidev->dev, "using IRQ %d\n", pcidev->irq);
 
 	// create char device
-	imago_create_device(pDevData);
+	res = imago_create_device(pDevData);
+	if (res < 0) {
+		imago_free_dev_data(pDevData);
+		return res;
+	}
+
+	// enable PCI interrupts
+	pci_enable_interrupt(pDevData, true);
 
 	dev_info(pDevData->dev, "probe done (0x%04x:0x%04x <> %d:%d)\n",
 		id->vendor, id->device, MAJOR(pDevData->DeviceNumber), MINOR(pDevData->DeviceNumber));
@@ -511,13 +514,10 @@ static void imago_pci_remove(struct pci_dev *pcidev)
 		}
 	}
 
-	//IRQ zuückgeben
-	if(pDevData->boIsIRQOpen) {
-		pci_enable_interrupt(pDevData, false);
-		free_irq(pcidev->irq, pDevData);
-		if (IS_TYPEWITH_COMMONBUFFER(pDevData))
-			pci_disable_msi(pcidev);
-	}
+	pci_enable_interrupt(pDevData, false);
+	free_irq(pcidev->irq, pDevData);
+	if (IS_TYPEWITH_COMMONBUFFER(pDevData))
+		pci_disable_msi(pcidev);
 
 	//unmappen
 	if(pDevData->pVABAR0 != NULL)
@@ -536,7 +536,7 @@ static void imago_pci_remove(struct pci_dev *pcidev)
 	//das pci_dev nicht mehr für PCI nutzen (bzw. setzt Bits im PCIConfigMem)??
 	pci_disable_device(pcidev);
 
-	imago_free_dev_data(pDevData);
+	imago_dev_close(pDevData);
 }
 
 struct pci_driver imago_pci_driver = {

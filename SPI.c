@@ -133,6 +133,7 @@ static int imago_spi_probe(struct spi_device *spi)
 	PDEVICE_DATA pDevData = NULL;
 	u8 dev_type;
 	const struct of_device_id *of_id;
+	int res;
 
 	dev_dbg(&spi->dev, "probe device\n");
 
@@ -170,11 +171,12 @@ static int imago_spi_probe(struct spi_device *spi)
 		return -EIO;
 	}
 
-	dev_dbg(&spi->dev, "IRQ: %d \n", spi->irq);
-	pDevData->boIsIRQOpen = true;
+	dev_dbg(&spi->dev, "using IRQ: %d \n", spi->irq);
 
 	// create char device
-	imago_create_device(pDevData);
+	res = imago_create_device(pDevData);
+	if (res < 0)
+		return res;
 
 	dev_info(&spi->dev, "probe done\n");
 
@@ -194,10 +196,9 @@ static int imago_spi_remove(struct spi_device *spi)
 	}
 
 	//IRQ zuückgeben
-	if (pDevData->boIsIRQOpen)
-		free_irq(spi->irq, pDevData);
+	free_irq(spi->irq, pDevData);
 	
-	imago_free_dev_data(pDevData);
+	imago_dev_close(pDevData);
 
 	return 0;
 }

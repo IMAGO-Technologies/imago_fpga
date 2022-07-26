@@ -117,7 +117,6 @@ DEVICE_DATA *imago_alloc_dev_data(struct device *dev, u8 dev_type)
 	pDevData->pVABAR0			= NULL;
 	pDevData->pVACommonBuffer 	= NULL;
 	pDevData->pBACommonBuffer	= 0;
-	pDevData->boIsIRQOpen		= false;
 #if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
 	// VC-XM / DRA7x PCIe workaround for IRQ race in old kernels:
 	// "dra7xx: PCIe IRQ handling rework" https://lkml.org/lkml/2018/2/9/208
@@ -157,25 +156,108 @@ DEVICE_DATA *imago_alloc_dev_data(struct device *dev, u8 dev_type)
 	return pDevData;
 }
 
+static void imago_dev_release(struct device *dev)
+{
+	PDEVICE_DATA pDevData = dev_get_drvdata(dev);
+	dev_dbg(dev, "imago_dev_release, dev: %p, pDevData: %p\n", dev, pDevData);
+	
+	if (pDevData != NULL)
+		imago_free_dev_data(pDevData);
+}
+
+extern struct file_operations fpga_ops;
+
+// Helper function for creating a char device
+int imago_create_device(PDEVICE_DATA pDevData)
+{
+	int res;
+
+	cdev_init(&pDevData->DeviceCDev, &fpga_ops);
+	pDevData->DeviceCDev.owner = THIS_MODULE;
+	pDevData->DeviceCDev.ops 	= &fpga_ops;	//notwendig in den quellen wird fops gesetzt?
+
+	//fügt ein device hinzu, nach der fn können FileFns genutzt werden
+	res = cdev_add(&pDevData->DeviceCDev, pDevData->DeviceNumber, 1/*wie viele ab startNum*/);
+	if (res < 0) {
+		dev_err(pDevData->dev, "cdev_add() failed\n");
+		return res;
+	}
+
+	// create a device and registers it with sysfs
+	// struct device *dev = device_create(
+	pDevData->sub_dev = device_create(
+			_ModuleData.pModuleClass,
+			NULL, 						// parent
+			pDevData->DeviceNumber,
+			NULL,						// drvdata
+			MODMODULENAME"%d", MINOR(pDevData->DeviceNumber)
+			);
+	if (IS_ERR(pDevData->sub_dev)) {
+		dev_err(pDevData->sub_dev, "error creating sysfs device (%ld)\n", PTR_ERR(pDevData->sub_dev));
+		cdev_del(&pDevData->DeviceCDev);
+		return PTR_ERR(pDevData->sub_dev);
+	}
+
+	dev_set_drvdata(pDevData->sub_dev, pDevData);
+	pDevData->sub_dev->release = imago_dev_release;
+	pDevData->boIsDeviceOpen = true;
+
+	dev_dbg(pDevData->sub_dev, "device created\n");
+
+	return 0;
+}
+
+void imago_dev_close(DEVICE_DATA *pDevData)
+{
+	int minor;
+
+	dev_dbg(pDevData->dev, "imago_dev_close()\n");
+
+	for (minor = 0; minor < MAX_DEVICE_COUNT; minor++) {
+		if (_ModuleData.dev_data[minor] == pDevData && pDevData->boIsDeviceOpen) {
+			u8 device_id;
+			unsigned long flags;
+
+			raw_spin_lock_irqsave(&pDevData->lock, flags);
+			pDevData->boIsDeviceOpen = false;
+			// wakeup threads waiting in read():
+			for (device_id = 0; device_id < MAX_IRQDEVICECOUNT; device_id++)
+			{
+				struct SUN_DEVICE_DATA *pSunDevice = &pDevData->SunDeviceData[device_id];
+				
+				if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA) {
+					pSunDevice->requestState = SUN_REQ_STATE_ABORT;
+					complete(&pSunDevice->result_complete);
+				}
+			}
+			raw_spin_unlock_irqrestore(&pDevData->lock, flags);
+
+			// remove device from sysfs
+			device_destroy(_ModuleData.pModuleClass, pDevData->DeviceNumber);
+
+			// delete the device
+			cdev_del(&pDevData->DeviceCDev);
+
+			return;
+		}
+	}
+	
+	dev_warn(pDevData->dev, "imago_dev_close(): invalid device data\n");
+}
+
 void imago_free_dev_data(DEVICE_DATA *pDevData)
 {
 	int minor;
 
+	pr_devel(MODMODULENAME": imago_dev_free()\n");
+
 	for (minor = 0; minor < MAX_DEVICE_COUNT; minor++) {
 		if (_ModuleData.dev_data[minor] == pDevData) {
-			//device in der sysfs class löschen
-			if (!IS_ERR(_ModuleData.pModuleClass))	
-				device_destroy(_ModuleData.pModuleClass, pDevData->DeviceNumber);
-
-			//device löschen
-			if (pDevData->boIsDeviceOpen)
-				cdev_del(&pDevData->DeviceCDev);
-
 			kfree(pDevData);
 			_ModuleData.dev_data[minor] = NULL;
 			return;
 		}
 	}
 	
-	pr_warning(MODMODULENAME": imago_free_dev_data: invalid device data\n");
+	pr_warn(MODMODULENAME": imago_dev_free: invalid device data\n");
 }

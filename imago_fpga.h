@@ -202,6 +202,7 @@ typedef struct _DEVICE_DATA
 	bool					boIsDeviceOpen;	//true <> Device ist valid
 	struct cdev				DeviceCDev;		//das KernelObj vom Module	
 	struct device*			dev;
+	struct device*			sub_dev;
 	u8 						device_type;	//was sind wir AGEX, AGEX2... <> IMAGO_DEVICE_TYPE	
 	struct semaphore		DeviceSem;		//lock für ein Device (diese struct & common buffer)
 	dev_t					DeviceNumber;	//Nummer von CHAR device
@@ -218,10 +219,6 @@ typedef struct _DEVICE_DATA
 	bool					boIsBAR0Requested;	//ist die Bar0 gültig
 	void*					pVABAR0;			//zeigt auf den Anfang des gemapped mem vom PCIDev (eg 0xffffc90017480000)
 
-	//> ~IRQ
-	//***************************************************************/
-	bool					boIsIRQOpen;
-	
 	//> CommonBuffer (AGEX2/4...)
 	//***************************************************************/
 	void* 					pVACommonBuffer;	//Virtuelleradresse	(eg: 0xffff8800d43dc000)
@@ -258,8 +255,9 @@ extern struct spi_driver imago_spi_driver;
 /******************************************************************************************/
 DEVICE_DATA *imago_alloc_dev_data(struct device *dev, u8 dev_type);
 void imago_free_dev_data(DEVICE_DATA *pDevData);
+void imago_dev_close(DEVICE_DATA *pDevData);
 long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem);
-void imago_create_device(PDEVICE_DATA pDevData);
+int imago_create_device(PDEVICE_DATA pDevData);
 void imago_sun_interrupt(PDEVICE_DATA pDevData, u32 *sun_packet);
 
 /* DMA functions */
