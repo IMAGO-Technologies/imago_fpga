@@ -63,6 +63,7 @@ static int dev_uevent(struct device *dev, struct kobj_uevent_env *env)
 //wird aufgerufen wenn das Modul geladen wird
 static int __init imago_module_init(void)
 {
+	struct module *old_mod;
 	int res;
 
 	pr_devel(MODMODULENAME": imago_module_init()\n");
@@ -92,11 +93,13 @@ static int __init imago_module_init(void)
 	_ModuleData.max_dma_buffers = max_dma_buffers;
 	_ModuleData.dma_update_in_hwi = dma_update_in_hwi;
 
-	// for (i=0; i<MAX_DEVICE_COUNT; i++) {
-		// imago_init_dev_data(&_ModuleData.Devs[i], NULL, DeviceType_Invalid);
-		// _ModuleData.boIsMinorUsed[i] = false;
-	// }
-		
+	mutex_lock(&module_mutex);
+	old_mod = find_module("agexpcidrv");
+	mutex_unlock(&module_mutex);
+	if (old_mod) {
+		pr_err(MODMODULENAME": Error: the old driver 'agexpcidrv' is already loaded, aborting...");
+		return -EBUSY;
+	}
 
 	/* sich n device nummer holen */
 	/**********************************************************************/
