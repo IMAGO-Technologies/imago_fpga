@@ -23,6 +23,7 @@
 #include "imago_fpga.h"
 #include <linux/pci.h>
 #include <linux/spi/spi.h>
+#include <linux/hid.h>
 
 //module defines "sudo modinfo agexpcidrv.ko"
 MODULE_VERSION(MODVERSION);
@@ -147,6 +148,11 @@ static int __init imago_module_init(void)
 #endif
 #endif
 
+#if IS_ENABLED(CONFIG_USB_HID)
+	if (hid_register_driver(&imago_hid_driver) != 0)
+		pr_warn(MODMODULENAME": usb_register_driver failed!\n");
+#endif
+	
 	pr_info(MODMODULENAME": init done (%s [%s])\n", MODDATECODE, MODVERSION);
 
 	return 0;
@@ -157,6 +163,10 @@ static int __init imago_module_init(void)
 static void __exit imago_module_exit(void)
 {
 	pr_devel(MODMODULENAME": imago_module_exit()\n");
+
+#if IS_ENABLED(CONFIG_USB_HID)
+	hid_unregister_driver(&imago_hid_driver);
+#endif
 
 #ifdef __aarch64__
 #if IS_ENABLED(CONFIG_SPI_MASTER)

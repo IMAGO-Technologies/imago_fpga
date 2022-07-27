@@ -34,6 +34,9 @@ ifneq ($(CONFIG_SPI_MASTER),)
 	imago_fpga-objs += SPI.o
 endif
 endif
+ifneq ($(CONFIG_USB_HID),)
+    imago_fpga-objs += HID.o
+endif
 obj-m	:= imago_fpga.o
 
 # If KERNELDIR is defined, we've been invoked from the DKMS

@@ -61,6 +61,9 @@ static struct imago_device_info device_info[] = {
 	[DeviceType_VSPV3] = {
 		.name = "VisionSensor PV3",
 		.flags = IMAGO_DEV_FLAG_SPI},
+	[DeviceType_MVM2] = {
+		.name = "Machine Vision Manager 2",
+		.flags = IMAGO_DEV_FLAG_HID},
 };
 
 //setzt alle Felder auf definierte Werte

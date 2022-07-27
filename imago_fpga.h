@@ -20,7 +20,7 @@
 
 // module definitions
 /******************************************************************************************/
-#define MODVERSION "1.1.16.0"
+#define MODVERSION "1.2.0.0"
 #define MODDATECODE __DATE__ " - " __TIME__
 #define MODLICENSE "GPL"
 #define MODDESCRIPTION "IMAGO FPGA / RTCC device driver"
@@ -78,7 +78,8 @@ enum IMAGO_DEVICE_TYPE
 	DeviceType_AGEX5	= 8,
 	DeviceType_AGEX5_CL	= 9,
 	DeviceType_DAYTONA	= 10,
-	DeviceType_VSPV3	= 11
+	DeviceType_VSPV3	= 11,
+	DeviceType_MVM2		= 12
 };
 
 // Device flags used by struct _DEVICE_DATA
@@ -87,6 +88,7 @@ enum IMAGO_DEVICE_TYPE
 #define IMAGO_DEV_FLAG_PCI64BIT		0x04
 #define IMAGO_DEV_FLAG_DMA2HOST		0x08
 #define IMAGO_DEV_FLAG_SPI			0x10
+#define IMAGO_DEV_FLAG_HID			0x20
 
 
 //> Ioctl definitions, see "ioctl-number.txt"
@@ -254,6 +256,7 @@ typedef struct _MODULE_DATA
 extern MODULE_DATA _ModuleData;
 extern struct pci_driver imago_pci_driver;
 extern struct spi_driver imago_spi_driver;
+extern struct hid_driver imago_hid_driver;
 
 /*** prototypes ***/
 /******************************************************************************************/

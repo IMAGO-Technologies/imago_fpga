@@ -491,14 +491,15 @@ static int imago_pci_probe(struct pci_dev *pcidev, const struct pci_device_id *i
 
 static void imago_pci_remove(struct pci_dev *pcidev)
 {
-	//Note: wenn PCI_remove() aufgerufen wird, 
-	// darf kein UserThread mehr im Teiber sein bzw. noch reinspringen weil sonst... bum 	
 	u32 i;
 	PDEVICE_DATA pDevData = (PDEVICE_DATA)pci_get_drvdata(pcidev);
-	dev_dbg(&pcidev->dev, "imago_pci_remove (%d:%d)\n", MAJOR(pDevData->DeviceNumber), MINOR(pDevData->DeviceNumber));
 
 	if (pDevData == NULL) {
-		dev_warn(&pcidev->dev, "device pointer is zero!\n"); return;}
+		dev_warn(&pcidev->dev, "imago_pci_remove(): device data is invalid\n");
+		return;
+	}
+
+	dev_dbg(&pcidev->dev, "imago_pci_remove (%d:%d)\n", MAJOR(pDevData->DeviceNumber), MINOR(pDevData->DeviceNumber));
 
 	if (IS_TYPEWITH_DMA2HOST(pDevData)) {
 		// Stop DMA transfers and unmap all buffers
@@ -519,7 +520,6 @@ static void imago_pci_remove(struct pci_dev *pcidev)
 	if (IS_TYPEWITH_COMMONBUFFER(pDevData))
 		pci_disable_msi(pcidev);
 
-	//unmappen
 	if(pDevData->pVABAR0 != NULL)
 		iounmap(pDevData->pVABAR0);
 	pDevData->pVABAR0 = NULL;
@@ -533,7 +533,6 @@ static void imago_pci_remove(struct pci_dev *pcidev)
 		dma_free_coherent(&pcidev->dev, PAGE_SIZE, pDevData->pVACommonBuffer, pDevData->pBACommonBuffer);
 	pDevData->pVACommonBuffer = NULL;
 
-	//das pci_dev nicht mehr für PCI nutzen (bzw. setzt Bits im PCIConfigMem)??
 	pci_disable_device(pcidev);
 
 	imago_dev_close(pDevData);
