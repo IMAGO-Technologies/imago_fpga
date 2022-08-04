@@ -190,7 +190,7 @@ int imago_create_device(PDEVICE_DATA pDevData)
 	// struct device *dev = device_create(
 	pDevData->sub_dev = device_create(
 			_ModuleData.pModuleClass,
-			NULL, 						// parent
+			pDevData->dev,				// parent
 			pDevData->DeviceNumber,
 			NULL,						// drvdata
 			MODMODULENAME"%d", MINOR(pDevData->DeviceNumber)
