@@ -43,24 +43,26 @@
 
 //für welche PCI IDs sind wir zuständi?
 static struct pci_device_id pci_ids[] = {
-	{ PCI_DEVICE(0x1204/*VendorID (Lattice Semi)*/, 0x0200 /*DeviceID*/),	/* AGE-X1 */
+	{ PCI_DEVICE(0x1204/*VendorID (Lattice Semi)*/, 0x0200 /*DeviceID*/),	/* VisionBox AGE-X1 */
 		.driver_data = DeviceType_AGEX },
-	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0x0004 /*DeviceID*/),			/* AGE-X2 */
+	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0x0004 /*DeviceID*/),			/* VisionBox AGE-X2 */
 		.driver_data = DeviceType_AGEX2 },
-	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xA6E4 /*DeviceID*/),			/* MVC0 */
+	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xA6E4 /*DeviceID*/),			/* Machine Vision Controller */
 		.driver_data = DeviceType_MVC0 },
-	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0x0010 /*DeviceID*/),			/* AGE-X2-CL */
+	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0x0010 /*DeviceID*/),			/* AGE-X2 CL */
 		.driver_data = DeviceType_AGEX2_CL },
-	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0x0005 /*DeviceID*/),			/* VCXM */
+	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0x0005 /*DeviceID*/),			/* VisionCam VCXM */
 		.driver_data = DeviceType_VCXM },
-	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xCA72 /*DeviceID*/),			/* LeMans */
+	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xCA72 /*DeviceID*/),			/* VisionBox LeMans */
 		.driver_data = DeviceType_LEMANS },
-	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xDECA /*DeviceID*/),			/* PCIe-CL */
+	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xDECA /*DeviceID*/),			/* PCIe CL */
 		.driver_data = DeviceType_PCIE_CL },
-	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xA6E5 /*DeviceID*/),			/* AGE-X5 */
+	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xA6E5 /*DeviceID*/),			/* VisionBox AGE-X5 */
 		.driver_data = DeviceType_AGEX5 },
-	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xDCA5 /*DeviceID*/),			/* AGE-X5-CL */
+	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xDCA5 /*DeviceID*/),			/* AGE-X5 CL */
 		.driver_data = DeviceType_AGEX5_CL },
+	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xCA78 /*DeviceID*/),			/* VisionBox AI */
+		.driver_data = DeviceType_AI },
 	{ 0, }
 };
 MODULE_DEVICE_TABLE(pci, pci_ids);		//macht dem kernel bekannt was dieses modul für PCI devs kann

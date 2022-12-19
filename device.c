@@ -64,6 +64,9 @@ static struct imago_device_info device_info[] = {
 	[DeviceType_MVM2] = {
 		.name = "Machine Vision Manager 2",
 		.flags = IMAGO_DEV_FLAG_HID},
+	[DeviceType_AI] = {
+		.name = "VisionBox AI",
+		.flags = IMAGO_DEV_FLAG_PCIE | IMAGO_DEV_FLAG_DMA2HOST | IMAGO_DEV_FLAG_PCI64BIT},
 };
 
 //setzt alle Felder auf definierte Werte

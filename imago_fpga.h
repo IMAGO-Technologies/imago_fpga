@@ -20,7 +20,7 @@
 
 // module definitions
 /******************************************************************************************/
-#define MODVERSION "1.2.0.0"
+#define MODVERSION "1.2.1.0"
 #define MODDATECODE __DATE__ " - " __TIME__
 #define MODLICENSE "GPL"
 #define MODDESCRIPTION "IMAGO FPGA / RTCC device driver"
@@ -79,7 +79,8 @@ enum IMAGO_DEVICE_TYPE
 	DeviceType_AGEX5_CL	= 9,
 	DeviceType_DAYTONA	= 10,
 	DeviceType_VSPV3	= 11,
-	DeviceType_MVM2		= 12
+	DeviceType_MVM2		= 12,
+	DeviceType_AI		= 13
 };
 
 // Device flags used by struct _DEVICE_DATA
