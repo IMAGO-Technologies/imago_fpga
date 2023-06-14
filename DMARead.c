@@ -38,16 +38,17 @@
 ****************************************/
 
 //Init und mapped/pinned den "Job<>UserBuffer", struct ist beim return(min die Flags gültig) wickelt daher beim Fehler nichts rück ab (kann nicht als DPC laufen)
-int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMAChannel, uintptr_t pVMUser, u64 bufferSize, DMA_READ_JOB **ppJob)
+int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMAChannel, uintptr_t pVMUser,
+		u64 bufferSize, u8 reversePages, DMA_READ_JOB **ppJob)
 {
 	DMA_READ_JOB	*pJob			= NULL;
-	u32				anzPagesToMap	= (bufferSize + PAGE_SIZE-1) / PAGE_SIZE;
+	u32				pagesToMap		= (bufferSize + PAGE_SIZE-1) / PAGE_SIZE;
 	int 			pagesPinned		= -1;
 	int 			mappedSGs		= -1;
 	unsigned int	i;
 	int result;
 
-	dev_dbg(pDevData->dev, "MappUserBuffer: (%d[Bytes], %d[Pages] @ 0x%p)\n", (int)bufferSize, anzPagesToMap, (void*)pVMUser);
+	dev_dbg(pDevData->dev, "MappUserBuffer: (%d[Bytes], %d[Pages] @ 0x%p)\n", (int)bufferSize, pagesToMap, (void*)pVMUser);
 
 	// search free job entry
 	for (i = 0; i < _ModuleData.max_dma_buffers; i++) {
@@ -96,7 +97,7 @@ int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMACha
 	//> User Buffer Pinnen
 	/**********************************************************************/
 	//speicher für die PageList
-	pJob->ppPageList = kmalloc(anzPagesToMap*sizeof(struct page*), GFP_KERNEL);
+	pJob->ppPageList = kmalloc(pagesToMap*sizeof(struct page*), GFP_KERNEL);
 	if (pJob->ppPageList == NULL) {
 		dev_err(pDevData->dev, "MappUserBuffer: too many pages");
 		return -ENOMEM;
@@ -123,7 +124,7 @@ int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMACha
 //					https://marc.info/?l=linux-mm&m=147585445805166
 //		bei 4.8.17 get_user_pages() 	> 	__get_user_pages_locked()  da wurde dann aus if(write) flags |= FOLL_WRITE
 //
-	pagesPinned = get_user_pages(pJob->pVMUser, anzPagesToMap, FOLL_WRITE, pJob->ppPageList, NULL);	
+	pagesPinned = get_user_pages(pJob->pVMUser, pagesToMap, FOLL_WRITE, pJob->ppPageList, NULL);	
 #elif LINUX_VERSION_CODE >= KERNEL_VERSION(4,6,0)
 // 4.5.7 >>> 4.6.0 (Feb 2016)
 //	https://github.com/torvalds/linux/commit/d4edcf0d56958db0aca0196314ca38a5e730ea92#diff-c098b65a8bd8c7db23377b90578a62c1  
@@ -134,13 +135,13 @@ int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMACha
 //			 less-flexible calling convention where we assume that the task
 //			 and mm being operated on are the current task's."
 //	
-	pagesPinned = get_user_pages(pJob->pVMUser, anzPagesToMap, 1, 0, pJob->ppPageList, NULL);
+	pagesPinned = get_user_pages(pJob->pVMUser, pagesToMap, 1, 0, pJob->ppPageList, NULL);
 #else
 	pagesPinned = get_user_pages(
 		current, 		/* task_struct, wo sollen die 'page faults' hin */
 		current->mm,	/* mm_struct, in welcher VMA der virtuelle Speicher zu finden ist */
 		pJob->pVMUser,	/* UserMode Pointer, muss page-aligned sein */
-		anzPagesToMap,	/* anz Pages */
+		pagesToMap,
 		1,			/* 1<>write&read, 0<> readOnly (für den fn caller [module]) */
 		0,			/* kein force, daher aus ein ReadOnly wird kein RW, 'LDD3 driver should always 0 here' */
 		pJob->ppPageList, /* NULL, oder PointerFeld zu den Pages welches anzPages/Pointer halten kann, gefüllte anz ist result */
@@ -159,9 +160,9 @@ int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMACha
 	}
 	pJob->boIsPinned 		= true;
 	pJob->pagesPinned 	= pagesPinned;
-	if (((u32)pagesPinned) != anzPagesToMap) {
+	if (((u32)pagesPinned) != pagesToMap) {
 		dev_err(pDevData->dev, "MappUserBuffer: get_user_pages() %d failed from %d pinned",
-			pagesPinned, anzPagesToMap);
+			pagesPinned, pagesToMap);
 		return -EFAULT;
 	}
 
@@ -219,17 +220,23 @@ int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMACha
 	}
 	pJob->boIsSGValid 	= true;
 
-	//- jetzt die Pages adden (macht nix mit den daten/pages)
+	// sg_set_page(): set sg entry to point at given page
 	pSGList = pJob->SGTable.sgl;
 	for (iSG = 0; iSG < pagesPinned; iSG++) {
 		u32 bytes = bytesRemaining;
 		if (bytes > PAGE_SIZE)
 			bytes = PAGE_SIZE;
 		bytesRemaining -= bytes;
-		sg_set_page(pSGList,				/*an diese Stelle wird die Page eingetragen*/
-					pJob->ppPageList[iSG]	/*Pointer zur page struct*/,
-					bytes,
-					0);						/*Offset*/
+		if (reversePages)
+			sg_set_page(pSGList,
+						pJob->ppPageList[pagesPinned - iSG - 1],
+						bytes,
+						PAGE_SIZE - bytes);				/*Offset*/
+		else
+			sg_set_page(pSGList,				/*an diese Stelle wird die Page eingetragen*/
+						pJob->ppPageList[iSG]	/*Pointer zur page struct*/,
+						bytes,
+						0);	/*Offset*/
 		pSGList = sg_next(pSGList);
 	}
 }
@@ -279,12 +286,17 @@ int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMACha
 	dev_dbg(pDevData->dev, "dma_map_sg(): %d SG list entries mapped to %d regions\n", pJob->SGTable.nents, mappedSGs);
 	dev_dbg(pDevData->dev, "first sg element: addr=0x%08x, len=%u\n", (unsigned int)sg_dma_address(pJob->SGTable.sgl), (unsigned int)sg_dma_len(pJob->SGTable.sgl));
 
+	// for module parameter dma_update_in_hwi in auto mode (-1):
+	// disable update of DMA in HWI if many SG elements are used
 #ifdef __ARM_ARCH_7A__
 	// VisionCam XM: do not turn off update of DMA in HWI to avoid dropped sensor frames
+	// (because the FPGA has no big DDR RAM FIFO for buffering data)
 #else
 	if (pDevData->setupTcInHWI && _ModuleData.dma_update_in_hwi == -1) {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3,6,0)
-		// there should only be one mapped region if an IOMMU is present
+		// There should only be one or two mapped regions if an IOMMU is present.
+		// We could evaluate mappedSGs instead, but this value may be non-deterministic depending
+		// on memory fragmentation if no IOMMU is present. We always want the same behavior.
 		if (pDevData->dev->iommu_group == NULL)
 #endif
 		{
@@ -545,7 +557,6 @@ void imago_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 iDM
 
 		//> stimmt die Ausrichtung und die size? (adr und size) 
 		if(		((sg_length & 0x3) != 0)
-		 	|| 	((sg_address & (PAGE_SIZE-1)) != 0)
 		 	||  (sg_length > DMA_READ_TC_SG_MAX_BYTECOUNT ) )
 		{
 			dev_err(pDevData->dev, "imago_DMARead_StartNextTransfer_Locked > Invalid alignment or size!\n");
@@ -750,6 +761,8 @@ int imago_DMARead_Reset_DMAChannel(PDEVICE_DATA pDevData, unsigned int dma_chann
 	// Reset completion
 	reinit_completion(&pDMAChannel->job_complete);
 	pDMAChannel->dmaWaitCount = 0;
+	pDMAChannel->abortWait = 0;
+	pDMAChannel->doManualMap = false;
 
 	return 0;
 }

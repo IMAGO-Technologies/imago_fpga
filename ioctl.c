@@ -279,7 +279,7 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 		// map user buffer for DMA
 		case IOC_DMAREAD_MAP_BUFFER:
 		{
-			u8 	iDMAChannel;
+			u8 	iDMAChannel, reversePages;
 			u64 UserPTR, bufferSize;
 			DMA_READ_CHANNEL *pDMAChannel;
 			DMA_READ_JOB *pJob = NULL;
@@ -301,8 +301,11 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 				dev_warn(pDevData->dev, "Locked_ioctl> get_user failed\n");
 				return -EFAULT;
 			}
+			if (__get_user(reversePages, (u8*)(pToUserMem + 2*sizeof(u64) + 1)) != 0) {
+				dev_warn(pDevData->dev, "Locked_ioctl> get_user failed\n");
+				return -EFAULT;
+			}
 		
-			//wenn es kein DMA gibt ist anz=0
 			if (iDMAChannel >= pDevData->DMARead_channels) {
 				dev_warn(pDevData->dev, "Locked_ioctl> DMAChannel is out of range!");
 				return -EFAULT;
@@ -316,7 +319,7 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 			pDMAChannel->doManualMap = true;
 
 			// map buffer
-			result = imago_DMARead_MapUserBuffer(pDevData, pDMAChannel, (uintptr_t)UserPTR, bufferSize, &pJob);
+			result = imago_DMARead_MapUserBuffer(pDevData, pDMAChannel, (uintptr_t)UserPTR, bufferSize, reversePages, &pJob);
 			if (result < 0) {
 				imago_DMARead_UnMapUserBuffer(pDevData, pJob);
 				return result;
@@ -397,6 +400,7 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 				dev_warn(pDevData->dev, "Locked_ioctl> get_user failed\n");
 				return -EFAULT;
 			}
+
 			if (iDMAChannel >= pDevData->DMARead_channels) {
 				dev_warn(pDevData->dev, "Locked_ioctl> DMAChannel is out of range!");
 				return -EFAULT;
@@ -410,7 +414,7 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 			pDMAChannel->doManualMap = false;
 
 			// map user buffer for DMA
-			result =  imago_DMARead_MapUserBuffer(pDevData, pDMAChannel, (uintptr_t) UserPTR, bufferSize, &pJob);
+			result =  imago_DMARead_MapUserBuffer(pDevData, pDMAChannel, (uintptr_t) UserPTR, bufferSize, 0, &pJob);
 			if (result < 0) {
 				imago_DMARead_UnMapUserBuffer(pDevData, pJob);
 				return result;

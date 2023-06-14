@@ -20,7 +20,7 @@
 
 // module definitions
 /******************************************************************************************/
-#define MODVERSION "1.2.1.0"
+#define MODVERSION "1.2.2.0"
 #define MODDATECODE __DATE__ " - " __TIME__
 #define MODLICENSE "GPL"
 #define MODDESCRIPTION "IMAGO FPGA / RTCC device driver"
@@ -80,7 +80,8 @@ enum IMAGO_DEVICE_TYPE
 	DeviceType_DAYTONA	= 10,
 	DeviceType_VSPV3	= 11,
 	DeviceType_MVM2		= 12,
-	DeviceType_AI		= 13
+	DeviceType_AI		= 13,
+	DeviceType_VCXM2	= 14,
 };
 
 // Device flags used by struct _DEVICE_DATA
@@ -273,7 +274,8 @@ int imago_DMARead_AddJob(PDEVICE_DATA pDevData, u32 iDMA, DMA_READ_JOB *pJob);
 void imago_DMARead_DPC(PDEVICE_DATA pDevData);
 void imago_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC);
 
-int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMAChannel, uintptr_t pVMUser, u64 bufferSize, DMA_READ_JOB **ppJob);
+int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMAChannel, uintptr_t pVMUser,
+		u64 bufferSize, u8 reversePages, DMA_READ_JOB **ppJob);
 void imago_DMARead_UnMapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob);
 
 int imago_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA);

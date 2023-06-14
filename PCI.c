@@ -63,6 +63,8 @@ static struct pci_device_id pci_ids[] = {
 		.driver_data = DeviceType_AGEX5_CL },
 	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0xCA78 /*DeviceID*/),			/* VisionBox AI */
 		.driver_data = DeviceType_AI },
+	{ PCI_DEVICE(0x1172/*VendorID (Altera)*/, 0x78CA /*DeviceID*/),			/* VisionCam XM2 */
+		.driver_data = DeviceType_VCXM2 },
 	{ 0, }
 };
 MODULE_DEVICE_TABLE(pci, pci_ids);		//macht dem kernel bekannt was dieses modul für PCI devs kann

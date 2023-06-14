@@ -67,6 +67,9 @@ static struct imago_device_info device_info[] = {
 	[DeviceType_AI] = {
 		.name = "VisionBox AI",
 		.flags = IMAGO_DEV_FLAG_PCIE | IMAGO_DEV_FLAG_DMA2HOST | IMAGO_DEV_FLAG_PCI64BIT},
+	[DeviceType_VCXM2] = {
+		.name = "VisionCam XM2",
+		.flags = IMAGO_DEV_FLAG_PCIE | IMAGO_DEV_FLAG_DMA2HOST | IMAGO_DEV_FLAG_PCI64BIT},
 };
 
 //setzt alle Felder auf definierte Werte
@@ -140,7 +143,7 @@ DEVICE_DATA *imago_alloc_dev_data(struct device *dev, u8 dev_type)
 	// DMA
 	if (_ModuleData.dma_update_in_hwi == 0)
 		pDevData->setupTcInHWI		= 0;
-	else
+	else	// on (1) or auto (-1)
 		pDevData->setupTcInHWI		= 1;
 	pDevData->DMARead_channels	= 0;
 	pDevData->DMARead_TCs		= 0;
