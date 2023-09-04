@@ -449,6 +449,8 @@ static int imago_pci_probe(struct pci_dev *pcidev, const struct pci_device_id *i
 		}
 	}
 
+	dev_dbg(&pcidev->dev, "using IRQ %d\n", pcidev->irq);
+
 	// increase priority of threaded interrupt
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5,9,0)
 	{
@@ -458,6 +460,8 @@ static int imago_pci_probe(struct pci_dev *pcidev, const struct pci_device_id *i
 		sched_setscheduler(desc->action->thread, SCHED_FIFO, &sched_par);
 	}
 #else
+	// sched_set_fifo() sets priority to MAX_RT_PRIO / 2, other values must be
+	// configured in user space.
 	desc = irq_data_to_desc(irq_get_irq_data(pcidev->irq));
 	sched_set_fifo(desc->action->thread);
 #endif
@@ -474,7 +478,8 @@ static int imago_pci_probe(struct pci_dev *pcidev, const struct pci_device_id *i
 #endif		
 	}
 	
-	dev_dbg(&pcidev->dev, "using IRQ %d\n", pcidev->irq);
+	// enable PCI interrupts
+	pci_enable_interrupt(pDevData, true);
 
 	// create char device
 	res = imago_create_device(pDevData);
@@ -482,9 +487,6 @@ static int imago_pci_probe(struct pci_dev *pcidev, const struct pci_device_id *i
 		imago_free_dev_data(pDevData);
 		return res;
 	}
-
-	// enable PCI interrupts
-	pci_enable_interrupt(pDevData, true);
 
 	dev_info(pDevData->dev, "probe done (0x%04x:0x%04x <> %d:%d)\n",
 		id->vendor, id->device, MAJOR(pDevData->DeviceNumber), MINOR(pDevData->DeviceNumber));
