@@ -37,11 +37,10 @@ typedef u8 IOCTLBUFFER[128];
 #define IOC_DMAREAD_MAP_BUFFER			_IOWR(IMAGO_IOC_MAGIC, 12, IOCTLBUFFER)
 #define IOC_DMAREAD_UNMAP_BUFFER		_IOW(IMAGO_IOC_MAGIC, 13, IOCTLBUFFER)
 #define IOC_DMAREAD_ADD_MAPPED_BUFFER	_IOW(IMAGO_IOC_MAGIC, 14, IOCTLBUFFER)
-
+#define IOC_INIT_I2C_ADAPTER			_IOW(IMAGO_IOC_MAGIC, 15, u8)
 
 long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 {
-	struct SUN_DEVICE_DATA *pSunDevice;
 	unsigned long flags;
 
 	switch (cmd)
@@ -90,23 +89,7 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 				dev_warn(pDevData->dev, "Locked_ioctl> get_user failed\n");
 				return -EFAULT;
 			}
-			
-			// strip serialID (bit 6)
-			deviceID &= (MAX_IRQDEVICECOUNT - 1);
-			pSunDevice = &pDevData->SunDeviceData[deviceID];
-
-			dev_dbg(pDevData->dev, "Locked_ioctl IOC_RELEASE_DEVICEID: %u\n", deviceID);
-
-			raw_spin_lock_irqsave(&pDevData->lock, flags);
-			if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA ||
-				pSunDevice->requestState == SUN_REQ_STATE_ABORT) {
-				// Pending request is still in FPGA => toggle serial ID
-				pSunDevice->serialID = !pSunDevice->serialID;
-			}
-			pSunDevice->requestState = SUN_REQ_STATE_FREE;
-			raw_spin_unlock_irqrestore(&pDevData->lock, flags);
-
-			return 0;
+			return imago_release_deviceid(pDevData, deviceID);
 		}
 
 
@@ -119,37 +102,14 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 		// 		noch genutzt
 		case IOC_CREATE_DEVICEID:
 		{
-			unsigned int deviceId;
 			u8 deviceIdUser;
-			
-			// DeviceID 0 is reserved to avoid conflicts with register writes without
-			// a DeviceID in Header1
-			for (deviceId = 1; deviceId < MAX_IRQDEVICECOUNT; deviceId++)
-			{
-				if (pDevData->SunDeviceData[deviceId].requestState == SUN_REQ_STATE_FREE)
-				{
-					pSunDevice = &pDevData->SunDeviceData[deviceId];
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,13,00)
-					reinit_completion(&pDevData->SunDeviceData[deviceId].result_complete);
-#else
-					INIT_COMPLETION(pDevData->SunDeviceData[deviceId].result_complete);
-#endif
-					// add serialID in case the user space uses the DeviceID directly
-					deviceIdUser = deviceId | (pSunDevice->serialID << 6);
-					if (__put_user(deviceIdUser, pToUserMem) != 0) {
-						dev_err(pDevData->dev, "Locked_ioctl > put_user() failed\n");
-						return -EFAULT;
-					}
-
-					pSunDevice->requestState = SUN_REQ_STATE_IDLE;
-					dev_dbg(pDevData->dev, "Locked_ioctl > NewDeviceID = %d\n", deviceId);
-					return sizeof(deviceIdUser);
-				}
+			long retVal;
+			retVal = imago_create_deviceid(pDevData, &deviceIdUser);
+			if (__put_user(deviceIdUser, pToUserMem) != 0) {
+				dev_err(pDevData->dev, "Locked_ioctl > put_user() failed\n");
+				return -EFAULT;
 			}
-
-			dev_warn(pDevData->dev, "Locked_ioctl > No free DeviceID\n");
-			return -EMFILE;
+			return retVal;
 		}
 
 		/* Wenn zur DeviceID ein LONGTERM_IOREQUEST läuft, sem posten. flag setzen*/
@@ -163,30 +123,7 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 				dev_warn(pDevData->dev, "Locked_ioctl> get_user failed\n");
 				return -EFAULT;
 			}
-
-			// strip serialID (bit 6)
-			deviceID &= (MAX_IRQDEVICECOUNT - 1);
-			pSunDevice = &pDevData->SunDeviceData[deviceID];
-
-			dev_dbg(pDevData->dev, "Locked_ioctl > Aborting read for DeviceID %u\n", deviceID);
-
-			raw_spin_lock_irqsave(&pDevData->lock, flags);
-			if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA) {
-				pSunDevice->requestState = SUN_REQ_STATE_ABORT;
-				// do not toggle serial ID yet, request may still be answered by the FPGA!
-//				pSunDevice->serialID = !pSunDevice->serialID;
-				raw_spin_unlock_irqrestore(&pDevData->lock, flags);
-				complete(&pSunDevice->result_complete);
-			}
-			else if (pSunDevice->requestState == SUN_REQ_STATE_RESULT) {
-				// avoid race condition: the result may still be processed by read(), so leave it there
-//				pSunDevice->requestState = SUN_REQ_STATE_IDLE;
-				raw_spin_unlock_irqrestore(&pDevData->lock, flags);
-			}
-			else {
-				// already in state SUN_REQ_STATE_ABORT or SUN_REQ_STATE_IDLE
-				raw_spin_unlock_irqrestore(&pDevData->lock, flags);
-			}
+			imago_abort_longterm_read(pDevData, deviceID);
 			return 0;
 		}
 
@@ -629,8 +566,105 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 			else
 				return imago_DMARead_Abort_DMAWaiter(pDevData, iDMAChannel);
 		}
-
+		case IOC_INIT_I2C_ADAPTER:
+		{
+			long busNumber;
+			u8 busNum;
+			busNumber = imago_init_i2cAdapter(pDevData);
+			busNum = busNumber;
+			if (__put_user(busNum, pToUserMem) != 0) {
+				dev_err(pDevData->dev, "Locked_ioctl > put_user() failed\n");
+				return -EFAULT;
+			}
+			return 0;
+		}
 		default:
 			return -ENOTTY;
 	}
+}
+
+
+long imago_create_deviceid(PDEVICE_DATA pDevData, u8* deviceIdOut)
+{
+	struct SUN_DEVICE_DATA* pSunDevice;
+	unsigned int deviceId;
+
+	// DeviceID 0 is reserved to avoid conflicts with register writes without
+	// a DeviceID in Header1
+	for (deviceId = 1; deviceId < MAX_IRQDEVICECOUNT; deviceId++)
+	{
+		if (pDevData->SunDeviceData[deviceId].requestState == SUN_REQ_STATE_FREE)
+		{
+			pSunDevice = &pDevData->SunDeviceData[deviceId];
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(3,13,00)
+			reinit_completion(&pDevData->SunDeviceData[deviceId].result_complete);
+#else
+			INIT_COMPLETION(pDevData->SunDeviceData[deviceId].result_complete);
+#endif
+			// add serialID in case the user space uses the DeviceID directly
+			* deviceIdOut = deviceId | (pSunDevice->serialID << 6);
+
+			pSunDevice->requestState = SUN_REQ_STATE_IDLE;
+			dev_dbg(pDevData->dev, "create_deviceid > NewDeviceID = %d\n", deviceId);
+			return 1;
+		}
+	}
+
+	dev_warn(pDevData->dev, "create_deviceid > No free DeviceID\n");
+	return -EMFILE;
+}
+
+long imago_release_deviceid(PDEVICE_DATA pDevData, u8 deviceID) {
+
+	struct SUN_DEVICE_DATA* pSunDevice;
+	unsigned long flags;
+	// strip serialID (bit 6)
+	deviceID &= (MAX_IRQDEVICECOUNT - 1);
+	pSunDevice = &pDevData->SunDeviceData[deviceID];
+
+	dev_dbg(pDevData->dev, "release_deviceid: %u\n", deviceID);
+
+	raw_spin_lock_irqsave(&pDevData->lock, flags);
+	if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA ||
+		pSunDevice->requestState == SUN_REQ_STATE_ABORT) {
+		// Pending request is still in FPGA => toggle serial ID
+		pSunDevice->serialID = !pSunDevice->serialID;
+	}
+	pSunDevice->requestState = SUN_REQ_STATE_FREE;
+	raw_spin_unlock_irqrestore(&pDevData->lock, flags);
+
+	return 0;
+}
+
+long imago_abort_longterm_read(PDEVICE_DATA pDevData, u8 deviceID) {
+
+	struct SUN_DEVICE_DATA* pSunDevice;
+	unsigned long flags;
+
+	// strip serialID (bit 6)
+	deviceID &= (MAX_IRQDEVICECOUNT - 1);
+	pSunDevice = &pDevData->SunDeviceData[deviceID];
+
+	dev_dbg(pDevData->dev, "abort_longterm_read > Aborting read for DeviceID %u\n", deviceID);
+
+	raw_spin_lock_irqsave(&pDevData->lock, flags);
+	if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA) {
+		pSunDevice->requestState = SUN_REQ_STATE_ABORT;
+		// do not toggle serial ID yet, request may still be answered by the FPGA!
+//				pSunDevice->serialID = !pSunDevice->serialID;
+		raw_spin_unlock_irqrestore(&pDevData->lock, flags);
+		complete(&pSunDevice->result_complete);
+	}
+	else if (pSunDevice->requestState == SUN_REQ_STATE_RESULT) {
+		// avoid race condition: the result may still be processed by read(), so leave it there
+//				pSunDevice->requestState = SUN_REQ_STATE_IDLE;
+		raw_spin_unlock_irqrestore(&pDevData->lock, flags);
+	}
+	else {
+		// already in state SUN_REQ_STATE_ABORT or SUN_REQ_STATE_IDLE
+		raw_spin_unlock_irqrestore(&pDevData->lock, flags);
+	}
+	return 0;
+
 }

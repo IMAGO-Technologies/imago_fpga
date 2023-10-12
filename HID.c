@@ -66,7 +66,7 @@ static int raw_event(struct hid_device *hid, struct hid_report *report,
 	return 0;
 }
 
-static long fpga_write(struct _DEVICE_DATA *pDevData, const u8 __user * pToUserMem, const size_t BytesToWrite)
+static long fpga_write(struct _DEVICE_DATA *pDevData, const u8 *pToUserMem, const size_t BytesToWrite)
 {
 	struct hid_device *hid = to_hid_device(pDevData->dev);
 	struct imago_hid_uart *hid_uart = hid_get_drvdata(hid);
@@ -81,11 +81,11 @@ static long fpga_write(struct _DEVICE_DATA *pDevData, const u8 __user * pToUserM
 
 	hid_uart->tx_buf[0] = report_id;
 	hid_uart->tx_buf[1] = BytesToWrite;	// actual payload size
-
-	if (copy_from_user(&hid_uart->tx_buf[2], pToUserMem, BytesToWrite) != 0) {
-		dev_warn(pDevData->dev, "fpga_write(): copy_from_user() failed\n");
-		return -EFAULT;
-	}
+	memcpy(&hid_uart->tx_buf[2], pToUserMem, BytesToWrite);
+	//if (copy_from_user(&hid_uart->tx_buf[2], pToUserMem, BytesToWrite) != 0) {
+	//	dev_warn(pDevData->dev, "fpga_write(): copy_from_user() failed\n");
+	//	return -EFAULT;
+	//}
 
 	hid_dbg(hid, "fpga_write: h0=0x%08x, h1=0x%08x, data=0x%08x\n", ((u32 *)&hid_uart->tx_buf[2])[0], ((u32 *)&hid_uart->tx_buf[2])[1], ((u32 *)&hid_uart->tx_buf[2])[2]);
 

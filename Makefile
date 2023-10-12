@@ -32,6 +32,7 @@ ifeq ($(ARCH),arm64)
 # SPI: Daytona, VS-PV3
 ifneq ($(CONFIG_SPI_MASTER),)
 	imago_fpga-objs += SPI.o
+	imago_fpga-objs += I2CAdapter.o
 endif
 endif
 ifneq ($(CONFIG_USB_HID),)

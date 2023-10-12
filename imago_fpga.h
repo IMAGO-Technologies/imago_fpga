@@ -215,7 +215,7 @@ typedef struct _DEVICE_DATA
 	struct semaphore		DeviceSem;		//lock für ein Device (diese struct & common buffer)
 	dev_t					DeviceNumber;	//Nummer von CHAR device
 	u8						flags;
-	long					(*write)(struct _DEVICE_DATA *pDevData, const u8 __user * pToUserMem, const size_t BytesToWrite);
+	long					(*write)(struct _DEVICE_DATA *pDevData, const u8 *pToUserMem, const size_t BytesToWrite);
 
 	//> IDs/MetaInfos fuer ein read	
 	//***************************************************************/
@@ -267,6 +267,9 @@ void imago_free_dev_data(DEVICE_DATA *pDevData);
 void imago_dev_close(DEVICE_DATA *pDevData);
 long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem);
 int imago_create_device(PDEVICE_DATA pDevData);
+long imago_create_deviceid(PDEVICE_DATA pDevData, u8* deviceIdOut);
+long imago_release_deviceid(PDEVICE_DATA pDevData, u8 deviceID);
+long imago_abort_longterm_read(PDEVICE_DATA pDevData, u8 deviceID);
 void imago_sun_interrupt(PDEVICE_DATA pDevData, u32 *sun_packet);
 
 /* DMA functions */
@@ -282,6 +285,12 @@ int imago_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA);
 int imago_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData,  const u32 iDMA);
 int imago_DMARead_Reset_DMAChannel(PDEVICE_DATA pDevData, unsigned int dma_channel);
 
+/* I2C adapter functions */
+long imago_init_i2cAdapter(PDEVICE_DATA pDevData);
+void imago_remove_i2cAdapter(void);
+
+ssize_t imago_write_internal(PDEVICE_DATA pDevData, const char* buf, size_t count);
+ssize_t imago_read_internal(PDEVICE_DATA pDevData, char* buf, size_t count);
 
 // device uses PCIe interface (common buffer + MSI)
 static inline bool IS_TYPEWITH_COMMONBUFFER(DEVICE_DATA *pDeviceData)

@@ -171,6 +171,7 @@ static void __exit imago_module_exit(void)
 #ifdef __aarch64__
 #if IS_ENABLED(CONFIG_SPI_MASTER)
 	spi_unregister_driver(&imago_spi_driver);
+	imago_remove_i2cAdapter();
 #endif
 #endif
 

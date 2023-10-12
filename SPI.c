@@ -63,10 +63,8 @@ static long fpga_write(struct _DEVICE_DATA *pDevData, const u8 __user * pToUserM
 		dev_warn(pDevData->dev, "fpga_write(): too many bytes\n");
 		return -EFBIG;
 	}
-	if (copy_from_user(&txbuf[1], pToUserMem, BytesToWrite) != 0) {
-		dev_warn(pDevData->dev, "fpga_write(): copy_from_user() failed\n");
-		return -EFAULT;
-	}
+
+	memcpy(&txbuf[1], pToUserMem, BytesToWrite);
 
 	// insert serialID to Header1:
 	deviceID = (((u32*)&txbuf[1])[1] >> 20) & (MAX_IRQDEVICECOUNT - 1);

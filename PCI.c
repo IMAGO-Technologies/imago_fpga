@@ -71,7 +71,7 @@ MODULE_DEVICE_TABLE(pci, pci_ids);		//macht dem kernel bekannt was dieses modul 
 
 
 // writes FPGA packet
-static long fpga_write(struct _DEVICE_DATA *pDevData, const u8 __user * pToUserMem, const size_t BytesToWrite)
+static long fpga_write(struct _DEVICE_DATA *pDevData, const u8 *pToUserMem, const size_t BytesToWrite)
 {
 	u8 TempBuffer[4*(3+1)];		// +1 damit bei PCIe immer 64 Bit sind
 	u8 deviceID;
@@ -81,10 +81,13 @@ static long fpga_write(struct _DEVICE_DATA *pDevData, const u8 __user * pToUserM
 		dev_warn(pDevData->dev, "fpga_write(): too many bytes\n");
 		return -EFBIG;
 	}
-	if (copy_from_user (TempBuffer, pToUserMem, BytesToWrite) != 0) {
-		dev_warn(pDevData->dev, "fpga_write(): copy_from_user() failed\n");
-		return -EFAULT;
-	}
+	
+	memcpy(TempBuffer, pToUserMem, BytesToWrite);
+	
+	//if (copy_from_user (TempBuffer, pToUserMem, BytesToWrite) != 0) {
+	//	dev_warn(pDevData->dev, "fpga_write(): copy_from_user() failed\n");
+	//	return -EFAULT;
+	//}
 
 	// insert serialID to Header1:
 	deviceID = (((u32*)TempBuffer)[1] >> 20) & (MAX_IRQDEVICECOUNT - 1);
