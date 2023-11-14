@@ -72,7 +72,7 @@ static struct imago_device_info device_info[] = {
 		.flags = IMAGO_DEV_FLAG_PCIE | IMAGO_DEV_FLAG_DMA2HOST | IMAGO_DEV_FLAG_PCI64BIT},
 };
 
-//setzt alle Felder auf definierte Werte
+// allocate and initialize DEVICE_DATA struct
 DEVICE_DATA *imago_alloc_dev_data(struct device *dev, u8 dev_type)
 {
 	int i, minor, iChannel, iTC;
@@ -181,35 +181,35 @@ int imago_create_device(PDEVICE_DATA pDevData)
 {
 	int res;
 
+	// add char device for file ops
 	cdev_init(&pDevData->DeviceCDev, &fpga_ops);
 	pDevData->DeviceCDev.owner = THIS_MODULE;
-	pDevData->DeviceCDev.ops 	= &fpga_ops;	//notwendig in den quellen wird fops gesetzt?
 
-	//fügt ein device hinzu, nach der fn können FileFns genutzt werden
-	res = cdev_add(&pDevData->DeviceCDev, pDevData->DeviceNumber, 1/*wie viele ab startNum*/);
+	res = cdev_add(&pDevData->DeviceCDev, pDevData->DeviceNumber, 1);
 	if (res < 0) {
 		dev_err(pDevData->dev, "cdev_add() failed\n");
 		return res;
 	}
 
+	// mark device ready to avoid race condition for first device access after creating the sysfs device
+	pDevData->boIsDeviceOpen = true;
+
 	// create a device and registers it with sysfs
-	// struct device *dev = device_create(
 	pDevData->sub_dev = device_create(
 			_ModuleData.pModuleClass,
 			pDevData->dev,				// parent
 			pDevData->DeviceNumber,
-			NULL,						// drvdata
+			pDevData,					// drvdata
 			MODMODULENAME"%d", MINOR(pDevData->DeviceNumber)
 			);
 	if (IS_ERR(pDevData->sub_dev)) {
+		pDevData->boIsDeviceOpen = false;
 		dev_err(pDevData->sub_dev, "error creating sysfs device (%ld)\n", PTR_ERR(pDevData->sub_dev));
 		cdev_del(&pDevData->DeviceCDev);
 		return PTR_ERR(pDevData->sub_dev);
 	}
 
-	dev_set_drvdata(pDevData->sub_dev, pDevData);
 	pDevData->sub_dev->release = imago_dev_release;
-	pDevData->boIsDeviceOpen = true;
 
 	dev_dbg(pDevData->sub_dev, "device created\n");
 

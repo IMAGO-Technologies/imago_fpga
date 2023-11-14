@@ -55,8 +55,7 @@ static int dev_uevent(struct device *dev, struct kobj_uevent_env *env)
 	return add_uevent_var(env, "DEVMODE=%#o", 0666);
 }
 
-
-
+	 
 //<====================================>
 //	Module
 //<====================================>
@@ -64,7 +63,6 @@ static int dev_uevent(struct device *dev, struct kobj_uevent_env *env)
 //wird aufgerufen wenn das Modul geladen wird
 static int __init imago_module_init(void)
 {
-	struct module *old_mod;
 	int res;
 
 	pr_devel(MODMODULENAME": imago_module_init()\n");
@@ -94,13 +92,21 @@ static int __init imago_module_init(void)
 	_ModuleData.max_dma_buffers = max_dma_buffers;
 	_ModuleData.dma_update_in_hwi = dma_update_in_hwi;
 
-	mutex_lock(&module_mutex);
-	old_mod = find_module("agexpcidrv");
-	mutex_unlock(&module_mutex);
-	if (old_mod) {
-		pr_err(MODMODULENAME": Error: the old driver 'agexpcidrv' is already loaded, aborting...");
-		return -EBUSY;
+	// Test for existing module using the old name "agexpcidrv".
+	// find_module() was removed in 5.12, but the old module doesn't support this kernel anyway,
+	// so no check is required.
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,12,0)
+	{
+		struct module *old_mod;
+		mutex_lock(&module_mutex);
+		old_mod = find_module("agexpcidrv");
+		mutex_unlock(&module_mutex);
+		if (old_mod) {
+			pr_err(MODMODULENAME": Error: the old driver 'agexpcidrv' is already loaded, aborting...");
+			return -EBUSY;
+		}
 	}
+#endif
 
 	/* sich n device nummer holen */
 	/**********************************************************************/
