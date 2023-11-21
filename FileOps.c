@@ -115,7 +115,16 @@ ssize_t imago_read_internal(PDEVICE_DATA pDevData, char* buf, size_t count) {
 	
 	buf32 = (u32*)buf;
 
-	DeviceID = buf32[0];
+	//0. DWord <> DevID
+	//1. DWord <> anzBytesToWrite
+	//2. DWord <> TimeOut_ms (-1 <> für immer)
+	//3. DWord <> Header0
+	//4. DWord <> Header1
+	//5. DWord <> Data
+	//6..n. DWord <> DummyDWords
+
+	// DeviceID: strip serialID (bit 6)
+	DeviceID = buf32[0] & (MAX_IRQDEVICECOUNT - 1);
 	BytesToWrite = buf32[1];
 	TimeOut_ms = buf32[2];
 	
@@ -263,128 +272,6 @@ static ssize_t imago_read(struct file* filp, char __user* buf, size_t count, lof
 		kfree(packet);
 		return -EFAULT;
 	}
-
-	/* freien eintrag suchen */
-	//0. DWord <> DevID
-	//1. DWord <> anzBytesToWrite
-	//2. DWord <> TimeOut_ms (-1 <> für immer)
-	//3. DWord <> Header0
-	//4. DWord <> Header1
-	//5. DWord <> Data
-	//6..n. DWord <> DummyDWords
-	//args lesen
-//	if (__get_user(DeviceID, (u32*)buf) != 0)
-//		return -EFAULT;
-//	// strip serialID (bit 6)
-//	DeviceID &= (MAX_IRQDEVICECOUNT - 1);
-//	if (__get_user(BytesToWrite, (u32*)(buf+1*4)) != 0)
-//		return -EFAULT;
-//	if (__get_user(TimeOut_ms, (u32*)(buf+2*4)) != 0)
-//		return -EFAULT;	
-//	if (BytesToWrite == 0) {
-//		// This is a restart by the kernel after wait_for_completion_interruptible_timeout()
-//		// was interrupted in the previous call:
-//		restart = 1;
-//	} else {
-//		if (count < (BytesToWrite+3*4))
-//			return -EFBIG;
-//		// check for restart read by user space:
-//		if (count >= (BytesToWrite+4*4))
-//			__get_user(restart, (u32*)(buf+BytesToWrite+3*4));
-//	}
-//
-//	dev_dbg(pDevData->dev, "imago_read(): DeviceID %d, bytes out: %u, TimeOut %u\n", DeviceID, BytesToWrite, TimeOut_ms);
-//
-//	pSunDevice = &pDevData->SunDeviceData[DeviceID];
-//
-//	if (restart) {
-//		dev_dbg(pDevData->dev, "imago_read(): restart wait for completion for DeviceID %d\n", DeviceID);
-//	} else {
-//		//Note: unterbrechbar(durch gdb), abbrechbar durch kill -9 & kill -15(term) 
-//		//  noch ist nix passiert, Kernel darf den Aufruf wiederhohlen ohne den User zu benachrichtigen	
-//		if (down_interruptible(&pDevData->DeviceSem) != 0) {
-//			dev_dbg(pDevData->dev, "imago_read() > down_interruptible('DeviceSem') failed!\n");
-//			return -ERESTARTSYS;
-//		}
-//
-//		raw_spin_lock_irqsave(&pDevData->lock, flags);
-//		if (pSunDevice->requestState == SUN_REQ_STATE_INFPGA ||
-//			pSunDevice->requestState == SUN_REQ_STATE_ABORT) {
-//			// Pending request is still in FPGA (after timeout or abort) => toggle serial ID
-//			pSunDevice->serialID = !pSunDevice->serialID;
-//			toggleId = 1;
-//		}
-//		pSunDevice->requestState = SUN_REQ_STATE_INFPGA;
-//		raw_spin_unlock_irqrestore(&pDevData->lock, flags);
-//
-//		if (toggleId)
-//			dev_warn(pDevData->dev, "imago_read() > pending FPGA request for DeviceID %u, toggling serial ID -> %u\n", DeviceID, pSunDevice->serialID);
-//
-//		// clear pending completions
-//		while (try_wait_for_completion(&pSunDevice->result_complete)) {
-//			// may happen if a previous read() that timed out was answered in the meantime
-//			dev_dbg(pDevData->dev, "imago_read(): clearing old completion for DeviceID %u\n", DeviceID);
-//		}
-//
-//		res = pDevData->write(pDevData, buf+3*4, BytesToWrite);
-//		up(&pDevData->DeviceSem);
-//		if (res < 0)
-//			return res;
-//
-//		dev_dbg(pDevData->dev, "imago_read() > wait for completion for DeviceID %d\n", DeviceID);
-//	}
-//
-//	/* wait for completion */
-//	timeout = TimeOut_ms == 0xFFFFFFFF ? MAX_SCHEDULE_TIMEOUT : msecs_to_jiffies(TimeOut_ms);
-//	t_start = jiffies;
-//	res = wait_for_completion_interruptible_timeout(&pSunDevice->result_complete, timeout);
-//	if (res == 0) {
-//		dev_dbg(pDevData->dev, "imago_read(): completion timeout for DeviceID: %u\n", DeviceID);
-//		return -ETIME;
-//	}
-//	if (res == -ERESTARTSYS) {
-//		dev_dbg(pDevData->dev, "imago_read(): waiting for completion was interrupted for DeviceID: %u\n", DeviceID);
-//
-//		// ERESTART_RESTARTBLOCK does not work on ARM => return -ERESTARTSYS and
-//		// set BytesToWrite in the Buffer to 0 for the restarted call by the kernel:
-//		BytesToWrite = 0;
-//		__put_user(BytesToWrite, (u32*)(buf+1*4));
-//
-//		if (TimeOut_ms != 0xFFFFFFFF && TimeOut_ms != 0) {
-//			// also update the timeout value:
-//			unsigned long timeout_done = jiffies_to_msecs(jiffies - t_start);
-//			if (timeout_done < TimeOut_ms)
-//				TimeOut_ms -= timeout_done;
-//			else
-//				TimeOut_ms = 0;
-//			dev_dbg(pDevData->dev, "imago_read(): timeout remaining: %u ms\n", TimeOut_ms);
-//			__put_user(TimeOut_ms, (u32*)(buf+2*4));
-//		}
-//
-//		return res;
-//	}
-//
-//	// check for abort by user?
-//	raw_spin_lock_irqsave(&pDevData->lock, flags);
-//	if (pSunDevice->requestState == SUN_REQ_STATE_ABORT) {
-//		// request was canceled
-//		// do not toggle serial ID yet, request may still be answered by the FPGA
-////		pSunDevice->serialID = !pSunDevice->serialID;
-////		pSunDevice->requestState = SUN_REQ_STATE_IDLE;
-//		raw_spin_unlock_irqrestore(&pDevData->lock, flags);
-//		dev_dbg(pDevData->dev, "imago_read() > aborting read for DeviceID: %u\n", DeviceID);
-//		return -EINTR;
-//	}
-//	else if (pSunDevice->requestState != SUN_REQ_STATE_RESULT) {
-//		raw_spin_unlock_irqrestore(&pDevData->lock, flags);
-//		dev_warn(pDevData->dev, "imago_read() > unexpected request state (%u)\n", pSunDevice->requestState);
-//		return -EFAULT;
-//	}
-//	// don't use copy_to_user() directly here, it may sleep!
-//	memcpy(packet, pSunDevice->packet, 3*4);
-//	pSunDevice->requestState = SUN_REQ_STATE_IDLE;
-//	raw_spin_unlock_irqrestore(&pDevData->lock, flags);
-//
 
 	ret = imago_read_internal(pDevData, (char*)packet, count);
 	if (ret == 3 * 4) {
