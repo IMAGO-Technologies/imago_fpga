@@ -36,7 +36,7 @@ struct adapterData
 	u8 deviceID;
 };
 
-void configHost(unsigned short host, struct adapterData *adapt)
+static void configHost(unsigned short host, struct adapterData *adapt)
 {
 	unsigned int wrmsg[3];
 	wrmsg[0] = 0x51800000;						   /* hdr0 */
@@ -46,7 +46,7 @@ void configHost(unsigned short host, struct adapterData *adapt)
 	adapt->previousHost = host;
 }
 
-long writeBytes(struct i2c_msg *msg, struct adapterData *adapt, struct device *dev)
+static long writeBytes(struct i2c_msg *msg, struct adapterData *adapt, struct device *dev)
 {
 	unsigned int wrmsg[3];
 	unsigned int bytes;
@@ -80,7 +80,7 @@ long writeBytes(struct i2c_msg *msg, struct adapterData *adapt, struct device *d
 	return 0;
 }
 
-long readBytes(struct i2c_msg *msg, struct adapterData *adapt, struct device *dev)
+static long readBytes(struct i2c_msg *msg, struct adapterData *adapt, struct device *dev)
 {
 	unsigned int bytes;
 	unsigned int i, j, k, l;
@@ -129,7 +129,7 @@ long readBytes(struct i2c_msg *msg, struct adapterData *adapt, struct device *de
 	return 0;
 }
 
-int imago_i2cAdapter_xfer(struct i2c_adapter *adapt, struct i2c_msg msgs[], int num)
+static int i2cAdapter_xfer(struct i2c_adapter *adapt, struct i2c_msg msgs[], int num)
 {
 	long retVal;
 	int i;
@@ -152,14 +152,14 @@ int imago_i2cAdapter_xfer(struct i2c_adapter *adapt, struct i2c_msg msgs[], int 
 	return i;
 }
 
-unsigned int imago_i2cAdapter_functionality(struct i2c_adapter *adapt)
+static unsigned int i2cAdapter_functionality(struct i2c_adapter *adapt)
 {
 	return I2C_FUNC_I2C;
 }
 
 struct i2c_algorithm imago_i2cAlgo = {
-	.master_xfer = imago_i2cAdapter_xfer,
-	.functionality = imago_i2cAdapter_functionality,
+	.master_xfer = i2cAdapter_xfer,
+	.functionality = i2cAdapter_functionality,
 };
 
 struct i2c_adapter imago_i2cAdapter = {
@@ -172,6 +172,10 @@ struct i2c_adapter imago_i2cAdapter = {
 long imago_init_i2cAdapter(PDEVICE_DATA pDevData)
 {
 	struct adapterData *data;
+	
+	if (imago_i2cAdapter.algo_data != NULL)
+		return imago_i2cAdapter.nr;
+	
 	data = kzalloc(sizeof(struct adapterData), GFP_KERNEL);
 	data->previousHost = 0;
 	data->pDevData = pDevData;
