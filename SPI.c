@@ -55,6 +55,8 @@ static long fpga_write(struct _DEVICE_DATA *pDevData, const u8 __user * pToUserM
 	u8 deviceID;
 	int result;
 	u8 txbuf[1 + 3 * 4];		// SPI Header + SUN Paket
+	u8 rxBuf[1 + 3 * 4];
+	u8 maxWriteRepeats;
 
 	txbuf[0] = 0; // SPI Header: in CPU Source-FIFO schreiben
 
@@ -76,12 +78,35 @@ static long fpga_write(struct _DEVICE_DATA *pDevData, const u8 __user * pToUserM
 	memset(&transfer, 0, sizeof(transfer));
 	transfer.tx_buf = txbuf;
 	transfer.len = sizeof(txbuf);
+	transfer.rx_buf = rxBuf;
 	spi_message_add_tail(&transfer, &message);
 
 	result = spi_sync(spi, &message);
 	if (result < 0) {
 		dev_err(&spi->dev, "fpga_write(): SPI error %d\n", result);
 		return -EFAULT;
+	}
+	
+	dev_dbg(pDevData->dev, "Target: %x | CPU : %x | Target Full : %x | CPU Full : %x\n", rxBuf[9], rxBuf[10], rxBuf[11], rxBuf[0]);
+	
+	if((rxBuf[0] & 1u) != 0){
+		transfer.len = 1;
+		dev_dbg(pDevData->dev, "Wait for spi buffer\n");
+		maxWriteRepeats = 250;
+		do
+		{
+			result = spi_sync(spi, &message);
+			if (result < 0) {
+				dev_err(&spi->dev, "fpga_write(): SPI error %d\n", result);
+				return -EFAULT;
+			}
+			maxWriteRepeats--;
+		} while (((rxBuf[0] & 1u) != 0) && (maxWriteRepeats > 0));
+		if(maxWriteRepeats == 0){
+			dev_warn(&spi->dev, "fpga_write(): SPI buffer error\n");
+			return -EFAULT;
+		}
+		dev_dbg(pDevData->dev, "Wait for spi buffer done\n");
 	}
 
 	return BytesToWrite;
@@ -193,7 +218,7 @@ static int imago_spi_remove(struct spi_device *spi)
 		return -ENODEV;
 	}
 
-	//IRQ zuückgeben
+	//IRQ zuï¿½ckgeben
 	free_irq(spi->irq, pDevData);
 	
 	imago_dev_close(pDevData);
