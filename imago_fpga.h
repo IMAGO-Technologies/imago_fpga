@@ -20,7 +20,7 @@
 
 // module definitions
 /******************************************************************************************/
-#define MODVERSION "1.2.2.0"
+#define MODVERSION "1.3.0.0"
 #define MODDATECODE __DATE__ " - " __TIME__
 #define MODLICENSE "GPL"
 #define MODDESCRIPTION "IMAGO FPGA / RTCC device driver"
