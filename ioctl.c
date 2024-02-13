@@ -102,7 +102,7 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 		// 		noch genutzt
 		case IOC_CREATE_DEVICEID:
 		{
-			u8 deviceIdUser;
+			u8 deviceIdUser = 0;
 			long retVal;
 			retVal = imago_create_deviceid(pDevData, &deviceIdUser);
 			if (__put_user(deviceIdUser, pToUserMem) != 0) {

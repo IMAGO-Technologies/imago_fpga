@@ -68,6 +68,8 @@ static long fpga_write(struct _DEVICE_DATA *pDevData, const u8 __user * pToUserM
 
 	memcpy(&txbuf[1], pToUserMem, BytesToWrite);
 
+	dev_dbg(pDevData->dev, "fpga_write: H0:0x%08x, H1:0x%08x, D:0x%08x\n", ((u32*)&txbuf[1])[0], ((u32*)&txbuf[1])[1], ((u32*)&txbuf[1])[2]);
+
 	// insert serialID to Header1:
 	deviceID = (((u32*)&txbuf[1])[1] >> 20) & (MAX_IRQDEVICECOUNT - 1);
 	if (deviceID != 0) {
@@ -86,8 +88,6 @@ static long fpga_write(struct _DEVICE_DATA *pDevData, const u8 __user * pToUserM
 		dev_err(&spi->dev, "fpga_write(): SPI error %d\n", result);
 		return -EFAULT;
 	}
-	
-	dev_dbg(pDevData->dev, "Target: %x | CPU : %x | Target Full : %x | CPU Full : %x\n", rxBuf[9], rxBuf[10], rxBuf[11], rxBuf[0]);
 	
 	if((rxBuf[0] & 1u) != 0){
 		transfer.len = 1;
