@@ -290,6 +290,7 @@ int imago_DMARead_Reset_DMAChannel(PDEVICE_DATA pDevData, unsigned int dma_chann
 long imago_init_i2cAdapter(PDEVICE_DATA pDevData);
 void imago_remove_i2cAdapter(void);
 
+int imago_write_locked(PDEVICE_DATA pDevData, u32* packet, unsigned int packet_size);
 int imago_write_internal(PDEVICE_DATA pDevData, u32 *packet, unsigned int packet_size);
 int imago_read_internal(PDEVICE_DATA pDevData, u32* buf, unsigned int count);
 

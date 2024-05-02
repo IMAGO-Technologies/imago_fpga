@@ -51,8 +51,6 @@ static int fpga_write(struct _DEVICE_DATA *pDevData, u32* packet, unsigned int p
 	struct spi_transfer transfer;
 	struct spi_message message;
 	struct spi_device *spi = to_spi_device(pDevData->dev);
-	// u8 packet[3 * 4];	// SUN packet:  header0, header1, data
-	u8 deviceID;
 	int result;
 	u8 txbuf[1 + 3 * 4];		// SPI Header + SUN Paket
 	u8 rxBuf[1 + 3 * 4];
@@ -69,12 +67,6 @@ static int fpga_write(struct _DEVICE_DATA *pDevData, u32* packet, unsigned int p
 	}
 
 	memcpy(&txbuf[1], packet, 4 * packet_size);
-
-	// insert serialID to Header1:
-	deviceID = (((u32*)&txbuf[1])[1] >> 20) & (MAX_IRQDEVICECOUNT - 1);
-	if (deviceID != 0) {
-		((u32*)&txbuf[1])[1] |= pDevData->SunDeviceData[deviceID].serialID << 26;
-	}
 
 	spi_message_init(&message);
 	memset(&transfer, 0, sizeof(transfer));

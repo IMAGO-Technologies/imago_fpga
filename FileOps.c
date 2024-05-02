@@ -113,7 +113,7 @@ int imago_read_internal(PDEVICE_DATA pDevData, u32* buf, unsigned int count)
 	unsigned long timeout, t_start;
 	
 	//0. DWord <> DevID
-	//1. DWord <> anzBytesToWrite
+	//1. DWord <> BytesToWrite
 	//2. DWord <> TimeOut_ms (-1 <> für immer)
 	//3. DWord <> Header0
 	//4. DWord <> Header1
@@ -170,7 +170,7 @@ int imago_read_internal(PDEVICE_DATA pDevData, u32* buf, unsigned int count)
 			dev_dbg(pDevData->dev, "imago_read(): clearing old completion for DeviceID %u\n", DeviceID);
 		}
 
-		res = pDevData->write(pDevData, buf + 3, BytesToWrite / 4);
+		res = imago_write_locked(pDevData, buf + 3, BytesToWrite / 4);
 
 		up(&pDevData->DeviceSem);
 		if (res < 0)
@@ -286,6 +286,18 @@ static ssize_t imago_read(struct file* filp, char __user* buf, size_t count, lof
 	return ret;
 }
 
+int imago_write_locked(PDEVICE_DATA pDevData, u32* packet, unsigned int packet_size)
+{
+	// insert serialID to Header1:
+	u8 deviceID = (packet[1] >> 20) & (MAX_IRQDEVICECOUNT - 1);
+	if (deviceID != 0) {
+		packet[1] &= ~(1 << 26);
+		packet[1] |= pDevData->SunDeviceData[deviceID].serialID << 26;
+	}
+
+	return pDevData->write(pDevData, packet, packet_size);
+}
+
 int imago_write_internal(PDEVICE_DATA pDevData, u32* packet, unsigned int packet_size)
 {
 	int res;
@@ -299,7 +311,7 @@ int imago_write_internal(PDEVICE_DATA pDevData, u32* packet, unsigned int packet
 	}
 
 	//----------------------------->
-	res = pDevData->write(pDevData, packet, packet_size);
+	res = imago_write_locked(pDevData, packet, packet_size);
 	//<-----------------------------
 	up(&pDevData->DeviceSem);
 	return res;

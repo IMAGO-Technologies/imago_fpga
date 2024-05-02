@@ -73,14 +73,7 @@ MODULE_DEVICE_TABLE(pci, pci_ids);		//macht dem kernel bekannt was dieses modul 
 // writes FPGA packet
 static int fpga_write(struct _DEVICE_DATA *pDevData, u32 *packet, unsigned int packet_size)
 {
-	u8 deviceID;
-	u32 word;
-	
-	// insert serialID to Header1:
-	deviceID = (packet[1] >> 20) & (MAX_IRQDEVICECOUNT - 1);
-	if (deviceID != 0) {
-		packet[1] |= pDevData->SunDeviceData[deviceID].serialID << 26;
-	}
+	unsigned int word;
 
 	for (word = 0; word < packet_size; word++)
 		iowrite32(packet[word], pDevData->pVABAR0 + word*4 );

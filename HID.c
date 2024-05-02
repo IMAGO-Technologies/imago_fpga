@@ -70,7 +70,6 @@ static int fpga_write(struct _DEVICE_DATA *pDevData, u32* packet, unsigned int p
 {
 	struct hid_device *hid = to_hid_device(pDevData->dev);
 	struct imago_hid_uart *hid_uart = hid_get_drvdata(hid);
-	u8 deviceID;
 	u8 report_id = 0xd0 + (4 * packet_size - 1) / 4;
 	int res;
 
@@ -84,11 +83,6 @@ static int fpga_write(struct _DEVICE_DATA *pDevData, u32* packet, unsigned int p
 	memcpy(&hid_uart->tx_buf[2], packet, 4 * packet_size);
 
 	hid_dbg(hid, "fpga_write: h0=0x%08x, h1=0x%08x, data=0x%08x\n", ((u32 *)&hid_uart->tx_buf[2])[0], ((u32 *)&hid_uart->tx_buf[2])[1], ((u32 *)&hid_uart->tx_buf[2])[2]);
-
-	// insert serialID to Header1:
-	deviceID = (((u32*)&hid_uart->tx_buf[2])[1] >> 20) & (MAX_IRQDEVICECOUNT - 1);
-	if (deviceID != 0)
-		((u32*)&hid_uart->tx_buf[2])[1] |= pDevData->SunDeviceData[deviceID].serialID << 26;
 
 	res = hid_hw_output_report(hid, hid_uart->tx_buf, 2 + 4 * packet_size);
 
