@@ -42,7 +42,7 @@ static void configHost(unsigned short host, struct adapterData *adapt)
 	wrmsg[0] = 0x51800000;						   /* hdr0 */
 	wrmsg[1] = 0x80000001 | adapt->deviceID << 20; /* hdr1 */
 	wrmsg[2] = (1 << 28) | host;				   /* data */
-	imago_write_internal(adapt->pDevData, (char *)wrmsg, 12);
+	imago_write_internal(adapt->pDevData, wrmsg, 3);
 	adapt->previousHost = host;
 }
 
@@ -72,7 +72,7 @@ static long writeBytes(struct i2c_msg *msg, struct adapterData *adapt, struct de
 		{
 			((unsigned char *)&wrmsg[2])[j] = msg->buf[j + i];
 		}
-		retVal = imago_write_internal(adapt->pDevData, (unsigned char *)wrmsg, 12);
+		retVal = imago_write_internal(adapt->pDevData, wrmsg, 3);
 		if (retVal < 0)
 			return retVal;
 		usleep_range(800, 850);
@@ -104,7 +104,7 @@ static long readBytes(struct i2c_msg *msg, struct adapterData *adapt, struct dev
 		wrmsg[2] = ((bytes - 1) << 24);				   /* 0 ^= 1 byte read */
 
 		// kernel_read(adapt->spiDrvFp, wrmsg, 24, &(adapt->spiDrvFp->f_pos));
-		retVal = imago_write_internal(adapt->pDevData, (unsigned char *)wrmsg, 12);
+		retVal = imago_write_internal(adapt->pDevData, wrmsg, 3);
 		for (k = 0; k < bytes; k += 4)
 		{
 			rdmsg[0] = adapt->deviceID;					   /* devId */
@@ -114,7 +114,7 @@ static long readBytes(struct i2c_msg *msg, struct adapterData *adapt, struct dev
 			rdmsg[4] = 0x80000001 | adapt->deviceID << 20; /* hdr1 device id is important*/
 			rdmsg[5] = 0;
 			usleep_range(500, 550);
-			retVal = imago_read_internal(adapt->pDevData, (char *)rdmsg, 24);
+			retVal = imago_read_internal(adapt->pDevData, rdmsg, 24);
 			if (retVal < 0)
 			{
 				return retVal;

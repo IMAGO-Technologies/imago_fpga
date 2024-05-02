@@ -66,26 +66,22 @@ static int raw_event(struct hid_device *hid, struct hid_report *report,
 	return 0;
 }
 
-static long fpga_write(struct _DEVICE_DATA *pDevData, const u8 *pToUserMem, const size_t BytesToWrite)
+static int fpga_write(struct _DEVICE_DATA *pDevData, u32* packet, unsigned int packet_size)
 {
 	struct hid_device *hid = to_hid_device(pDevData->dev);
 	struct imago_hid_uart *hid_uart = hid_get_drvdata(hid);
 	u8 deviceID;
-	u8 report_id = 0xd0 + (BytesToWrite - 1) / 4;
+	u8 report_id = 0xd0 + (4 * packet_size - 1) / 4;
 	int res;
 
-	if (BytesToWrite > (3 * 4)) {
-		dev_warn(pDevData->dev, "fpga_write(): too many bytes\n");
+	if (packet_size != 3) {
+		dev_warn(pDevData->dev, "fpga_write(): invalid packet size\n");
 		return -EFBIG;
 	}
 
 	hid_uart->tx_buf[0] = report_id;
-	hid_uart->tx_buf[1] = BytesToWrite;	// actual payload size
-	memcpy(&hid_uart->tx_buf[2], pToUserMem, BytesToWrite);
-	//if (copy_from_user(&hid_uart->tx_buf[2], pToUserMem, BytesToWrite) != 0) {
-	//	dev_warn(pDevData->dev, "fpga_write(): copy_from_user() failed\n");
-	//	return -EFAULT;
-	//}
+	hid_uart->tx_buf[1] = 4 * packet_size;	// actual payload size
+	memcpy(&hid_uart->tx_buf[2], packet, 4 * packet_size);
 
 	hid_dbg(hid, "fpga_write: h0=0x%08x, h1=0x%08x, data=0x%08x\n", ((u32 *)&hid_uart->tx_buf[2])[0], ((u32 *)&hid_uart->tx_buf[2])[1], ((u32 *)&hid_uart->tx_buf[2])[2]);
 
@@ -94,14 +90,14 @@ static long fpga_write(struct _DEVICE_DATA *pDevData, const u8 *pToUserMem, cons
 	if (deviceID != 0)
 		((u32*)&hid_uart->tx_buf[2])[1] |= pDevData->SunDeviceData[deviceID].serialID << 26;
 
-	res = hid_hw_output_report(hid, hid_uart->tx_buf, 2 + BytesToWrite);
+	res = hid_hw_output_report(hid, hid_uart->tx_buf, 2 + 4 * packet_size);
 
-	if (res != 2 + BytesToWrite) {
+	if (res != 2 + 4 * packet_size) {
 		hid_err(hid, "fpga_write(): hid_hw_output_report() failed\n");
 		return -EIO;
 	}
 
-	return BytesToWrite;
+	return 4 * packet_size;
 }
 
 static int imago_hid_probe(struct hid_device *hdev, const struct hid_device_id *id)

@@ -46,7 +46,7 @@ MODULE_DEVICE_TABLE(spi, imago_spi_id);
 
 
 // writes FPGA packet
-static long fpga_write(struct _DEVICE_DATA *pDevData, const u8 __user * pToUserMem, const size_t BytesToWrite)
+static int fpga_write(struct _DEVICE_DATA *pDevData, u32* packet, unsigned int packet_size)
 {
 	struct spi_transfer transfer;
 	struct spi_message message;
@@ -60,15 +60,15 @@ static long fpga_write(struct _DEVICE_DATA *pDevData, const u8 __user * pToUserM
 
 	txbuf[0] = 0; // SPI Header: in CPU Source-FIFO schreiben
 
+	dev_dbg(pDevData->dev, "fpga_write: H0:0x%08x, H1:0x%08x, D:0x%08x\n", packet[0], packet[1], packet[2]);
+
 	// User Data -> Kernel
-	if (BytesToWrite > (3 * 4)) {
-		dev_warn(pDevData->dev, "fpga_write(): too many bytes\n");
+	if (packet_size != 3) {
+		dev_warn(pDevData->dev, "fpga_write(): invalid packet size\n");
 		return -EFBIG;
 	}
 
-	memcpy(&txbuf[1], pToUserMem, BytesToWrite);
-
-	dev_dbg(pDevData->dev, "fpga_write: H0:0x%08x, H1:0x%08x, D:0x%08x\n", ((u32*)&txbuf[1])[0], ((u32*)&txbuf[1])[1], ((u32*)&txbuf[1])[2]);
+	memcpy(&txbuf[1], packet, 4 * packet_size);
 
 	// insert serialID to Header1:
 	deviceID = (((u32*)&txbuf[1])[1] >> 20) & (MAX_IRQDEVICECOUNT - 1);
@@ -109,7 +109,7 @@ static long fpga_write(struct _DEVICE_DATA *pDevData, const u8 __user * pToUserM
 		dev_dbg(pDevData->dev, "Wait for spi buffer done\n");
 	}
 
-	return BytesToWrite;
+	return 4 * packet_size;
 }
 
 // IRQ thread

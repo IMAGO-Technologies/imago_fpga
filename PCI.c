@@ -71,55 +71,21 @@ MODULE_DEVICE_TABLE(pci, pci_ids);		//macht dem kernel bekannt was dieses modul 
 
 
 // writes FPGA packet
-static long fpga_write(struct _DEVICE_DATA *pDevData, const u8 *pToUserMem, const size_t BytesToWrite)
+static int fpga_write(struct _DEVICE_DATA *pDevData, u32 *packet, unsigned int packet_size)
 {
-	u8 TempBuffer[4*(3+1)];		// +1 damit bei PCIe immer 64 Bit sind
 	u8 deviceID;
-
-	// User Data -> Kernel
-	if (BytesToWrite > sizeof(TempBuffer)) {
-		dev_warn(pDevData->dev, "fpga_write(): too many bytes\n");
-		return -EFBIG;
-	}
+	u32 word;
 	
-	memcpy(TempBuffer, pToUserMem, BytesToWrite);
-	
-	//if (copy_from_user (TempBuffer, pToUserMem, BytesToWrite) != 0) {
-	//	dev_warn(pDevData->dev, "fpga_write(): copy_from_user() failed\n");
-	//	return -EFAULT;
-	//}
-
 	// insert serialID to Header1:
-	deviceID = (((u32*)TempBuffer)[1] >> 20) & (MAX_IRQDEVICECOUNT - 1);
+	deviceID = (packet[1] >> 20) & (MAX_IRQDEVICECOUNT - 1);
 	if (deviceID != 0) {
-		((u32*)TempBuffer)[1] |= pDevData->SunDeviceData[deviceID].serialID << 26;
+		packet[1] |= pDevData->SunDeviceData[deviceID].serialID << 26;
 	}
 
-	/* Kernel -> PCI */
-	//Notes:
-	// -für die AGEX muss sich die Adr nicht ändern
-	// -bei der AGEX2 müssen es 32Bit mit steigender Adr sein
-	//
-	// aus include/asm-generic/iomap.h für ioread/writeX_rep
-	// "...They do _not_ update the port address. If you
-	//	want MMIO that copies stuff laid out in MMIO
-	//	memory across multiple ports, use "memcpy_toio()..."
-	//
-	// aber auch memcpy_toio() macht nicht immer 32Bit
-	// "http://www.gossamer-threads.com/lists/linux/kernel/650995?do=post_view_threaded#650995"
-	if (BytesToWrite % 4) {
-		u32 ByteIndex =0;
-		for(; ByteIndex < BytesToWrite; ByteIndex++)
-			iowrite8(TempBuffer[ByteIndex], pDevData->pVABAR0+ByteIndex);
-	}
-	else {
-		u32 WordsToCopy = BytesToWrite/4;
-		u32 WordIndex;
-		for (WordIndex = 0; WordIndex < WordsToCopy; WordIndex++)
-			iowrite32(((u32*)TempBuffer)[WordIndex], pDevData->pVABAR0 + WordIndex*4 );
-	}
+	for (word = 0; word < packet_size; word++)
+		iowrite32(packet[word], pDevData->pVABAR0 + word*4 );
 
-	return BytesToWrite;
+	return 4 * packet_size;
 }
 
 
@@ -328,14 +294,13 @@ static int imago_pci_probe(struct pci_dev *pcidev, const struct pci_device_id *i
 		imago_free_dev_data(pDevData);
 		return -EBUSY;
 	}
-	else {
-		pDevData->boIsBAR0Requested = true;
-		pDevData->pVABAR0 = ioremap(bar0_start,bar0_len); //das setzen der adr zeigt auch an das wir (R/W) fns aufs device schreiben dürfen
-		if (pDevData->pVABAR0 == NULL)
-			dev_err(&pcidev->dev, "ioremap failed\n");
-		else
-			dev_dbg(&pcidev->dev, "map bar0 0x%llx to 0x%p\n", bar0_start, pDevData->pVABAR0);
-	}
+
+	pDevData->boIsBAR0Requested = true;
+	pDevData->pVABAR0 = ioremap(bar0_start,bar0_len);
+	if (pDevData->pVABAR0 == NULL)
+		dev_err(&pcidev->dev, "ioremap failed\n");
+	else
+		dev_dbg(&pcidev->dev, "map bar0 0x%llx to 0x%p\n", bar0_start, pDevData->pVABAR0);
 
 
 	// allocate coherent DMA buffer for storing interrupt data by the FPGA

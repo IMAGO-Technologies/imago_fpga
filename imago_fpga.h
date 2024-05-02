@@ -215,11 +215,12 @@ typedef struct _DEVICE_DATA
 	struct semaphore		DeviceSem;		//lock für ein Device (diese struct & common buffer)
 	dev_t					DeviceNumber;	//Nummer von CHAR device
 	u8						flags;
-	long					(*write)(struct _DEVICE_DATA *pDevData, const u8 *pToUserMem, const size_t BytesToWrite);
+	int						(*write)(struct _DEVICE_DATA *pDevData, u32 *packet, unsigned int packet_size);
 
-	//> IDs/MetaInfos fuer ein read	
+	//> SunDeviceData[] stores the state of read requests for different FPGA registers ('devices')
 	//***************************************************************/
-	raw_spinlock_t			lock;
+	raw_spinlock_t			lock;				// spin lock for access to SunDeviceData[], we use a raw spin
+												// lock because a normal spin lock may sleep under PREEMPT_RT
 	struct SUN_DEVICE_DATA	SunDeviceData[MAX_IRQDEVICECOUNT];
 
 	//> BAR0
@@ -289,8 +290,8 @@ int imago_DMARead_Reset_DMAChannel(PDEVICE_DATA pDevData, unsigned int dma_chann
 long imago_init_i2cAdapter(PDEVICE_DATA pDevData);
 void imago_remove_i2cAdapter(void);
 
-ssize_t imago_write_internal(PDEVICE_DATA pDevData, const char* buf, size_t count);
-ssize_t imago_read_internal(PDEVICE_DATA pDevData, char* buf, size_t count);
+int imago_write_internal(PDEVICE_DATA pDevData, u32 *packet, unsigned int packet_size);
+int imago_read_internal(PDEVICE_DATA pDevData, u32* buf, unsigned int count);
 
 // device uses PCIe interface (common buffer + MSI)
 static inline bool IS_TYPEWITH_COMMONBUFFER(DEVICE_DATA *pDeviceData)
