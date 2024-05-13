@@ -566,6 +566,8 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 			else
 				return imago_DMARead_Abort_DMAWaiter(pDevData, iDMAChannel);
 		}
+#ifdef __aarch64__
+#if IS_ENABLED(CONFIG_SPI_MASTER)
 		case IOC_INIT_I2C_ADAPTER:
 		{
 			long busNumber;
@@ -578,6 +580,8 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 			}
 			return 0;
 		}
+#endif
+#endif
 		default:
 			return -ENOTTY;
 	}
