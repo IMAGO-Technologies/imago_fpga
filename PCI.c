@@ -76,14 +76,35 @@ static int fpga_write(struct _DEVICE_DATA *pDevData, u32 *packet, unsigned int p
 	unsigned int word;
 
 	for (word = 0; word < packet_size; word++)
-		iowrite32(packet[word], pDevData->pVABAR0 + word*4 );
+		writel_relaxed(packet[word], pDevData->pVABAR0 + word*4);
 
 	return 4 * packet_size;
 }
 
+#ifdef CONFIG_64BIT		
+static int fpga_write64(struct _DEVICE_DATA *pDevData, u32 *packet, unsigned int packet_size)
+{
+	unsigned int word;
 
-//Schaltet im PCI-Geraet die Ints ab/zu
+	for (word = 0; word < packet_size; word += 2)
+		writeq_relaxed(*(u64 *)&packet[word], pDevData->pVABAR0 + word*4);
+
+	return 4 * packet_size;
+}
+#endif
+
+
+// PCI interrupt enable control
+
 static void pci_enable_interrupt(PDEVICE_DATA pDevData, bool enable)
+{
+	if (pDevData == NULL || pDevData->device_type == DeviceType_Invalid || pDevData->pVABAR0 == NULL)
+		return;
+
+	iowrite32(enable ? 1 : 0, pDevData->pVABAR0 + ISR_ONOFF_OFFSET_AGEX);
+}
+
+static void pcie_enable_interrupt(PDEVICE_DATA pDevData, bool enable)
 {
 	if (pDevData == NULL || pDevData->device_type == DeviceType_Invalid || pDevData->pVABAR0 == NULL)
 		return;
@@ -91,28 +112,21 @@ static void pci_enable_interrupt(PDEVICE_DATA pDevData, bool enable)
 	//der DPC ist/ muss durch sein
 	//(kann aber erst hier gesetzt werden da sonst race cond mit CommonBuffer Clear, IRQEnable und DPCFlag)
 	if (enable) {
+		if (pDevData->pVACommonBuffer == NULL)
+			return;
 
-		if (IS_TYPEWITH_COMMONBUFFER(pDevData)) {
-			//nur um ganz sicher zu sein
-			if( (pDevData->pVACommonBuffer == NULL) || (pDevData->pBACommonBuffer == 0) )
-				return;
-
-			//> das IRQ Flag löschen (2 Word [Flags])
-			//ACHTUNG! die 3 Word [Header0/Header1/Data[0]] nicht überschreiben da alte VCXM/CL-PCIe FPGAs während ein DMA IRQ behandelt wurde
-			//	schon das SUNPaket in den CommonBuffer geschrieben haben, 
-			//	nach dem setzen des "IRQ-Enable Bits" im FPGA hat dieser dann das FLAG gesetzt und den MSI geschickt
-			memset(pDevData->pVACommonBuffer, 0, 2 * sizeof(u32));
-			smp_mb();	//nop bei x86
-		}
+		//> das IRQ Flag löschen (2 Word [Flags])
+		// ACHTUNG: Das SUN-Paket [Header0/Header1/Data[0]] nicht ueberschreiben da alte VCXM/CL-PCIe FPGA
+		// Versionen schon das naechste SUN-Paket in den CommonBuffer geschrieben haben, waehrend ein DMA IRQ behandelt wurde.
+		memset(pDevData->pVACommonBuffer, 0, 2 * sizeof(u32));
+		smp_mb();	//nop bei x86
 	}
 
-	// dev_dbg(pDevData->dev, "pci_enable_interrupt: %u\n", enable ? 1 : 0);
-
-	/* IRQ enable flag */
-	iowrite32(enable ? 1 : 0, pDevData->pVABAR0 + (IS_TYPEWITH_COMMONBUFFER(pDevData) ? ISR_ONOFF_OFFSET_AGEX2 : ISR_ONOFF_OFFSET_AGEX));
+	iowrite32(enable ? 1 : 0, pDevData->pVABAR0 + ISR_ONOFF_OFFSET_AGEX2);
 }
 
-// Interrupts
+
+// Interrupt handlers
 
 // PCI interrupt
 static irqreturn_t pci_interrupt(int irq, void *dev_id)
@@ -122,7 +136,7 @@ static irqreturn_t pci_interrupt(int irq, void *dev_id)
 
 	BUG_ON(pDevData == NULL || pDevData->pVABAR0 == NULL || pDevData->device_type == DeviceType_Invalid);
 
-	// check the FPGA interrupt flag (cleared whein FIFO is empty or when interrupt is disabled)
+	// check the FPGA interrupt flag (cleared when FIFO is empty or when interrupt is disabled)
 	regVal = ioread32(pDevData->pVABAR0 + ISR_AVAILABLE_OFFSET);
 	if ((regVal & 0x1) == 0)
 		return IRQ_NONE;	// not our interrupt
@@ -164,7 +178,7 @@ static irqreturn_t pcie_interrupt(int irq, void *dev_id)
 	}
 
 	if (result == IRQ_HANDLED)
-		pci_enable_interrupt(pDevData, true);
+		pcie_enable_interrupt(pDevData, true);
 
 	return result;
 }
@@ -217,7 +231,7 @@ static irqreturn_t pcie_thread(int irq, void *dev_id)
 	if ((IRQReg_A >> 4) != 0 && !pDevData->setupTcInHWI)
 		imago_DMARead_DPC(pDevData);
 
-	pci_enable_interrupt(pDevData, true);
+	pcie_enable_interrupt(pDevData, true);
 
 	return IRQ_HANDLED;
 }
@@ -251,7 +265,12 @@ static int imago_pci_probe(struct pci_dev *pcidev, const struct pci_device_id *i
 	if (pDevData == NULL)
 		return -EINVAL;
 
-	pDevData->write = fpga_write;
+#ifdef CONFIG_64BIT		
+	if (IS_TYPEWITH_COMMONBUFFER(pDevData))
+		pDevData->write = fpga_write64;
+	else
+#endif
+		pDevData->write = fpga_write;
 	pci_set_drvdata(pcidev, pDevData);				//damit wir im imago_pci_remove() wissen welches def freigebene werden soll
 
 	dev_dbg(&pcidev->dev, "using major/minor (%d:%d)\n", MAJOR(pDevData->DeviceNumber), MINOR(pDevData->DeviceNumber));
@@ -299,22 +318,22 @@ static int imago_pci_probe(struct pci_dev *pcidev, const struct pci_device_id *i
 	// allocate coherent DMA buffer for storing interrupt data by the FPGA
 	/**********************************************************************/
 	if (IS_TYPEWITH_COMMONBUFFER(pDevData)) {
-		u8 MaxDAMAddressSize = 32;
+		u8 DMA_addressSize = 32;
 		if (IS_TYPEWITH_PCI64BIT(pDevData))
-			MaxDAMAddressSize = 64;
+			DMA_addressSize = 64;
 
 		//sagt das wir xxBit können
 		//https://www.kernel.org/doc/Documentation/DMA-API-HOWTO.txt
 		// "...By default, the kernel assumes that your device can address the full 32-bits...
 		//  ... It is good style to do this even if your device holds the default setting ..."
-		if (dma_set_mask(&pcidev->dev, DMA_BIT_MASK(MaxDAMAddressSize) ) != 0) {
+		if (dma_set_mask(&pcidev->dev, DMA_BIT_MASK(DMA_addressSize) ) != 0) {
 			dev_err(&pcidev->dev, "dma_set_mask failed!\n");
 			imago_free_dev_data(pDevData);
 			return -EIO;
 		}
 		//ab 2.6.34
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,34)
-		if (dma_set_coherent_mask(&pcidev->dev, DMA_BIT_MASK(MaxDAMAddressSize) ) != 0) {
+		if (dma_set_coherent_mask(&pcidev->dev, DMA_BIT_MASK(DMA_addressSize) ) != 0) {
 			dev_err(&pcidev->dev, "dma_set_coherent_mask failed!\n");
 			imago_free_dev_data(pDevData);
 			return -EIO;
@@ -440,7 +459,10 @@ static int imago_pci_probe(struct pci_dev *pcidev, const struct pci_device_id *i
 	}
 	
 	// enable PCI interrupts
-	pci_enable_interrupt(pDevData, true);
+	if (IS_TYPEWITH_COMMONBUFFER(pDevData))
+		pcie_enable_interrupt(pDevData, true);
+	else
+		pci_enable_interrupt(pDevData, true);
 
 	// create char device
 	res = imago_create_device(pDevData);
@@ -482,7 +504,10 @@ static void imago_pci_remove(struct pci_dev *pcidev)
 		}
 	}
 
-	pci_enable_interrupt(pDevData, false);
+	if (IS_TYPEWITH_COMMONBUFFER(pDevData))
+		pcie_enable_interrupt(pDevData, false);
+	else
+		pci_enable_interrupt(pDevData, false);
 	free_irq(pcidev->irq, pDevData);
 	if (IS_TYPEWITH_COMMONBUFFER(pDevData))
 		pci_disable_msi(pcidev);
