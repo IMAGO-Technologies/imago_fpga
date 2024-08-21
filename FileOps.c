@@ -118,7 +118,10 @@ int imago_read_internal(PDEVICE_DATA pDevData, u32* buf, unsigned int count)
 	//3. DWord <> Header0
 	//4. DWord <> Header1
 	//5. DWord <> Data
-	//6..n. DWord <> DummyDWords
+	//6. DWord <> DummyDWord
+
+	if (count < (3 * 4))
+		return -EINVAL;
 
 	// DeviceID: strip serialID (bit 6)
 	DeviceID = buf[0] & (MAX_IRQDEVICECOUNT - 1);
@@ -144,8 +147,6 @@ int imago_read_internal(PDEVICE_DATA pDevData, u32* buf, unsigned int count)
 		dev_dbg(pDevData->dev, "imago_read(): restart wait for completion for DeviceID %d\n", DeviceID);
 	}
 	else {
-		//Note: unterbrechbar(durch gdb), abbrechbar durch kill -9 & kill -15(term) 
-		//  noch ist nix passiert, Kernel darf den Aufruf wiederhohlen ohne den User zu benachrichtigen	
 		if (down_interruptible(&pDevData->DeviceSem) != 0) {
 			dev_dbg(pDevData->dev, "imago_read() > down_interruptible('DeviceSem') failed!\n");
 			return -ERESTARTSYS;
@@ -213,7 +214,7 @@ int imago_read_internal(PDEVICE_DATA pDevData, u32* buf, unsigned int count)
 	raw_spin_lock_irqsave(&pDevData->lock, flags);
 	if (pSunDevice->requestState == SUN_REQ_STATE_ABORT) {
 		// request was canceled
-		// do not toggle serial ID yet, request may still be answered by the FPGA
+		// do not toggle serial ID yet, the request may still be answered by the FPGA
 //		pSunDevice->serialID = !pSunDevice->serialID;
 //		pSunDevice->requestState = SUN_REQ_STATE_IDLE;
 		raw_spin_unlock_irqrestore(&pDevData->lock, flags);
@@ -234,21 +235,14 @@ int imago_read_internal(PDEVICE_DATA pDevData, u32* buf, unsigned int count)
 
 static ssize_t imago_read(struct file* filp, char __user* buf, size_t count, loff_t* pos)
 {
-	//	u32 TimeOut_ms, BytesToWrite, DeviceID;
-	//	long res;	
 	PDEVICE_DATA pDevData = NULL;
-	//	struct SUN_DEVICE_DATA *pSunDevice;
-	//	unsigned long flags;
-	//	int toggleId = 0;
-	//	u32 restart = 0;
-	//	unsigned long timeout, t_start;
 	int ret;
-	u32* kbuf;
+	u32 data[7];
 
-	if (filp == NULL || filp->private_data == NULL)
+	if (filp == NULL || filp->private_data == NULL || count > sizeof(data))
 		return -EINVAL;
-	pDevData = (PDEVICE_DATA)filp->private_data;
 
+	pDevData = (PDEVICE_DATA)filp->private_data;
 	if (!pDevData->boIsDeviceOpen) {
 		dev_warn(pDevData->dev, "imago_read(): device is not ready\n");
 		return -ENODEV;
@@ -256,33 +250,21 @@ static ssize_t imago_read(struct file* filp, char __user* buf, size_t count, lof
 
 	// dev_dbg(pDevData->dev, "imago_read(): %d bytes\n", (int)count);
 
-	if (count < (3 * 4))
-		return -EFAULT;
-
-	//duerfen wir den mem nutzen?
-	if (!__access_ok__(VERIFY_WRITE, buf, count))
-		return -EFAULT;
-
-	kbuf = kzalloc(count, GFP_KERNEL);
-
-	if (copy_from_user(kbuf, buf, count) != 0){
-		kfree(kbuf);
+	if (copy_from_user(data, buf, count) != 0){
 		return -EFAULT;
 	}
 
-	ret = imago_read_internal(pDevData, kbuf, count);
+	ret = imago_read_internal(pDevData, data, count);
 	if (ret == 3 * 4) {
-		if (copy_to_user(buf, kbuf, 3 * 4) != 0) {
-			kfree(kbuf);
+		if (copy_to_user(buf, data, 3 * 4) != 0) {
 			return -EFAULT;
 		}
 	}
 	else if (ret == -ERESTARTSYS) {
 		// store modified write size and timeout in user memory
-		__put_user(kbuf[1], (u32*)(buf + 1));
-		__put_user(kbuf[2], (u32*)(buf + 2));
+		put_user(data[1], (u32*)(buf + 1));
+		put_user(data[2], (u32*)(buf + 2));
 	}
-	kfree(kbuf);
 	return ret;
 }
 
@@ -302,18 +284,16 @@ int imago_write_internal(PDEVICE_DATA pDevData, u32* packet, unsigned int packet
 {
 	int res;
 
-	// write data
-	//Note: unterbrechbar(durch gdb), abbrechbar durch kill -9 & kill -15(term) 
-	//  noch ist nix passiert, Kernel darf den Aufruf wiederhohlen ohne den User zu benachrichtigen
+	// lock FPGA access, may be interrupted and restarted by the kernel
 	if (down_interruptible(&pDevData->DeviceSem) != 0) {
-		dev_dbg(pDevData->dev, "imago_write() > down_interruptible('DeviceSem') failed!\n");
+		dev_dbg(pDevData->dev, "imago_write_internal(): down_interruptible() timeout\n");
 		return -ERESTARTSYS;
 	}
 
-	//----------------------------->
 	res = imago_write_locked(pDevData, packet, packet_size);
-	//<-----------------------------
+
 	up(&pDevData->DeviceSem);
+
 	return res;
 }
 
@@ -321,9 +301,9 @@ static ssize_t imago_write(struct file *filp, const char __user *buf, size_t cou
 {
 	int res;
 	PDEVICE_DATA pDevData = NULL;
-	u32* internalBuffer;
+	u32 packet[4];
 
-	if (filp == NULL || filp->private_data == NULL || (count % 4) != 0)
+	if (filp == NULL || filp->private_data == NULL || (count % 4) != 0 || count > sizeof(packet))
 		return -EINVAL;
 	pDevData = (PDEVICE_DATA) filp->private_data;
 
@@ -334,19 +314,12 @@ static ssize_t imago_write(struct file *filp, const char __user *buf, size_t cou
 
 	dev_dbg(pDevData->dev, "imago_write(): %d bytes\n", (int)count);
 
-	// is mem access OK?
-	if (!__access_ok__(VERIFY_READ, buf, count))
-		return -EFAULT;
-	internalBuffer = kzalloc(count, GFP_KERNEL);
-
-	if (copy_from_user(internalBuffer, buf, count) != 0) {
+	if (copy_from_user(packet, buf, count) != 0) {
 		dev_warn(pDevData->dev, "imago_write(): copy_from_user() failed\n");
-		kfree(internalBuffer);
 		return -EFAULT;
 	}
 
-	res = imago_write_internal(pDevData, internalBuffer, count / 4);
-	kfree(internalBuffer);
+	res = imago_write_internal(pDevData, packet, count / 4);
 	return res;
 }
 

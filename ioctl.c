@@ -459,7 +459,7 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 			if (pDMAChannel->abortWait) {
 				// check if abort operation is in progress => no additional waiting threads are allowed
 				// (should already be avoided by the library, but is a race condition)
-				if (copy_to_user(pToUserMem, &ctl_out, bytes_out)) {
+				if (__copy_to_user(pToUserMem, &ctl_out, bytes_out)) {
 					dev_err(pDevData->dev, "Locked_ioctl IOC_DMAREAD_WAIT_FOR_BUFFER: copy_to_user() failed\n");
 					return -EFAULT;
 				}
@@ -523,7 +523,7 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 			ctl_out.buffer_counter = pJob->BufferCounter;
 			ctl_out.pVMUser = pJob->pVMUser;
 			ctl_out.timestamp = pJob->timestamp;
-			if (copy_to_user(pToUserMem, &ctl_out, bytes_out)) {
+			if (__copy_to_user(pToUserMem, &ctl_out, bytes_out)) {
 				dev_err(pDevData->dev, "Locked_ioctl IOC_DMAREAD_WAIT_FOR_BUFFER: copy_to_user() failed\n");
 				return -EFAULT;
 			}
