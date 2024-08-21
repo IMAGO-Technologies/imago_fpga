@@ -55,9 +55,18 @@
 #include <linux/spinlock.h>	// spin_* ...
 #include <linux/delay.h>	// for usleep_range
 #include <linux/uaccess.h>	// for copy_to_user
+#include <linux/io.h>
 
 #ifndef IS_ENABLED
 #define IS_ENABLED(option) defined(option) || defined(option##_MODULE)
+#endif
+
+// writel_relaxed / writeq_relaxed is not defined for old kernels on all architectures
+#ifndef writel_relaxed
+	#define writel_relaxed(v, a) writel(v, a)
+#endif
+#ifndef writeq_relaxed
+	#define writeq_relaxed(v, a) writeq(v, a)
 #endif
 
 

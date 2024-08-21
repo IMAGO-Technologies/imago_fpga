@@ -20,7 +20,7 @@
  */
 
 #include "imago_fpga.h"
-#include <linux/io.h>	// for writel_relaxed (used for armhf only)
+
 
 // flags for SG elements
 #define DMA_READ_TC_SG_FLAG_START_TRANSACTION 	(0x09) // transaction start: SG descriptor FIFO reset + DMA start flag
@@ -576,11 +576,7 @@ void imago_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 iDM
 		dev_dbg(pDevData->dev, "DMA SGs > i: %d > 0x%llx, Bytes %d\n", iSG, (u64) sg_address, sg_length);
 
 		for (word = 0; word < (DMA_READ_TC_TC2TC_SETPBYTES/4); word++)
-#ifdef __ARM_ARCH_7A__
 			writel_relaxed(tempSG[word], pTC->pDesriptorFifo + word);
-#else
-			iowrite32(tempSG[word], pTC->pDesriptorFifo + word);
-#endif
 
 		tempSG[0] = 0;
 	}//for max mögliche SGs pro Transfer
