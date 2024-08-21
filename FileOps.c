@@ -237,7 +237,7 @@ static ssize_t imago_read(struct file* filp, char __user* buf, size_t count, lof
 {
 	PDEVICE_DATA pDevData = NULL;
 	int ret;
-	u32 data[7];
+	u32 data[8];
 
 	if (filp == NULL || filp->private_data == NULL || count > sizeof(data))
 		return -EINVAL;
