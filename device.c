@@ -151,7 +151,6 @@ DEVICE_DATA *imago_alloc_dev_data(struct device *dev, u8 dev_type)
 	raw_spin_lock_init(&pDevData->DMARead_SpinLock);
 	for (iChannel = 0; iChannel < MAX_DMA_CHANNELS; iChannel++) {
 		PDMA_READ_CHANNEL pChannel = &pDevData->DMARead_Channel[iChannel];
-		pChannel->jobBuffers = NULL;
 		init_completion(&pChannel->job_complete);
 		pChannel->dmaWaitCount = 0;
 		pChannel->abortWait = 0;

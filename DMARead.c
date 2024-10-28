@@ -37,15 +37,28 @@
  *
 ****************************************/
 
+#ifdef DEBUG
+static bool list_has_entry(struct list_head *entry, struct list_head *head)
+{
+	struct list_head *list_tmp;
+	list_for_each(list_tmp, head) {
+		if (list_tmp == entry)
+			return true;
+	}
+	return false;
+}
+#endif
+
+
 //Init und mapped/pinned den "Job<>UserBuffer", struct ist beim return(min die Flags gültig) wickelt daher beim Fehler nichts rück ab (kann nicht als DPC laufen)
 int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMAChannel, uintptr_t pVMUser,
-		u32 bufferSize, u8 reversePages, DMA_READ_JOB **ppJob)
+		u32 bufferSize, u8 reversePages, struct DMA_READ_JOB **ppJob)
 {
-	DMA_READ_JOB *pJob	= NULL;
-	u32	pagesToMap		= (bufferSize + PAGE_SIZE-1) / PAGE_SIZE;
-	int pagesPinned		= -1;
-	int mappedSGs		= -1;
-	unsigned int	i;
+	struct DMA_READ_JOB *pJob = NULL;
+	u32	pagesToMap = (bufferSize + PAGE_SIZE-1) / PAGE_SIZE;
+	int pagesPinned = -1;
+	int mappedSGs = -1;
+	unsigned long flags;
 	int result;
 
 	if (pDevData == NULL)
@@ -62,23 +75,19 @@ int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMACha
 		return -EINVAL;
 	}
 
-	// search free job entry
-	for (i = 0; i < _ModuleData.max_dma_buffers; i++) {
-		if (pDMAChannel->jobBuffers[i].pVMUser == 0)
-		{
-			pJob = &pDMAChannel->jobBuffers[i];
-			break;
-		}
-	}
+	// allocate job data from slab cache
+	pJob = kmem_cache_zalloc(pDevData->dma_job_cache, GFP_KERNEL);
 	*ppJob = pJob;
 	if (pJob == NULL) {
-		dev_warn(pDevData->dev, "MappUserBuffer: No space for more DMA buffers, see module parameter 'max_dma_buffers' for allocation");
+		dev_err(pDevData->dev, "MappUserBuffer: error allocating DMA job");
 		return -ENOMEM;
 	}
 
-	memset(pJob, 0, sizeof(*pJob));
+	flags = imago_DMARead_Lock(pDevData);
+	list_add_tail(&pJob->list, &pDMAChannel->job_list_allocated);
+	imago_DMARead_Unlock(pDevData, flags);
 
-	pJob->pVMUser 				= (uintptr_t) pVMUser;
+	pJob->pVMUser = (uintptr_t) pVMUser;
 
 	//> User Buffer Pinnen
 	/**********************************************************************/
@@ -306,16 +315,27 @@ int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMACha
 //  > darf nicht in einem DPC laufen! (set_page_dirty_lock())
 // - unmapping/pinnen 
 // - TC/Job freigeben
-void imago_DMARead_UnMapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob)
+void imago_DMARead_UnMapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMAChannel, struct DMA_READ_JOB *pJob)
 {
+	unsigned long flags;
+
 	dev_dbg(pDevData->dev, "UnMapUserBuffer\n");
 
 	if (pDevData == NULL) {
 		dev_err(pDevData->dev, "MappUserBuffer:invalid arguments");
 		return;
 	}
-	if (pJob == NULL || pJob->pVMUser == 0)
+	if (pJob == NULL)
 		return;
+
+	// remove job from job_list_allocated
+#ifdef DEBUG
+	if (!list_has_entry(&pJob->list, &pDMAChannel->job_list_allocated))
+		dev_err(pDevData->dev, "imago_DMARead_UnMapUserBuffer: job not found in job_list_allocated\n");
+#endif
+	flags = imago_DMARead_Lock(pDevData);
+	list_del(&pJob->list);
+	imago_DMARead_Unlock(pDevData, flags);
 
 	/**********************************************************************/
 	// unmapp
@@ -374,8 +394,8 @@ void imago_DMARead_UnMapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob)
 		kfree( pJob->ppPageList );
 		pJob->ppPageList = NULL;
 	}
-	
-	pJob->pVMUser = 0;
+		
+	kmem_cache_free(pDevData->dma_job_cache, pJob);
 }
 
 // beendet eine DMA, egal ob mit oder ohne Fehler, ob gelaufen oder nicht (läuft auch aus DPC)
@@ -408,14 +428,21 @@ static void imago_DMARead_EndDMA(PDEVICE_DATA pDevData, const u32 iDMA, const u3
 	pTC->pJob->BufferCounter	= BufferCounter;
 	pTC->pJob->timestamp		= div_u64(ktime_get_ns(), NSEC_PER_USEC);
 
-	// add job to Jobs_Done FIFO
-	if (kfifo_put(&pDMAChannel->Jobs_Done, pTC->pJob) == 0) {
-		//sollte nie sein weil Test ob Platz ist, ist im ioctl 'IOC_DMAREAD_ADD_BUFFER'
-		dev_warn(pDevData->dev, "imago_DMARead_EndDMA > kfifo_put failed!\n");
-	}
+#ifdef DEBUG
+	if (list_has_entry(&pTC->pJob->list, &pDMAChannel->job_list_allocated))
+		dev_err(pDevData->dev, "imago_DMARead_EndDMA: job already found in job_list_allocated\n");
+	if (list_has_entry(&pTC->pJob->list, &pDMAChannel->job_list_pending))
+		dev_err(pDevData->dev, "imago_DMARead_EndDMA: job already found in job_list_pending\n");
+	if (list_has_entry(&pTC->pJob->list, &pDMAChannel->job_list_complete))
+		dev_err(pDevData->dev, "imago_DMARead_EndDMA: job already found in job_list_complete\n");
+#endif
+	// move job to job_list_complete
+	list_add_tail(&pTC->pJob->list, &pDMAChannel->job_list_complete);
 
-	// start next job in Jobs_ToDo FIFO
-	if (kfifo_get(&pDMAChannel->Jobs_ToDo, &pTC->pJob) == 1) {
+	// start next job in job_list_pending
+	if (!list_empty(&pDMAChannel->job_list_pending)) {
+		pTC->pJob = list_first_entry(&pDMAChannel->job_list_pending, struct DMA_READ_JOB, list);
+		list_del(&pTC->pJob->list);
 		pTC->sg_remaining = pTC->pJob->SGTable.nents;
 		pTC->sg_list = pTC->pJob->SGTable.sgl;
 		imago_DMARead_StartNextTransfer_Locked(pDevData, iDMA, iTC);
@@ -439,7 +466,7 @@ static void imago_DMARead_EndDMA(PDEVICE_DATA pDevData, const u32 iDMA, const u3
 ****************************************/
 
 // add job to FIFO and start transfer if idle
-int imago_DMARead_AddJob(PDEVICE_DATA pDevData, u32 iDMA, DMA_READ_JOB *pJob)
+int imago_DMARead_AddJob(PDEVICE_DATA pDevData, u32 iDMA, struct DMA_READ_JOB *pJob)
 {
 	DMA_READ_CHANNEL *pDMAChannel = &pDevData->DMARead_Channel[iDMA];
 	int iTC;
@@ -447,9 +474,16 @@ int imago_DMARead_AddJob(PDEVICE_DATA pDevData, u32 iDMA, DMA_READ_JOB *pJob)
 
 	flags = imago_DMARead_Lock(pDevData);
 
+#ifdef DEBUG
+	if (!list_has_entry(&pJob->list, &pDMAChannel->job_list_allocated))
+		dev_err(pDevData->dev, "imago_DMARead_AddJob: job not found in job_list_allocated\n");
+#endif
+
 	// start transfer if a transfer channel is idle
 	for (iTC = 0; iTC < pDevData->DMARead_TCs; iTC++) {
 		if (pDMAChannel->TCs[iTC].pJob == NULL) {
+			// remove from job_list_allocated
+			list_del(&pJob->list);
 			pDMAChannel->TCs[iTC].pJob = pJob;
 			pDMAChannel->TCs[iTC].sg_remaining = pJob->SGTable.nents;
 			pDMAChannel->TCs[iTC].sg_list = pJob->SGTable.sgl;
@@ -461,12 +495,8 @@ int imago_DMARead_AddJob(PDEVICE_DATA pDevData, u32 iDMA, DMA_READ_JOB *pJob)
 		}
 	}
 
-	// add job to Jobs_ToDo FIFO
-	if (kfifo_put(&pDMAChannel->Jobs_ToDo, pJob) == 0) {
-		imago_DMARead_Unlock(pDevData, flags);
-		dev_warn(pDevData->dev, "DMARead_AddJob > Error adding buffer into JobToDo FIFO\n");
-		return -ENOMEM;
-	}
+	// move job from job_list_allocated to job_list_pending
+	list_move_tail(&pJob->list, &pDMAChannel->job_list_pending);
 	
 	imago_DMARead_Unlock(pDevData, flags);
 
@@ -482,7 +512,7 @@ void imago_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 iDM
 {
 	int 			iSG 	= 0;
 	DMA_READ_TC 	*pTC 	= pDevData->DMARead_Channel[iDMA].TCs + iTC;
-	DMA_READ_JOB 	*pJob	= pTC->pJob;
+	struct DMA_READ_JOB *pJob = pTC->pJob;
 	u32				dma_flags = DMA_READ_TC_SG_FLAG_START_TRANSFER;
 
 	dev_dbg(pDevData->dev, "imago_DMARead_StartNextTransfer_Locked > DMA: %d, TC: %d\n",	iDMA, iTC);
@@ -579,26 +609,24 @@ void imago_DMARead_DPC(PDEVICE_DATA pDevData)
 int imago_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA)
 {
 	PDMA_READ_CHANNEL pDMAChannel = &pDevData->DMARead_Channel[iDMA];
-	DMA_READ_JOB *pJob = NULL;
 	int iTC;
 	unsigned long flags;
+	struct list_head *list_tmp, *list_next;
 
 	dev_dbg(pDevData->dev, "imago_DMARead_Abort_DMAChannel> DMA: %d\n", iDMA);
 
 	flags = imago_DMARead_Lock(pDevData);
 
-	// move jobs from Jobs_ToDo to Jobs_Done queue and signal completion for each job
-	while (kfifo_get(&pDMAChannel->Jobs_ToDo, &pJob) == 1) {
+	// move jobs from job_list_pending to job_list_complete and signal completion for each job
+	list_for_each_safe(list_tmp, list_next, &pDMAChannel->job_list_pending) {
+		struct DMA_READ_JOB *pJob = list_entry(list_tmp, struct DMA_READ_JOB, list);
 		pJob->boIsOk = false;
 
-		if (kfifo_put(&pDMAChannel->Jobs_Done, pJob) == 0) {
-			dev_warn(pDevData->dev, "Abort_DMAChannel: can't add Buffer to Jobs_Done, buffer lost\n");
-			break;
-		}
+		dev_dbg(pDevData->dev, "moving job from job_list_pending to job_list_complete\n");
+
+		list_move_tail(list_tmp, &pDMAChannel->job_list_complete);
 
 		complete(&pDMAChannel->job_complete);
-
-		dev_dbg(pDevData->dev, "moving job Jobs_ToDo -> Jobs_Done\n");
 	}
 
 	//> für alle gültigen/laufenden DMAs, bei allen TCs.boIsUsed==true, 
@@ -666,6 +694,7 @@ int imago_DMARead_Reset_DMAChannel(PDEVICE_DATA pDevData, unsigned int dma_chann
 	PDMA_READ_CHANNEL pDMAChannel = &pDevData->DMARead_Channel[dma_channel];
 	int i;
 	unsigned long flags;
+	struct list_head *list_tmp, *list_next;
 
 	// abort running DMA transfers in FPGA and move jobs from Jobs_ToDo to Jobs_Done FIFO
 	imago_DMARead_Abort_DMAChannel(pDevData, dma_channel);
@@ -687,18 +716,26 @@ int imago_DMARead_Reset_DMAChannel(PDEVICE_DATA pDevData, unsigned int dma_chann
 			imago_DMARead_Unlock(pDevData, flags);
 	}
 
-	// unmap used job buffers
-	for (i = 0; i < _ModuleData.max_dma_buffers; i++) {
-		if (pDMAChannel->jobBuffers[i].pVMUser != 0) {
-			dev_info(pDevData->dev, "imago_DMARead_Reset_DMAChannel(): unmapping lost buffer 0x%lx\n", pDMAChannel->jobBuffers[i].pVMUser);
-			if (pDMAChannel->doManualMap)
-				dma_sync_sg_for_cpu(pDevData->dev, pDMAChannel->jobBuffers[i].SGTable.sgl, pDMAChannel->jobBuffers[i].SGTable.orig_nents, DMA_FROM_DEVICE);
-			imago_DMARead_UnMapUserBuffer(pDevData, &pDMAChannel->jobBuffers[i]);
-		}
+	// move entries from job_list_complete to job_list_allocated
+	list_splice_init(&pDMAChannel->job_list_complete, &pDMAChannel->job_list_allocated);
+
+	// unmap job buffers and remove them from job_list_allocated
+	list_for_each_safe(list_tmp, list_next, &pDMAChannel->job_list_allocated) {
+		struct DMA_READ_JOB *pJob = list_entry(list_tmp, struct DMA_READ_JOB, list);
+		dev_info(pDevData->dev, "imago_DMARead_Reset_DMAChannel(): unmapping lost buffer 0x%lx\n", pJob->pVMUser);
+		if (pDMAChannel->doManualMap)
+			dma_sync_sg_for_cpu(pDevData->dev, pJob->SGTable.sgl, pJob->SGTable.orig_nents, DMA_FROM_DEVICE);
+		imago_DMARead_UnMapUserBuffer(pDevData, pDMAChannel, pJob);
 	}
-	// reset FIFOs
-	kfifo_reset(&pDMAChannel->Jobs_ToDo);
-	kfifo_reset(&pDMAChannel->Jobs_Done);
+
+#ifdef DEBUG
+	if (!list_empty(&pDMAChannel->job_list_allocated))
+		dev_err(pDevData->dev, "imago_DMARead_Reset_DMAChannel: job_list_allocated is not empty\n");
+	if (!list_empty(&pDMAChannel->job_list_pending))
+		dev_err(pDevData->dev, "imago_DMARead_Reset_DMAChannel: job_list_pending is not empty\n");
+	if (!list_empty(&pDMAChannel->job_list_complete))
+		dev_err(pDevData->dev, "imago_DMARead_Reset_DMAChannel: job_list_complete is not empty\n");
+#endif
 
 	// Reset completion
 	reinit_completion(&pDMAChannel->job_complete);

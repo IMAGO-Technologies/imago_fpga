@@ -47,7 +47,6 @@
 #include <linux/fs.h>		// for alloc_chrdev_region /file_*
 #include <linux/semaphore.h>// for up/down ...
 #include <linux/completion.h>
-#include <linux/kfifo.h>	// for kfifo_*
 #include <linux/of_device.h>	// for of*
 #include <linux/interrupt.h>// for IRQ*
 #include <linux/dma-mapping.h>	// for dma_*
@@ -158,7 +157,7 @@ struct SUN_DEVICE_DATA {
 
 
 // DMA job structure
-typedef struct _DMA_READ_JOB
+struct DMA_READ_JOB
 {
  	uintptr_t 			pVMUser;			// user buffer
 
@@ -170,12 +169,14 @@ typedef struct _DMA_READ_JOB
 	struct page **		ppPageList;
 
 	struct sg_table 	SGTable;
-}  DMA_READ_JOB, *PDMA_READ_JOB;
+	
+	struct list_head	list;				// a job can be in job_list_allocated, job_list_pending, or job_list_complete
+};
 
 // transfer channel structure
 typedef struct _DMA_READ_TC
 {
-	DMA_READ_JOB		*pJob;				// current job data (comming from Jobs_ToDo FIFO, going to Jobs_Done FIFO)
+	struct DMA_READ_JOB	*pJob;				// current job data (comming from Jobs_ToDo FIFO, going to Jobs_Done FIFO)
 	struct scatterlist	*sg_list;			// SG list for current transfer
 	u32					*pDesriptorFifo;
 	u16					sg_remaining;		// number of remaining SG elements for DMA to complete
@@ -184,12 +185,10 @@ typedef struct _DMA_READ_TC
 // DMA channel structure
 typedef struct _DMA_READ_CHANNEL
 {
-	DMA_READ_JOB *jobBuffers;						// storage of job buffers
-
-	// job FIFOs store only pointer to jobs:
-	DECLARE_KFIFO_PTR(Jobs_ToDo, PDMA_READ_JOB);	// pending transfer jobs
-	DECLARE_KFIFO_PTR(Jobs_Done, PDMA_READ_JOB);	// transfer jobs done or aborted
-
+	struct list_head	job_list_allocated;
+	struct list_head	job_list_pending;
+	struct list_head	job_list_complete;
+	
 	struct completion job_complete;					// DMA job completion
 	u8 dmaWaitCount;								// number of threads waiting for completion
 	u8 abortWait;									// signal DMA abort event to waiting threads
@@ -240,6 +239,7 @@ typedef struct _DEVICE_DATA
 	bool					setupTcInHWI;		// setup transfer channel in hardware interrupt
 	bool					irqEnableInHWI;		// if disabled: DRA7x workaround for IRQ race in old kernels
 	DMA_READ_CHANNEL		DMARead_Channel[MAX_DMA_CHANNELS];	// DMA channel data
+	struct kmem_cache		*dma_job_cache;
 } DEVICE_DATA, *PDEVICE_DATA;
 
 // module data structure
@@ -248,7 +248,6 @@ typedef struct _MODULE_DATA
 	DEVICE_DATA		*dev_data[MAX_DEVICE_COUNT];	// device data, index is the minor number
 	dev_t 			FirstDeviceNumber;				// MAJOR(devNumber),MINOR(devNumber) (eg 240 , 0)
 	struct class	*pModuleClass;					// /sys/class/*
-	uint			max_dma_buffers;				// maximum number of DMA buffers
 	int				dma_update_in_hwi;
 } MODULE_DATA, *PMODULE_DATA;
 
@@ -272,13 +271,13 @@ long imago_abort_longterm_read(PDEVICE_DATA pDevData, u8 deviceID);
 void imago_sun_interrupt(PDEVICE_DATA pDevData, u32 *sun_packet);
 
 /* DMA functions */
-int imago_DMARead_AddJob(PDEVICE_DATA pDevData, u32 iDMA, DMA_READ_JOB *pJob);
+int imago_DMARead_AddJob(PDEVICE_DATA pDevData, u32 iDMA, struct DMA_READ_JOB *pJob);
 void imago_DMARead_DPC(PDEVICE_DATA pDevData);
 void imago_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC);
 
 int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMAChannel, uintptr_t pVMUser,
-		u32 bufferSize, u8 reversePages, DMA_READ_JOB **ppJob);
-void imago_DMARead_UnMapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob);
+		u32 bufferSize, u8 reversePages, struct DMA_READ_JOB **ppJob);
+void imago_DMARead_UnMapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMAChannel, struct DMA_READ_JOB *pJob);
 
 int imago_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA);
 int imago_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData,  const u32 iDMA);

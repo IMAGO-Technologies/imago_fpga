@@ -32,10 +32,6 @@ MODULE_DESCRIPTION(MODDESCRIPTION);
 MODULE_AUTHOR(MODAUTHOR);
 
 
-static unsigned int max_dma_buffers = 32;
-module_param(max_dma_buffers, uint, 0644);
-MODULE_PARM_DESC(max_dma_buffers, "Maximum number of DMA buffers supported for each DMA channel (default: 32, must be power of 2).");
-
 static int dma_update_in_hwi = -1;
 module_param(dma_update_in_hwi, int, 0644);
 MODULE_PARM_DESC(dma_update_in_hwi, "Update DMA transfer in irq (0: no, use threaded irq; 1: yes; -1: auto/default).");
@@ -80,16 +76,10 @@ static int __init imago_module_init(void)
 	}
 #endif
 
-	if (!is_power_of_2(max_dma_buffers)) {
-		pr_err(MODMODULENAME": module parameter 'max_dma_buffers' must be power of 2\n");
-		return -EINVAL;
-	}
-
 	/* init member */
 	/**********************************************************************/
 	memset(&_ModuleData, 0, sizeof(_ModuleData));
 	_ModuleData.pModuleClass = ERR_PTR(-EFAULT);
-	_ModuleData.max_dma_buffers = max_dma_buffers;
 	_ModuleData.dma_update_in_hwi = dma_update_in_hwi;
 
 	// Test for existing module using the old name "agexpcidrv".

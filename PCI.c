@@ -364,28 +364,18 @@ static int imago_pci_probe(struct pci_dev *pcidev, const struct pci_device_id *i
 	// DMA
 	/**********************************************************************/
 	if (IS_TYPEWITH_DMA2HOST(pDevData)) {
+		pDevData->dma_job_cache = kmem_cache_create("dma_jobs", sizeof(struct DMA_READ_JOB), 0, 0, NULL);
+		if (pDevData->dma_job_cache == NULL) {
+			dev_err(pDevData->dev, "kmem_cache_create() failed\n");
+			imago_free_dev_data(pDevData);
+			return -ENOMEM;
+		}
 		for (i = 0; i < MAX_DMA_CHANNELS; i++) {
 			PDMA_READ_CHANNEL pDMAChannel = &pDevData->DMARead_Channel[i];
 
-			// allocate job storage and KFIFO queues
-			pDMAChannel->jobBuffers = kzalloc(_ModuleData.max_dma_buffers * sizeof(DMA_READ_JOB), GFP_KERNEL);
-			if (pDMAChannel->jobBuffers == NULL) {
-				dev_err(pDevData->dev, "kzalloc() failed\n");
-				imago_free_dev_data(pDevData);
-				return -ENOMEM;
-			}
-			res = kfifo_alloc(&pDMAChannel->Jobs_ToDo, _ModuleData.max_dma_buffers, GFP_KERNEL);
-			if (res) {
-				dev_err(pDevData->dev, "kfifo_alloc() failed\n");
-				imago_free_dev_data(pDevData);
-				return res;
-			}
-			res = kfifo_alloc(&pDMAChannel->Jobs_Done, _ModuleData.max_dma_buffers, GFP_KERNEL);
-			if (res) {
-				dev_err(pDevData->dev, "kfifo_alloc() failed\n");
-				imago_free_dev_data(pDevData);
-				return res;
-			}
+			INIT_LIST_HEAD(&pDMAChannel->job_list_allocated);
+			INIT_LIST_HEAD(&pDMAChannel->job_list_pending);
+			INIT_LIST_HEAD(&pDMAChannel->job_list_complete);
 		}
 
 		//damit z.b dma_map_sg() (mit einer IOMMU) nicht zuviel zusammengefasst
@@ -396,7 +386,6 @@ static int imago_pci_probe(struct pci_dev *pcidev, const struct pci_device_id *i
 			return -EIO;
 		}
 	}
-
 	
 	// setup interrupt
 	if (IS_TYPEWITH_COMMONBUFFER(pDevData)) {
@@ -496,12 +485,7 @@ static void imago_pci_remove(struct pci_dev *pcidev)
 			imago_DMARead_Reset_DMAChannel(pDevData, i);
 		}
 
-		for (i = 0; i < MAX_DMA_CHANNELS; i++) {
-			PDMA_READ_CHANNEL pDMAChannel = &pDevData->DMARead_Channel[i];
-			kfifo_free(&pDMAChannel->Jobs_ToDo);
-			kfifo_free(&pDMAChannel->Jobs_Done);
-			kfree(pDMAChannel->jobBuffers);
-		}
+		kmem_cache_destroy(pDevData->dma_job_cache);
 	}
 
 	if (IS_TYPEWITH_COMMONBUFFER(pDevData))
