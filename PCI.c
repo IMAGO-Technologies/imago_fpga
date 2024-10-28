@@ -81,7 +81,7 @@ static int fpga_write(struct _DEVICE_DATA *pDevData, u32 *packet, unsigned int p
 	return 4 * packet_size;
 }
 
-#ifdef CONFIG_64BIT		
+#ifdef CONFIG_64BIT
 static int fpga_write64(struct _DEVICE_DATA *pDevData, u32 *packet, unsigned int packet_size)
 {
 	unsigned int word;
@@ -374,13 +374,13 @@ static int imago_pci_probe(struct pci_dev *pcidev, const struct pci_device_id *i
 				imago_free_dev_data(pDevData);
 				return -ENOMEM;
 			}
-			res = kfifo_alloc(&pDMAChannel->Jobs_ToDo, _ModuleData.max_dma_buffers * sizeof(DMA_READ_JOB *), GFP_KERNEL);
+			res = kfifo_alloc(&pDMAChannel->Jobs_ToDo, _ModuleData.max_dma_buffers, GFP_KERNEL);
 			if (res) {
 				dev_err(pDevData->dev, "kfifo_alloc() failed\n");
 				imago_free_dev_data(pDevData);
 				return res;
 			}
-			res = kfifo_alloc(&pDMAChannel->Jobs_Done, _ModuleData.max_dma_buffers * sizeof(DMA_READ_JOB *), GFP_KERNEL);
+			res = kfifo_alloc(&pDMAChannel->Jobs_Done, _ModuleData.max_dma_buffers, GFP_KERNEL);
 			if (res) {
 				dev_err(pDevData->dev, "kfifo_alloc() failed\n");
 				imago_free_dev_data(pDevData);

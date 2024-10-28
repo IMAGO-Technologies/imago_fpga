@@ -158,7 +158,7 @@ DEVICE_DATA *imago_alloc_dev_data(struct device *dev, u8 dev_type)
 
 		for (iTC = 0; iTC < MAX_DMA_READ_CHANNELTCS; iTC++) {
 			PDMA_READ_TC pTC = pChannel->TCs+iTC;
-			pTC->boIsUsed = false;
+			pTC->pJob = NULL;
 		}
 	}
 	

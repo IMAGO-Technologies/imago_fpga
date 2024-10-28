@@ -128,7 +128,6 @@ enum IMAGO_DEVICE_TYPE
 #endif
 
 #define DMA_READ_TC_SG_OFFSET 		0x40000			// FPGA address offset for SG elements
-#define DMA_READ_TC_TC2TC_SETPBYTES 16				// size of SG entry: 4 flags + 4 size + 8 ptr
 #define DMA_READ_TC_SG_MAX_BYTECOUNT ( (1<<22)-1 )	// transfer limit in bytes for SG element: FPGA limit is 20 bit word count (32-bit words)
 
 
@@ -162,34 +161,24 @@ struct SUN_DEVICE_DATA {
 typedef struct _DMA_READ_JOB
 {
  	uintptr_t 			pVMUser;			// user buffer
-	size_t 				bufferSize;
 
-	// job status, valid only if in Jobs_Done FIFO
-	bool				boIsOk;				// no errors
-	u16 				BufferCounter; 		// buffer counter comming from FPGA
 	u64					timestamp;
+	u16 				BufferCounter; 		// buffer counter comming from FPGA
+	bool				boIsOk;				// job status, valid only if in Jobs_Done FIFO
 
-	// pinned user buffer
-	bool				boIsPageListValid;	// page list 'ppPageList' is allocated
-	bool 				boIsPinned;			// get_user_pages() was called
-	struct page **		ppPageList;
 	u32					pagesPinned;
+	struct page **		ppPageList;
 
-	// SG table
-	bool 				boIsSGValid;		// SG table 'SGTable' is valid
-	bool 				boIsSGMapped;		// SG table is mapped for DMA
 	struct sg_table 	SGTable;
-	u32					SGcount;			// number of mapped SG elements
-	u32					SGItemsLeft;		// number of remaining SG elements for DMA to complete
-	struct scatterlist	*pSGNext;			// SG elements to transfer
 }  DMA_READ_JOB, *PDMA_READ_JOB;
 
 // transfer channel structure
 typedef struct _DMA_READ_TC
 {
-	bool 			boIsUsed;		// transfer channel is in use
-	DMA_READ_JOB	*pJob;			// current job data (comming from Jobs_ToDo FIFO, going to Jobs_Done FIFO)
-	u32				*pDesriptorFifo;
+	DMA_READ_JOB		*pJob;				// current job data (comming from Jobs_ToDo FIFO, going to Jobs_Done FIFO)
+	struct scatterlist	*sg_list;			// SG list for current transfer
+	u32					*pDesriptorFifo;
+	u16					sg_remaining;		// number of remaining SG elements for DMA to complete
 }  DMA_READ_TC, *PDMA_READ_TC;
 
 // DMA channel structure
@@ -288,7 +277,7 @@ void imago_DMARead_DPC(PDEVICE_DATA pDevData);
 void imago_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC);
 
 int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMAChannel, uintptr_t pVMUser,
-		u64 bufferSize, u8 reversePages, DMA_READ_JOB **ppJob);
+		u32 bufferSize, u8 reversePages, DMA_READ_JOB **ppJob);
 void imago_DMARead_UnMapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob);
 
 int imago_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA);

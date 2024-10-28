@@ -182,8 +182,7 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 				for (iTC = 0; iTC < pDevData->DMARead_TCs; iTC++) {
 					pDevData->DMARead_Channel[iDMA].TCs[iTC].pDesriptorFifo = pDevData->pVABAR0 
 						+ DMA_READ_TC_SG_OFFSET
-						+ (iDMA * pDevData->DMARead_TCs * DMA_READ_TC_TC2TC_SETPBYTES)
-						+ iTC * DMA_READ_TC_TC2TC_SETPBYTES;
+						+ (iDMA * pDevData->DMARead_TCs + iTC) * 16;
 				}
 			}
 
@@ -247,7 +246,7 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 				dev_warn(pDevData->dev, "Locked_ioctl> DMAChannel is out of range!");
 				return -EFAULT;
 			}
-			if (bufferSize == 0) {
+			if (bufferSize == 0 || bufferSize > 0xffffffff) {
 				dev_warn(pDevData->dev, "Locked_ioctl> invalid buffer size!");
 				return -EFAULT;
 			}
@@ -342,7 +341,7 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 				dev_warn(pDevData->dev, "Locked_ioctl> DMAChannel is out of range!");
 				return -EFAULT;
 			}
-			if (bufferSize == 0) {
+			if (bufferSize == 0 || bufferSize > 0xffffffff) {
 				dev_warn(pDevData->dev, "Locked_ioctl> invalid buffer size!");
 				return -EFAULT;
 			}
@@ -402,7 +401,7 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 			pDMAChannel = &pDevData->DMARead_Channel[iDMAChannel];
 			pJob = &pDMAChannel->jobBuffers[jobIndex];
 
-			dma_sync_sg_for_device(pDevData->dev, pJob->SGTable.sgl, pJob->SGTable.nents, DMA_FROM_DEVICE);
+			dma_sync_sg_for_device(pDevData->dev, pJob->SGTable.sgl, pJob->SGTable.orig_nents, DMA_FROM_DEVICE);
 			
 			// start DMA if idle, else add job to Jobs_ToDo FIFO
 			result = imago_DMARead_AddJob(pDevData, iDMAChannel, pJob);
@@ -535,7 +534,7 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 			if (!pDMAChannel->doManualMap)
 				imago_DMARead_UnMapUserBuffer(pDevData, pJob);
 			else
-				dma_sync_sg_for_cpu(pDevData->dev, pJob->SGTable.sgl, pJob->SGTable.nents, DMA_FROM_DEVICE);
+				dma_sync_sg_for_cpu(pDevData->dev, pJob->SGTable.sgl, pJob->SGTable.orig_nents, DMA_FROM_DEVICE);
 
 			return bytes_out;
 		}

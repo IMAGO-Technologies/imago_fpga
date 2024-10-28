@@ -39,16 +39,28 @@
 
 //Init und mapped/pinned den "Job<>UserBuffer", struct ist beim return(min die Flags gültig) wickelt daher beim Fehler nichts rück ab (kann nicht als DPC laufen)
 int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMAChannel, uintptr_t pVMUser,
-		u64 bufferSize, u8 reversePages, DMA_READ_JOB **ppJob)
+		u32 bufferSize, u8 reversePages, DMA_READ_JOB **ppJob)
 {
-	DMA_READ_JOB	*pJob			= NULL;
-	u32				pagesToMap		= (bufferSize + PAGE_SIZE-1) / PAGE_SIZE;
-	int 			pagesPinned		= -1;
-	int 			mappedSGs		= -1;
+	DMA_READ_JOB *pJob	= NULL;
+	u32	pagesToMap		= (bufferSize + PAGE_SIZE-1) / PAGE_SIZE;
+	int pagesPinned		= -1;
+	int mappedSGs		= -1;
 	unsigned int	i;
 	int result;
 
-	dev_dbg(pDevData->dev, "MappUserBuffer: (%d[Bytes], %d[Pages] @ 0x%p)\n", (int)bufferSize, pagesToMap, (void*)pVMUser);
+	if (pDevData == NULL)
+		return -EINVAL;
+
+	dev_dbg(pDevData->dev, "MappUserBuffer: (%u bytes, %d pages @ 0x%p)\n", bufferSize, pagesToMap, (void*)pVMUser);
+
+	if ((bufferSize & 0x3) != 0 || bufferSize <= 4) {
+		dev_err(pDevData->dev, "MappUserBuffer: byte count is invalid");
+		return -EINVAL;
+	}
+	if ((pVMUser & (PAGE_SIZE-1)) != 0) {
+		dev_err(pDevData->dev, "MappUserBuffer: page pointer is not aligned");
+		return -EINVAL;
+	}
 
 	// search free job entry
 	for (i = 0; i < _ModuleData.max_dma_buffers; i++) {
@@ -64,45 +76,18 @@ int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMACha
 		return -ENOMEM;
 	}
 
-	//init der Flags(da hier kein cleanUp gemacht wird)
+	memset(pJob, 0, sizeof(*pJob));
+
 	pJob->pVMUser 				= (uintptr_t) pVMUser;
-	pJob->bufferSize		 	= bufferSize;
-
-	pJob->boIsOk				= false;/* don't care, da nur gültig wenn in .Jobs_Done */
-	pJob->BufferCounter			= 0;	/* don't care, da nur gültig wenn in .Jobs_Done */
-
-	pJob->boIsPageListValid 	= false;
-	pJob->boIsPinned			= false;
-	pJob->boIsSGValid			= false;
-	pJob->boIsSGMapped			= false;
-
-	pJob->SGItemsLeft			= 0;
-
-
-	//Valid? (hier kein Test ob "Offset=0 & size n * PAGES_SIZE" nur wichtig fürs alloc
-	if (pDevData == NULL || pJob == NULL) {
-		dev_err(pDevData->dev, "MappUserBuffer: invalid arguments");
-		return -EINVAL;
-	}
-	if ((pJob->bufferSize & 0x3) != 0 || pJob->bufferSize <= 4) {
-		dev_err(pDevData->dev, "MappUserBuffer: byte count is invalid");
-		return -EINVAL;
-	}
-	if ((pJob->pVMUser & (PAGE_SIZE-1)) != 0) {
-		dev_err(pDevData->dev, "MappUserBuffer: page pointer is not aligned");
-		return -EINVAL;
-	}
-
 
 	//> User Buffer Pinnen
 	/**********************************************************************/
 	//speicher für die PageList
-	pJob->ppPageList = kmalloc(pagesToMap*sizeof(struct page*), GFP_KERNEL);
+	pJob->ppPageList = kmalloc(pagesToMap * sizeof(struct page*), GFP_KERNEL);
 	if (pJob->ppPageList == NULL) {
 		dev_err(pDevData->dev, "MappUserBuffer: too many pages");
 		return -ENOMEM;
 	}
-	pJob->boIsPageListValid = true;
 
 	//pinnen
 	//muss die SEM, für die VMAs für den aufrufenden conntext, halten
@@ -158,7 +143,6 @@ int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMACha
 		dev_err(pDevData->dev, "MappUserBuffer: get_user_pages() failed");
 		return pagesPinned;
 	}
-	pJob->boIsPinned 		= true;
 	pJob->pagesPinned 	= pagesPinned;
 	if (((u32)pagesPinned) != pagesToMap) {
 		dev_err(pDevData->dev, "MappUserBuffer: get_user_pages() %d failed from %d pinned",
@@ -199,26 +183,25 @@ int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMACha
 										pJob->ppPageList,			/*pointer to page array*/
 										pagesPinned,				/*number of pages in page array*/
 										0, 							/*buffer offset*/
-										pJob->bufferSize			/*buffer size [bytes]*/,
+										bufferSize			/*buffer size [bytes]*/,
 										GFP_KERNEL);				/*alloc type*/
 	if (result < 0) {			
 		dev_err(pDevData->dev, "MappUserBuffer: sg_alloc_table_from_pages() failed");
 		return result;
 	}
-	pJob->boIsSGValid 	= true;
 #else
 {
 	struct scatterlist *pSGList	= NULL;
-	u32 bytesRemaining = pJob->bufferSize;
-	s32	iSG							= 0;
+	u32 bytesRemaining = bufferSize;
+	s32	iSG = 0;
+
 	result = sg_alloc_table(&pJob->SGTable	/*header*/, 
 							pagesPinned 	/*für wie viele Einträge*/, 
 							GFP_KERNEL);	/*wie wird die page gealloc*/
-	if (result < 0) {			
+	if (result < 0) {
 		dev_err(pDevData->dev, "MappUserBuffer: sg_alloc_table() failed");
 		return result;
 	}
-	pJob->boIsSGValid 	= true;
 
 	// sg_set_page(): set sg entry to point at given page
 	pSGList = pJob->SGTable.sgl;
@@ -272,18 +255,22 @@ int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMACha
 	//  >> weil in https://elixir.bootlin.com/linux/v4.16/source/drivers/iommu/dma-iommu.c#L792
 	//   for_each_sg(sg_next(sg), tmp, nents - 1, i) ... sg_next() wird dann mit NULL aufgerufen da nents die volle länge ist 
 	//
-	mappedSGs = dma_map_sg(pDevData->dev,	/*struct device pointer*/	
-								pJob->SGTable.sgl,		/*struct scatterlist (Anfang)*/
-								pJob->SGTable.nents,	/*anz der Buffers*/
-								DMA_FROM_DEVICE); 		/*die Richtung wichtig für cache & bounce buffer*/
+	pJob->SGTable.nents = 0;
+	mappedSGs = dma_map_sg(	pDevData->dev,			/*struct device pointer*/	
+							pJob->SGTable.sgl,		/*struct scatterlist (Anfang)*/
+							pJob->SGTable.orig_nents,	/*anz der Buffers*/
+							DMA_FROM_DEVICE); 		/*die Richtung wichtig für cache & bounce buffer*/
 	if (mappedSGs <= 0) {
 		dev_err(pDevData->dev, "MappUserBuffer: dma_map_sg() failed");
 		return -EFAULT;
 	}
-	pJob->boIsSGMapped = true;
-	pJob->SGcount = mappedSGs;
+	if (mappedSGs > 0xffff) {
+		dev_err(pDevData->dev, "MappUserBuffer: dma_map_sg(): too many scatter elements");
+		return -EFAULT;
+	}
+	pJob->SGTable.nents = mappedSGs;
 
-	dev_dbg(pDevData->dev, "dma_map_sg(): %d SG list entries mapped to %d regions\n", pJob->SGTable.nents, mappedSGs);
+	dev_dbg(pDevData->dev, "dma_map_sg(): %d SG list entries mapped to %d regions\n", pJob->SGTable.orig_nents, pJob->SGTable.nents);
 	dev_dbg(pDevData->dev, "first sg element: addr=0x%08x, len=%u\n", (unsigned int)sg_dma_address(pJob->SGTable.sgl), (unsigned int)sg_dma_len(pJob->SGTable.sgl));
 
 	// for module parameter dma_update_in_hwi in auto mode (-1):
@@ -295,12 +282,12 @@ int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMACha
 	if (pDevData->setupTcInHWI && _ModuleData.dma_update_in_hwi == -1) {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(3,6,0)
 		// There should only be one or two mapped regions if an IOMMU is present.
-		// We could evaluate mappedSGs instead, but this value may be non-deterministic depending
-		// on memory fragmentation if no IOMMU is present. We always want the same behavior.
+		// We could evaluate nents instead, but this value may be non-deterministic depending
+		// on memory fragmentation if no IOMMU is present. We want deterministic behavior for interrupt handling.
 		if (pDevData->dev->iommu_group == NULL)
 #endif
 		{
-			if (pJob->SGTable.nents > 16) {
+			if (pJob->SGTable.orig_nents > 16) {
 				pDevData->setupTcInHWI = 0;
 				dev_dbg(pDevData->dev, "dma_map_sg(): using threaded interrupt for DMA update\n");
 			}
@@ -321,8 +308,6 @@ int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMACha
 // - TC/Job freigeben
 void imago_DMARead_UnMapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob)
 {
-	u32 			iPage			= 0;
-
 	dev_dbg(pDevData->dev, "UnMapUserBuffer\n");
 
 	if (pDevData == NULL) {
@@ -332,39 +317,31 @@ void imago_DMARead_UnMapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob)
 	if (pJob == NULL || pJob->pVMUser == 0)
 		return;
 
-	//unmapping/pinnen 
 	/**********************************************************************/
-	//- unmappen
-	//https://www.kernel.org/doc/Documentation/DMA-API-HOWTO.txt
-	// "PLEASE NOTE:The 'nents' argument to the dma_unmap_sg call must be
-	//       		the _same_ one you passed into the dma_map_sg call,
-	//	      		it should _NOT_ be the 'count' value _returned_ from the dma_map_sg call."
+	// unmapp
+	// https://www.kernel.org/doc/Documentation/DMA-API-HOWTO.txt
 	//
 	// " After the last DMA transfer call one of the DMA unmap routines
 	//	 dma_unmap_{single,sg}. If you don't touch the data from the first dma_map_*
 	//	 call till dma_unmap_*, then you don't have to call the dma_sync_* routines at all."
 	//
-	//lxr.free-electrons.com/source/arch/arm/mm/dma-mapping.c?v=3.8;a=arm 1500 (3.8)
 	// 	__iommu_unmap_sg() kümmert sich um den cache
-	//https://www.kernel.org/doc/Documentation/DMA-API.txt
+	// https://www.kernel.org/doc/Documentation/DMA-API.txt
 	// "All the parameters must be the same as those and passed in to the scatter/gather mapping API."
-	if (pJob->boIsSGMapped) {
-		dma_unmap_sg(pDevData->dev,				/*struct device pointer*/
-				pJob->SGTable.sgl,				/*struct scatterlist (Anfang)*/
-				pJob->SGTable.nents,			/*nents, items of the list*/
-				DMA_FROM_DEVICE);				/*Richtung der DMA*/
+	if (pJob->SGTable.nents > 0) {
+		dma_unmap_sg(pDevData->dev,
+				pJob->SGTable.sgl,
+				pJob->SGTable.orig_nents,	/* same as used with dma_map_sg() call */
+				DMA_FROM_DEVICE);
 	}
-	pJob->boIsSGMapped = false;
 
-	//- freen der scatterlisten
-	if (pJob->boIsSGValid)
+	if (pJob->SGTable.sgl != NULL)
 		sg_free_table(&pJob->SGTable);
-	pJob->boIsSGValid = false;
 
-	//- unpinn Pages
-	if (pJob->boIsPinned) {
-		//über alle Pages gehen	
-		for (iPage = 0; iPage < pJob->pagesPinned; iPage++) {
+	if (pJob->ppPageList != NULL) {
+		// unpinn Pages
+		int i;
+		for (i = 0; i < pJob->pagesPinned; i++) {
 			//die Page als verändert marken
 			//https://www.kernel.org/doc/htmldocs/kernel-api/API-get-user-pages.html
 			// "..If the page is written to, set_page_dirty* must be called after the page is
@@ -385,21 +362,18 @@ void imago_DMARead_UnMapUserBuffer(PDEVICE_DATA pDevData, PDMA_READ_JOB pJob)
 			// "... Regardless of whether the pages have been changed, they must be freed from the
 			//	page cache, or they stay there forever. ..."
 			//
-			if (!PageReserved(pJob->ppPageList[iPage])) {
+			if (!PageReserved(pJob->ppPageList[i])) {
 				//macht lock_page, set_page_dirty, unlock_page
-				set_page_dirty_lock(pJob->ppPageList[iPage] );
-			}	
+				set_page_dirty_lock(pJob->ppPageList[i] );
+			}
 
 			//page_cache_release() ist ein define auf put_page()
-			put_page( pJob->ppPageList[iPage] );		
+			put_page( pJob->ppPageList[i] );
 		}
-	}
-	pJob->boIsPinned = false;
 
-	//- freen der page liste
-	if (pJob->boIsPageListValid)
 		kfree( pJob->ppPageList );
-	pJob->boIsPageListValid = false;
+		pJob->ppPageList = NULL;
+	}
 	
 	pJob->pVMUser = 0;
 }
@@ -413,7 +387,7 @@ static void imago_DMARead_EndDMA(PDEVICE_DATA pDevData, const u32 iDMA, const u3
 
 	dev_dbg(pDevData->dev, "imago_DMARead_EndDMA > DMA: %d, TC: %d, Res: %d, Seq: %d\n",
 				   	iDMA, iTC, isOk, BufferCounter);
-	if (!pTC->boIsUsed) {
+	if (pTC->pJob == NULL) {
 		dev_warn(pDevData->dev, "imago_DMARead_EndDMA(): invalid TC, DMA: %d, TC: %d, Res: %d, Seq: %d\n",
 						iDMA, iTC, isOk, BufferCounter);
 		return;
@@ -422,7 +396,7 @@ static void imago_DMARead_EndDMA(PDEVICE_DATA pDevData, const u32 iDMA, const u3
 	flags = imago_DMARead_Lock(pDevData);
 
 	// check if current job has completed all SG elements
-	if (isOk && pTC->pJob->SGItemsLeft != 0) {
+	if (isOk && pTC->sg_remaining != 0) {
 		// start next transfer for this job
 		imago_DMARead_StartNextTransfer_Locked(pDevData, iDMA, iTC);
 		imago_DMARead_Unlock(pDevData, flags);
@@ -442,11 +416,13 @@ static void imago_DMARead_EndDMA(PDEVICE_DATA pDevData, const u32 iDMA, const u3
 
 	// start next job in Jobs_ToDo FIFO
 	if (kfifo_get(&pDMAChannel->Jobs_ToDo, &pTC->pJob) == 1) {
+		pTC->sg_remaining = pTC->pJob->SGTable.nents;
+		pTC->sg_list = pTC->pJob->SGTable.sgl;
 		imago_DMARead_StartNextTransfer_Locked(pDevData, iDMA, iTC);
 	}
 	else {
 		// TC freigeben, unter lock setzen wegen race mit imago_DMARead_Reset_DMAChannel()
-		pTC->boIsUsed = false;
+		pTC->pJob = NULL;
 	}
 
 	imago_DMARead_Unlock(pDevData, flags);
@@ -466,19 +442,17 @@ static void imago_DMARead_EndDMA(PDEVICE_DATA pDevData, const u32 iDMA, const u3
 int imago_DMARead_AddJob(PDEVICE_DATA pDevData, u32 iDMA, DMA_READ_JOB *pJob)
 {
 	DMA_READ_CHANNEL *pDMAChannel = &pDevData->DMARead_Channel[iDMA];
-	unsigned int iTC;
+	int iTC;
 	unsigned long flags;
-
-	pJob->SGItemsLeft = pJob->SGcount;
-	pJob->pSGNext = pJob->SGTable.sgl;
 
 	flags = imago_DMARead_Lock(pDevData);
 
 	// start transfer if a transfer channel is idle
 	for (iTC = 0; iTC < pDevData->DMARead_TCs; iTC++) {
-		if (!pDMAChannel->TCs[iTC].boIsUsed) {
+		if (pDMAChannel->TCs[iTC].pJob == NULL) {
 			pDMAChannel->TCs[iTC].pJob = pJob;
-			pDMAChannel->TCs[iTC].boIsUsed = true;
+			pDMAChannel->TCs[iTC].sg_remaining = pJob->SGTable.nents;
+			pDMAChannel->TCs[iTC].sg_list = pJob->SGTable.sgl;
 
 			imago_DMARead_StartNextTransfer_Locked(pDevData, iDMA, iTC);
 			imago_DMARead_Unlock(pDevData, flags);
@@ -503,90 +477,67 @@ int imago_DMARead_AddJob(PDEVICE_DATA pDevData, u32 iDMA, DMA_READ_JOB *pJob)
 //startet den nächste Transfer(SGs),
 // - erkennt Fehler wenn möglich DMA abbrechen
 // - nächste kann aber auch 1. bzw. letzte Transfer sein
-// - kommt auch mit last+1(was nie sein sollte) zurecht(ist aber ein Fehler),
-// - wird (auch) im DPC aufgerufen 
 // - wird mit DMALock aufgerufen
 void imago_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC)
 {
-	s32 			iSG 	= 0;
+	int 			iSG 	= 0;
 	DMA_READ_TC 	*pTC 	= pDevData->DMARead_Channel[iDMA].TCs + iTC;
 	DMA_READ_JOB 	*pJob	= pTC->pJob;
-	u32				tempSG[DMA_READ_TC_TC2TC_SETPBYTES/4];
+	u32				dma_flags = DMA_READ_TC_SG_FLAG_START_TRANSFER;
 
 	dev_dbg(pDevData->dev, "imago_DMARead_StartNextTransfer_Locked > DMA: %d, TC: %d\n",	iDMA, iTC);
 
 	//> alles gut (sicher ist sicher) kann aber nichts machen
 	if ((iDMA >= pDevData->DMARead_channels) || (iTC >= pDevData->DMARead_TCs) ||
-			!pTC->boIsUsed || !pJob->boIsSGValid || !pJob->boIsSGMapped || (pJob->SGItemsLeft==0) || (pJob->pSGNext==NULL)) {
+			pJob == NULL || (pTC->sg_remaining == 0) || (pTC->sg_list == NULL)) {
 		dev_err(pDevData->dev, "imago_DMARead_StartNextTransfer_Locked > Invalid context!\n");
 		return;
 	}
 
-	//Flag 	(1DWord)
-	tempSG[0] = DMA_READ_TC_SG_FLAG_START_TRANSFER; 
-	if(pJob->pSGNext == pJob->SGTable.sgl)	//1. SG Element über alles
-		tempSG[0] |= DMA_READ_TC_SG_FLAG_START_TRANSACTION; 
+	if (pTC->sg_list == pJob->SGTable.sgl)	// first element
+		dma_flags |= DMA_READ_TC_SG_FLAG_START_TRANSACTION; 
 
-	//> die SGs ins FPGA schreiben
-	/***********************************************************************/
-	//pro Transfer können max ... SGs übertragen werden
-	for (iSG=0; ((iSG < pDevData->DMARead_SGs) && (pJob->pSGNext!=NULL) && (pJob->SGItemsLeft>0) ); iSG++)  {
-		u8			word;
-		u32			sg_length	= sg_dma_len(pJob->pSGNext);
-		dma_addr_t  sg_address	= sg_dma_address(pJob->pSGNext);
-			
-		//> SG zusammenbauen
+	for (iSG=0; ((iSG < pDevData->DMARead_SGs) && (pTC->sg_list != NULL) && (pTC->sg_remaining > 0) ); iSG++) {
+		u32			sg_length	= sg_dma_len(pTC->sg_list);
+		dma_addr_t  sg_address	= sg_dma_address(pTC->sg_list);
 
-		if (pJob->SGItemsLeft == 1)				//letzte SG Element über alles (somit auch IRQ auslösen)
-			tempSG[0] |= DMA_READ_TC_SG_FLAG_END_TRANSACTION;
-
-		if (iSG == (pDevData->DMARead_SGs-1))	//letzte SG Element, mehr geht nicht ins FPGA FIFO (mit dem SG darf es dann ein IRQ geben)
-			tempSG[0] |= DMA_READ_TC_SG_FLAG_END_TRANSFER; 
-
-		//Size	(1DWord)
-		tempSG[1] = sg_length / 4;			// in DWORDs
-
-		//Adr	(2DWord)
-		tempSG[2] = sg_address & 0xFFFFFFFF;//LowPart;
-#ifdef CONFIG_64BIT			
-		tempSG[3] = sg_address >> 32;		//HighPart;
-#else
-		tempSG[3] = 0;						//HighPart;				
-#endif		
-
-
-		//> stimmt die Ausrichtung und die size? (adr und size) 
+		// check size
 		if(		((sg_length & 0x3) != 0)
-		 	||  (sg_length > DMA_READ_TC_SG_MAX_BYTECOUNT ) )
-		{
-			dev_err(pDevData->dev, "imago_DMARead_StartNextTransfer_Locked > Invalid alignment or size!\n");
-
-			//sollt nie vorkommen und wenn ist es das letzte SG Element (size geht nicht auf)
-			iSG = pDevData->DMARead_SGs;				//das Kaputte Element soll das letzte sein
-			tempSG[0] |= DMA_READ_TC_SG_FLAG_ERROR; 	//Flag fürs FPGA
+		 	||  (sg_length > DMA_READ_TC_SG_MAX_BYTECOUNT ) ) {
+			dev_err(pDevData->dev, "imago_DMARead_StartNextTransfer_Locked > Invalid DMA size!\n");
+			dma_flags |= DMA_READ_TC_SG_FLAG_ERROR;		// abort transfer
+			iSG = pDevData->DMARead_SGs;				// last element
 		}
-	
+		else if (pTC->sg_remaining == 1) {				// last DMA element
+			dma_flags |= DMA_READ_TC_SG_FLAG_END_TRANSACTION;
+		}
+		else if (iSG == (pDevData->DMARead_SGs-1)) {	// reached max. element count of FPGA
+			dma_flags |= DMA_READ_TC_SG_FLAG_END_TRANSFER;
+		}
 
-		//> nächstes SGElement
-		pJob->pSGNext =  sg_next(pJob->pSGNext);	//wenn es sg_is_last() dann gibt die fn NULL zurück, es müssen aber nicht alle Element einer SGListe benutzt sein.
-		pJob->SGItemsLeft--;
-	
-
-		//> ins FPGA schreiben
 		dev_dbg(pDevData->dev, "DMA SGs > i: %d > 0x%llx, Bytes %d\n", iSG, (u64) sg_address, sg_length);
 
-		for (word = 0; word < (DMA_READ_TC_TC2TC_SETPBYTES/4); word++)
-			writel_relaxed(tempSG[word], pTC->pDesriptorFifo + word);
+		writel_relaxed(dma_flags,		pTC->pDesriptorFifo + 0);
+		writel_relaxed(sg_length / 4,	pTC->pDesriptorFifo + 1);
+#ifdef CONFIG_64BIT
+		writeq_relaxed(sg_address,		pTC->pDesriptorFifo + 2);
+#else
+		writel_relaxed(sg_address,		pTC->pDesriptorFifo + 2);
+		writel_relaxed(0,				pTC->pDesriptorFifo + 3);
+#endif
 
-		tempSG[0] = 0;
-	}//for max mögliche SGs pro Transfer
+		pTC->sg_list = sg_next(pTC->sg_list);
+		pTC->sg_remaining--;
+		dma_flags = 0;
+	}
 }
 
 
 //Beendet alle DMAs die durch sind (bzw. deren DMATransfer), und versucht neue zu starte
 void imago_DMARead_DPC(PDEVICE_DATA pDevData)
 {
-	u8 iDMA, iTC, BitShift;
+	int iDMA, iTC;
+	u8 BitShift;
 	u32 IRQReg_A, IRQReg_B;
 	u32 isDoneReg, isOkReg;
 	u32 DMAMask;
@@ -603,25 +554,21 @@ void imago_DMARead_DPC(PDEVICE_DATA pDevData)
 
 	dev_dbg(pDevData->dev, "imago_DMARead_DPC > isDoneReg: 0x%08X, isOkReg: 0x%08X\n", isDoneReg, isOkReg);
 
-	/* über alle DMAs/TCs gehen, wir gehen davon aus das es keine lücken gibt!*/
-	/**************************************************************************************/
 	BitShift = 0;
 	for (iDMA = 0; iDMA < pDevData->DMARead_channels; iDMA++) {
 		for (iTC = 0; iTC < pDevData->DMARead_TCs; iTC++) {
 			bool isDone, isOk;
 			u16 bufferCounter;
 		
-			//> Bits sammeln (damit es besser zum lesen ist)
 			isDone 		= (isDoneReg >> BitShift) & 0x1;
 			isOk 		= (isOkReg   >> BitShift) & 0x1;
 
-			//> FPGA sagt die DMA ist durch
 			if (isDone) {
 				bufferCounter = *(u16 *)(pDevData->pVACommonBuffer + HOST_BUFFER_DMAREAD_COUNTER_OFFSET + 8 * BitShift);
 				imago_DMARead_EndDMA(pDevData, iDMA, iTC, isOk, bufferCounter);
 			}
 
-			//> nächster TC ist beim nächsten Bit (auch wenn es die nächste DMA ist)
+			// bit shift increases across TC and DMA channels
 			BitShift++;
 		}//for TC
 	}//for DMA
@@ -633,7 +580,7 @@ int imago_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA)
 {
 	PDMA_READ_CHANNEL pDMAChannel = &pDevData->DMARead_Channel[iDMA];
 	DMA_READ_JOB *pJob = NULL;
-	u8 iTC;
+	int iTC;
 	unsigned long flags;
 
 	dev_dbg(pDevData->dev, "imago_DMARead_Abort_DMAChannel> DMA: %d\n", iDMA);
@@ -659,7 +606,7 @@ int imago_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA)
 	//> Job/Request offen lassen	
 	for (iTC = 0; iTC < pDevData->DMARead_TCs; iTC++) {
 		//gültiger Eintrag mit dem gesuchten Request? (wenn boIsUsed, dann ist auch der Request gültig)
-		if (pDMAChannel->TCs[iTC].boIsUsed) {
+		if (pDMAChannel->TCs[iTC].pJob != NULL) {
 
 			dev_dbg(pDevData->dev, "abort DMA iTC: %d \n", iTC);
 
@@ -668,8 +615,8 @@ int imago_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA)
 			iowrite32(0, pDMAChannel->TCs[iTC].pDesriptorFifo + 1);
 			iowrite32(0, pDMAChannel->TCs[iTC].pDesriptorFifo + 2);
 			iowrite32(0, pDMAChannel->TCs[iTC].pDesriptorFifo + 3);
-		}//if boIsUsed					
-	}//for iTC
+		}					
+	}
 
 	imago_DMARead_Unlock(pDevData, flags);
 	return 0;
@@ -717,17 +664,16 @@ int imago_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData, const u32 iDMA)
 int imago_DMARead_Reset_DMAChannel(PDEVICE_DATA pDevData, unsigned int dma_channel)
 {
 	PDMA_READ_CHANNEL pDMAChannel = &pDevData->DMARead_Channel[dma_channel];
-	unsigned int iTC;
-	unsigned int i;
+	int i;
 	unsigned long flags;
 
 	// abort running DMA transfers in FPGA and move jobs from Jobs_ToDo to Jobs_Done FIFO
 	imago_DMARead_Abort_DMAChannel(pDevData, dma_channel);
 
 	// Wait for completion of pending transfers from FPGA
-	for (iTC = 0; iTC < pDevData->DMARead_TCs; iTC++) {
+	for (i = 0; i < pDevData->DMARead_TCs; i++) {
 		flags = imago_DMARead_Lock(pDevData);
-		if (pDMAChannel->TCs[iTC].boIsUsed) {
+		if (pDMAChannel->TCs[i].pJob != NULL) {
 			// reset completion, removing count associated with jobs in Jobs_Done FIFO,
 			// because we only wait once for report of the aborted transfer
 			reinit_completion(&pDMAChannel->job_complete);
@@ -746,7 +692,7 @@ int imago_DMARead_Reset_DMAChannel(PDEVICE_DATA pDevData, unsigned int dma_chann
 		if (pDMAChannel->jobBuffers[i].pVMUser != 0) {
 			dev_info(pDevData->dev, "imago_DMARead_Reset_DMAChannel(): unmapping lost buffer 0x%lx\n", pDMAChannel->jobBuffers[i].pVMUser);
 			if (pDMAChannel->doManualMap)
-				dma_sync_sg_for_cpu(pDevData->dev, pDMAChannel->jobBuffers[i].SGTable.sgl, pDMAChannel->jobBuffers[i].SGTable.nents, DMA_FROM_DEVICE);
+				dma_sync_sg_for_cpu(pDevData->dev, pDMAChannel->jobBuffers[i].SGTable.sgl, pDMAChannel->jobBuffers[i].SGTable.orig_nents, DMA_FROM_DEVICE);
 			imago_DMARead_UnMapUserBuffer(pDevData, &pDMAChannel->jobBuffers[i]);
 		}
 	}
