@@ -39,7 +39,7 @@ typedef u8 IOCTLBUFFER[128];
 #define IOC_DMAREAD_ADD_MAPPED_BUFFER	_IOW(IMAGO_IOC_MAGIC, 14, IOCTLBUFFER)
 #define IOC_INIT_I2C_ADAPTER			_IOW(IMAGO_IOC_MAGIC, 15, u8)
 
-long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
+long imago_locked_ioctl(struct DEVICE_DATA *pDevData, u32 cmd, u8 __user * pToUserMem)
 {
 	unsigned long flags;
 
@@ -209,7 +209,7 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 				return -EFAULT;
 			}
 			
-			return imago_DMARead_Reset_DMAChannel(pDevData, iDMAChannel);
+			return imago_dma_reset(pDevData, iDMAChannel);
 		}
 
 		// map user buffer for DMA
@@ -217,7 +217,7 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 		{
 			u8 	iDMAChannel, reversePages;
 			u64 user_ptr, bufferSize;
-			DMA_READ_CHANNEL *pDMAChannel;
+			struct DMA_READ_CHANNEL *pDMAChannel;
 			struct DMA_READ_JOB *pJob = NULL;
 			int result;
 
@@ -255,11 +255,9 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 			pDMAChannel->doManualMap = true;
 
 			// map buffer
-			result = imago_DMARead_MapUserBuffer(pDevData, pDMAChannel, (uintptr_t)user_ptr, bufferSize, reversePages, &pJob);
-			if (result < 0) {
-				imago_DMARead_UnMapUserBuffer(pDevData, pDMAChannel, pJob);
+			result = imago_dma_map(pDevData, pDMAChannel, (uintptr_t)user_ptr, bufferSize, reversePages, &pJob);
+			if (result < 0)
 				return result;
-			}
 
 			// return job pointer as handle for unmapping later
 			user_ptr = (u64)pJob;
@@ -276,7 +274,7 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 		{
 			u8 iDMAChannel;
 			u64 user_ptr;
-			PDMA_READ_CHANNEL pDMAChannel;
+			struct DMA_READ_CHANNEL *pDMAChannel;
 			struct DMA_READ_JOB *pJob;
 			// struct list_head *list_tmp, *list_next;
 
@@ -301,7 +299,7 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 
 			pDMAChannel = &pDevData->DMARead_Channel[iDMAChannel];
 			pJob = (struct DMA_READ_JOB *)user_ptr;
-			imago_DMARead_UnMapUserBuffer(pDevData, pDMAChannel, pJob);
+			imago_dma_unmap(pDevData, pDMAChannel, pJob);
 			
 			return 0;
 		}
@@ -311,7 +309,7 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 		{
 			u8 iDMAChannel;
 			u64 UserPTR, bufferSize;
-			PDMA_READ_CHANNEL pDMAChannel;
+			struct DMA_READ_CHANNEL *pDMAChannel;
 			struct DMA_READ_JOB *pJob = NULL;
 			int result;
 
@@ -347,18 +345,14 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 			pDMAChannel->doManualMap = false;
 
 			// map user buffer for DMA
-			result =  imago_DMARead_MapUserBuffer(pDevData, pDMAChannel, (uintptr_t) UserPTR, bufferSize, 0, &pJob);
-			if (result < 0) {
-				imago_DMARead_UnMapUserBuffer(pDevData, pDMAChannel, pJob);
+			result = imago_dma_map(pDevData, pDMAChannel, (uintptr_t) UserPTR, bufferSize, 0, &pJob);
+			if (result < 0)
 				return result;
-			}
 
-			// start DMA if idle, else add job to Jobs_ToDo FIFO
-			result = imago_DMARead_AddJob(pDevData, iDMAChannel, pJob);
-			if (result != 0) {
-				imago_DMARead_UnMapUserBuffer(pDevData, pDMAChannel, pJob);
-				return -result;
-			}
+			// start DMA if idle, else add job to job_list_pending
+			result = imago_dma_addjob(pDevData, iDMAChannel, pJob);
+			if (result != 0)
+				return result;
 
 			return 0;
 		}
@@ -368,7 +362,7 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 		{
 			u8 iDMAChannel;
 			u64 user_ptr;
-			PDMA_READ_CHANNEL pDMAChannel;
+			struct DMA_READ_CHANNEL *pDMAChannel;
 			struct DMA_READ_JOB *pJob;
 			int result;
 
@@ -396,10 +390,10 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 
 			dma_sync_sg_for_device(pDevData->dev, pJob->SGTable.sgl, pJob->SGTable.orig_nents, DMA_FROM_DEVICE);
 			
-			// start DMA if idle, else add job to Jobs_ToDo FIFO
-			result = imago_DMARead_AddJob(pDevData, iDMAChannel, pJob);
+			// start DMA if idle, else add job to job_list_pending
+			result = imago_dma_addjob(pDevData, iDMAChannel, pJob);
 			if (result != 0)
-				return -result;
+				return result;
 
 			return 0;
 		}
@@ -408,7 +402,7 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 		case IOC_DMAREAD_WAIT_FOR_BUFFER:
 		case IOC_DMAREAD_WAIT_FOR_BUFFER_TS:
 		{
-			PDMA_READ_CHANNEL pDMAChannel;
+			struct DMA_READ_CHANNEL *pDMAChannel;
 			struct DMA_READ_JOB *pJob = NULL;
 			int result = 0;
 			struct {
@@ -485,7 +479,7 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 			pDMAChannel->dmaWaitCount--;
 
 			if (pDMAChannel->abortWait) {
-				// abort operation has started, don't use valid buffer in Jobs_Done FIFO
+				// abort operation has started, don't use valid buffer in job_list_complete
 				if (result < 0) {
 					// avoid race condition: abort operation just started after completion timeout or signal,
 					// we need to correct the completion count now:
@@ -502,19 +496,19 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 				return result;
 
 			// get job from job_list_complete
-			flags = imago_DMARead_Lock(pDevData);
+			flags = imago_dma_lock(pDevData);
 			if (list_empty(&pDMAChannel->job_list_complete)) {
-				imago_DMARead_Unlock(pDevData, flags);
+				imago_dma_unlock(pDevData, flags);
 				dev_err(pDevData->dev, "Locked_ioctl IOC_DMAREAD_WAIT_FOR_BUFFER: DMA completed without buffer\n");
 				return -EFAULT;
 			}
 			pJob = list_first_entry(&pDMAChannel->job_list_complete, struct DMA_READ_JOB, list);
 			// move the job to job_list_allocated
 			list_move_tail(&pJob->list, &pDMAChannel->job_list_allocated);
-			imago_DMARead_Unlock(pDevData, flags);
+			imago_dma_unlock(pDevData, flags);
 
 			// send buffer to user (can also be dummy-Buffer)
-			ctl_out.success = pJob->boIsOk;
+			ctl_out.success = pJob->success;
 			ctl_out.buffer_counter = pJob->BufferCounter;
 			ctl_out.pVMUser = pJob->pVMUser;
 			ctl_out.timestamp = pJob->timestamp;
@@ -524,11 +518,11 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 			}
 
 			dev_dbg(pDevData->dev, "Locked_ioctl IOC_DMAREAD_WAIT_FOR_BUFFER: return buffer iDMA: %d, res: %d, Seq: %d, VMPtr: %p\n",
-				ctl_in.iDMAChannel, pJob->boIsOk, pJob->BufferCounter, (void*)pJob->pVMUser);
+				ctl_in.iDMAChannel, pJob->success, pJob->BufferCounter, (void*)pJob->pVMUser);
 
 			// unmap buffer (pJob is released) or handle cache
 			if (!pDMAChannel->doManualMap)
-				imago_DMARead_UnMapUserBuffer(pDevData, pDMAChannel, pJob);
+				imago_dma_unmap(pDevData, pDMAChannel, pJob);
 			else
 				dma_sync_sg_for_cpu(pDevData->dev, pJob->SGTable.sgl, pJob->SGTable.orig_nents, DMA_FROM_DEVICE);
 
@@ -557,9 +551,9 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 
 			//> DMA/UserThreads abbrechen
 			if(cmd == IOC_DMAREAD_ABORT_DMA)
-				return imago_DMARead_Abort_DMAChannel(pDevData, iDMAChannel);
+				return imago_dma_abort(pDevData, iDMAChannel);
 			else
-				return imago_DMARead_Abort_DMAWaiter(pDevData, iDMAChannel);
+				return imago_dma_abort_threads(pDevData, iDMAChannel);
 		}
 #ifdef __aarch64__
 #if IS_ENABLED(CONFIG_SPI_MASTER)
@@ -583,7 +577,7 @@ long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem)
 }
 
 
-long imago_create_deviceid(PDEVICE_DATA pDevData, u8* deviceIdOut)
+long imago_create_deviceid(struct DEVICE_DATA *pDevData, u8* deviceIdOut)
 {
 	struct SUN_DEVICE_DATA* pSunDevice;
 	unsigned int deviceId;
@@ -614,7 +608,7 @@ long imago_create_deviceid(PDEVICE_DATA pDevData, u8* deviceIdOut)
 	return -EMFILE;
 }
 
-long imago_release_deviceid(PDEVICE_DATA pDevData, u8 deviceID) {
+long imago_release_deviceid(struct DEVICE_DATA *pDevData, u8 deviceID) {
 
 	struct SUN_DEVICE_DATA* pSunDevice;
 	unsigned long flags;
@@ -636,7 +630,7 @@ long imago_release_deviceid(PDEVICE_DATA pDevData, u8 deviceID) {
 	return 0;
 }
 
-long imago_abort_longterm_read(PDEVICE_DATA pDevData, u8 deviceID) {
+long imago_abort_longterm_read(struct DEVICE_DATA *pDevData, u8 deviceID) {
 
 	struct SUN_DEVICE_DATA* pSunDevice;
 	unsigned long flags;

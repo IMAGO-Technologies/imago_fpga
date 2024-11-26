@@ -71,7 +71,7 @@ MODULE_DEVICE_TABLE(pci, pci_ids);		//macht dem kernel bekannt was dieses modul 
 
 
 // writes FPGA packet
-static int fpga_write(struct _DEVICE_DATA *pDevData, u32 *packet, unsigned int packet_size)
+static int fpga_write(struct DEVICE_DATA *pDevData, u32 *packet, unsigned int packet_size)
 {
 	unsigned int word;
 
@@ -82,7 +82,7 @@ static int fpga_write(struct _DEVICE_DATA *pDevData, u32 *packet, unsigned int p
 }
 
 #ifdef CONFIG_64BIT
-static int fpga_write64(struct _DEVICE_DATA *pDevData, u32 *packet, unsigned int packet_size)
+static int fpga_write64(struct DEVICE_DATA *pDevData, u32 *packet, unsigned int packet_size)
 {
 	unsigned int word;
 
@@ -96,7 +96,7 @@ static int fpga_write64(struct _DEVICE_DATA *pDevData, u32 *packet, unsigned int
 
 // PCI interrupt enable control
 
-static void pci_enable_interrupt(PDEVICE_DATA pDevData, bool enable)
+static void pci_enable_interrupt(struct DEVICE_DATA *pDevData, bool enable)
 {
 	if (pDevData == NULL || pDevData->device_type == DeviceType_Invalid || pDevData->pVABAR0 == NULL)
 		return;
@@ -104,7 +104,7 @@ static void pci_enable_interrupt(PDEVICE_DATA pDevData, bool enable)
 	iowrite32(enable ? 1 : 0, pDevData->pVABAR0 + ISR_ONOFF_OFFSET_AGEX);
 }
 
-static void pcie_enable_interrupt(PDEVICE_DATA pDevData, bool enable)
+static void pcie_enable_interrupt(struct DEVICE_DATA *pDevData, bool enable)
 {
 	if (pDevData == NULL || pDevData->device_type == DeviceType_Invalid || pDevData->pVABAR0 == NULL)
 		return;
@@ -132,7 +132,7 @@ static void pcie_enable_interrupt(PDEVICE_DATA pDevData, bool enable)
 static irqreturn_t pci_interrupt(int irq, void *dev_id)
 {
 	u32 regVal;
-	PDEVICE_DATA pDevData = (PDEVICE_DATA)dev_id;
+	struct DEVICE_DATA *pDevData = (struct DEVICE_DATA *)dev_id;
 
 	BUG_ON(pDevData == NULL || pDevData->pVABAR0 == NULL || pDevData->device_type == DeviceType_Invalid);
 
@@ -151,7 +151,7 @@ static irqreturn_t pci_interrupt(int irq, void *dev_id)
 // PCIe interrupt
 static irqreturn_t pcie_interrupt(int irq, void *dev_id)
 {
-	PDEVICE_DATA pDevData = (PDEVICE_DATA)dev_id;
+	struct DEVICE_DATA *pDevData = (struct DEVICE_DATA *)dev_id;
 	u32			IRQReg_A = ((u32*)pDevData->pVACommonBuffer)[0];
 	u32			sun_packet[MAX_SUNPACKETSIZE/4];
 	irqreturn_t result = pDevData->irqEnableInHWI ? IRQ_HANDLED : IRQ_WAKE_THREAD;
@@ -161,7 +161,7 @@ static irqreturn_t pcie_interrupt(int irq, void *dev_id)
 	// check for DMA done flag
 	if ((IRQReg_A >> 4) != 0) {
 		if (pDevData->setupTcInHWI)
-			imago_DMARead_DPC(pDevData);
+			imago_dma_event(pDevData);
 		else
 			result = IRQ_WAKE_THREAD;
 	}
@@ -189,7 +189,7 @@ static irqreturn_t pcie_interrupt(int irq, void *dev_id)
 // PCI
 static irqreturn_t pci_thread(int irq, void *dev_id)
 {
-	PDEVICE_DATA pDevData = (PDEVICE_DATA)dev_id;
+	struct DEVICE_DATA *pDevData = (struct DEVICE_DATA *)dev_id;
 	u32			sun_packet[MAX_SUNPACKETSIZE/4];
 	u32			regVal, fifoLevel;
 
@@ -225,11 +225,11 @@ static irqreturn_t pci_thread(int irq, void *dev_id)
 // PCIe: only process DMA interrupts, SUN packets are already handled by the pcie_interrupt
 static irqreturn_t pcie_thread(int irq, void *dev_id)
 {
-	PDEVICE_DATA pDevData = (PDEVICE_DATA)dev_id;
+	struct DEVICE_DATA *pDevData = (struct DEVICE_DATA *)dev_id;
 	u32			IRQReg_A = ((u32*)pDevData->pVACommonBuffer)[0];
 
 	if ((IRQReg_A >> 4) != 0 && !pDevData->setupTcInHWI)
-		imago_DMARead_DPC(pDevData);
+		imago_dma_event(pDevData);
 
 	pcie_enable_interrupt(pDevData, true);
 
@@ -247,7 +247,7 @@ static int imago_pci_probe(struct pci_dev *pcidev, const struct pci_device_id *i
 	u64 bar0_start,bar0_len;
 	int i, res;
 	u8 dev_type;
-	PDEVICE_DATA pDevData = NULL;
+	struct DEVICE_DATA *pDevData = NULL;
 	struct irq_desc *desc;
 
 	pci_set_drvdata(pcidev, NULL);	
@@ -371,7 +371,7 @@ static int imago_pci_probe(struct pci_dev *pcidev, const struct pci_device_id *i
 			return -ENOMEM;
 		}
 		for (i = 0; i < MAX_DMA_CHANNELS; i++) {
-			PDMA_READ_CHANNEL pDMAChannel = &pDevData->DMARead_Channel[i];
+			struct DMA_READ_CHANNEL *pDMAChannel = &pDevData->DMARead_Channel[i];
 
 			INIT_LIST_HEAD(&pDMAChannel->job_list_allocated);
 			INIT_LIST_HEAD(&pDMAChannel->job_list_pending);
@@ -470,7 +470,7 @@ static int imago_pci_probe(struct pci_dev *pcidev, const struct pci_device_id *i
 static void imago_pci_remove(struct pci_dev *pcidev)
 {
 	u32 i;
-	PDEVICE_DATA pDevData = (PDEVICE_DATA)pci_get_drvdata(pcidev);
+	struct DEVICE_DATA *pDevData = (struct DEVICE_DATA *)pci_get_drvdata(pcidev);
 
 	if (pDevData == NULL) {
 		dev_warn(&pcidev->dev, "imago_pci_remove(): device data is invalid\n");
@@ -482,7 +482,7 @@ static void imago_pci_remove(struct pci_dev *pcidev)
 	if (IS_TYPEWITH_DMA2HOST(pDevData)) {
 		// Stop DMA transfers and unmap all buffers
 		for (i = 0; i < pDevData->DMARead_channels; i++) {
-			imago_DMARead_Reset_DMAChannel(pDevData, i);
+			imago_dma_reset(pDevData, i);
 		}
 
 		kmem_cache_destroy(pDevData->dma_job_cache);

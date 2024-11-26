@@ -26,7 +26,7 @@
 
 
 struct imago_hid_uart {
-	PDEVICE_DATA pDevData;
+	struct DEVICE_DATA *pDevData;
 	u8 rx_buf[3 * 4];
 	u8 rx_valid;
 	u8 tx_buf[2 + 3 * 4];
@@ -66,7 +66,7 @@ static int raw_event(struct hid_device *hid, struct hid_report *report,
 	return 0;
 }
 
-static int fpga_write(struct _DEVICE_DATA *pDevData, u32* packet, unsigned int packet_size)
+static int fpga_write(struct DEVICE_DATA *pDevData, u32* packet, unsigned int packet_size)
 {
 	struct hid_device *hid = to_hid_device(pDevData->dev);
 	struct imago_hid_uart *hid_uart = hid_get_drvdata(hid);
@@ -98,7 +98,7 @@ static int imago_hid_probe(struct hid_device *hdev, const struct hid_device_id *
 {
 	int res;
 	u8 dev_type;
-	PDEVICE_DATA pDevData = NULL;
+	struct DEVICE_DATA *pDevData = NULL;
 	u8 *msg = NULL;
 	struct usb_interface *intf = to_usb_interface(hdev->dev.parent);
 	struct imago_hid_uart *hid_uart;
@@ -222,7 +222,7 @@ static void imago_hid_remove(struct hid_device *hdev)
 
 	if (intf->cur_altsetting->desc.bInterfaceNumber == 1) {
 		struct imago_hid_uart *hid_uart = hid_get_drvdata(hdev);
-		PDEVICE_DATA pDevData = hid_uart->pDevData;
+		struct DEVICE_DATA *pDevData = hid_uart->pDevData;
 
 		if (pDevData == NULL) {
 			hid_warn(hdev, "imago_hid_remove(): device data is invalid\n");

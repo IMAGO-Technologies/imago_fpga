@@ -73,16 +73,16 @@ static struct imago_device_info device_info[] = {
 };
 
 // allocate and initialize DEVICE_DATA struct
-DEVICE_DATA *imago_alloc_dev_data(struct device *dev, u8 dev_type)
+struct DEVICE_DATA *imago_alloc_dev_data(struct device *dev, u8 dev_type)
 {
 	int i, minor, iChannel, iTC;
-	DEVICE_DATA *pDevData = NULL;
+	struct DEVICE_DATA *pDevData = NULL;
 
 	dev_dbg(dev, "found '%s' device\n", device_info[dev_type].name);
 
 	for (minor = 0; minor < MAX_DEVICE_COUNT; minor++) {
 		if (_ModuleData.dev_data[minor] == NULL) {
-			pDevData = kzalloc(sizeof(DEVICE_DATA), GFP_KERNEL);
+			pDevData = kzalloc(sizeof(struct DEVICE_DATA), GFP_KERNEL);
 			if (pDevData == NULL) {
 				dev_err(dev, "imago_alloc_dev_data: kzalloc() failed\n");
 				return NULL;
@@ -150,13 +150,13 @@ DEVICE_DATA *imago_alloc_dev_data(struct device *dev, u8 dev_type)
 	pDevData->DMARead_SGs		= 0;
 	raw_spin_lock_init(&pDevData->DMARead_SpinLock);
 	for (iChannel = 0; iChannel < MAX_DMA_CHANNELS; iChannel++) {
-		PDMA_READ_CHANNEL pChannel = &pDevData->DMARead_Channel[iChannel];
+		struct DMA_READ_CHANNEL *pChannel = &pDevData->DMARead_Channel[iChannel];
 		init_completion(&pChannel->job_complete);
 		pChannel->dmaWaitCount = 0;
 		pChannel->abortWait = 0;
 
 		for (iTC = 0; iTC < MAX_DMA_READ_CHANNELTCS; iTC++) {
-			PDMA_READ_TC pTC = pChannel->TCs+iTC;
+			struct DMA_READ_TC *pTC = pChannel->TCs+iTC;
 			pTC->pJob = NULL;
 		}
 	}
@@ -166,7 +166,7 @@ DEVICE_DATA *imago_alloc_dev_data(struct device *dev, u8 dev_type)
 
 static void imago_dev_release(struct device *dev)
 {
-	PDEVICE_DATA pDevData = dev_get_drvdata(dev);
+	struct DEVICE_DATA *pDevData = dev_get_drvdata(dev);
 	dev_dbg(dev, "imago_dev_release, dev: %p, pDevData: %p\n", dev, pDevData);
 	
 	if (pDevData != NULL)
@@ -176,7 +176,7 @@ static void imago_dev_release(struct device *dev)
 extern struct file_operations fpga_ops;
 
 // Helper function for creating a char device
-int imago_create_device(PDEVICE_DATA pDevData)
+int imago_create_device(struct DEVICE_DATA *pDevData)
 {
 	int res;
 
@@ -215,7 +215,7 @@ int imago_create_device(PDEVICE_DATA pDevData)
 	return 0;
 }
 
-void imago_dev_close(DEVICE_DATA *pDevData)
+void imago_dev_close(struct DEVICE_DATA *pDevData)
 {
 	int minor;
 
@@ -253,7 +253,7 @@ void imago_dev_close(DEVICE_DATA *pDevData)
 	dev_warn(pDevData->dev, "imago_dev_close(): invalid device data\n");
 }
 
-void imago_free_dev_data(DEVICE_DATA *pDevData)
+void imago_free_dev_data(struct DEVICE_DATA *pDevData)
 {
 	int minor;
 

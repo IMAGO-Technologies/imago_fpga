@@ -92,7 +92,7 @@ enum IMAGO_DEVICE_TYPE
 	DeviceType_VCXM2	= 14,
 };
 
-// Device flags used by struct _DEVICE_DATA
+// Device flags used by struct struct DEVICE_DATA
 #define IMAGO_DEV_FLAG_PCIE			0x01
 #define IMAGO_DEV_FLAG_PCI			0x02
 #define IMAGO_DEV_FLAG_PCI64BIT		0x04
@@ -163,7 +163,7 @@ struct DMA_READ_JOB
 
 	u64					timestamp;
 	u16 				BufferCounter; 		// buffer counter comming from FPGA
-	bool				boIsOk;				// job status, valid only if in Jobs_Done FIFO
+	bool				success;			// job status, valid only if in job_list_complete
 
 	u32					pagesPinned;
 	struct page **		ppPageList;
@@ -174,16 +174,16 @@ struct DMA_READ_JOB
 };
 
 // transfer channel structure
-typedef struct _DMA_READ_TC
+struct DMA_READ_TC
 {
-	struct DMA_READ_JOB	*pJob;				// current job data (comming from Jobs_ToDo FIFO, going to Jobs_Done FIFO)
+	struct DMA_READ_JOB	*pJob;				// current job data
 	struct scatterlist	*sg_list;			// SG list for current transfer
 	u32					*pDesriptorFifo;
 	u16					sg_remaining;		// number of remaining SG elements for DMA to complete
-}  DMA_READ_TC, *PDMA_READ_TC;
+};
 
 // DMA channel structure
-typedef struct _DMA_READ_CHANNEL
+struct DMA_READ_CHANNEL
 {
 	struct list_head	job_list_allocated;
 	struct list_head	job_list_pending;
@@ -193,14 +193,13 @@ typedef struct _DMA_READ_CHANNEL
 	u8 dmaWaitCount;								// number of threads waiting for completion
 	u8 abortWait;									// signal DMA abort event to waiting threads
 
-	DMA_READ_TC TCs[MAX_DMA_READ_CHANNELTCS];		// transfer channel data
+	struct DMA_READ_TC TCs[MAX_DMA_READ_CHANNELTCS];	// transfer channel data
 	bool			doManualMap;
-}  DMA_READ_CHANNEL, *PDMA_READ_CHANNEL;
-
+};
 
 
 // device data structure
-typedef struct _DEVICE_DATA
+struct DEVICE_DATA
 {		
 	//> Device	
 	//***************************************************************/
@@ -212,7 +211,7 @@ typedef struct _DEVICE_DATA
 	struct semaphore		DeviceSem;		//lock für ein Device (diese struct & common buffer)
 	dev_t					DeviceNumber;	//Nummer von CHAR device
 	u8						flags;
-	int						(*write)(struct _DEVICE_DATA *pDevData, u32 *packet, unsigned int packet_size);
+	int						(*write)(struct DEVICE_DATA *pDevData, u32 *packet, unsigned int packet_size);
 
 	//> SunDeviceData[] stores the state of read requests for different FPGA registers ('devices')
 	//***************************************************************/
@@ -238,14 +237,14 @@ typedef struct _DEVICE_DATA
 	raw_spinlock_t			DMARead_SpinLock;	// DMA spinlock
 	bool					setupTcInHWI;		// setup transfer channel in hardware interrupt
 	bool					irqEnableInHWI;		// if disabled: DRA7x workaround for IRQ race in old kernels
-	DMA_READ_CHANNEL		DMARead_Channel[MAX_DMA_CHANNELS];	// DMA channel data
+	struct DMA_READ_CHANNEL	DMARead_Channel[MAX_DMA_CHANNELS];	// DMA channel data
 	struct kmem_cache		*dma_job_cache;
-} DEVICE_DATA, *PDEVICE_DATA;
+};
 
 // module data structure
 typedef struct _MODULE_DATA
 {
-	DEVICE_DATA		*dev_data[MAX_DEVICE_COUNT];	// device data, index is the minor number
+	struct DEVICE_DATA *dev_data[MAX_DEVICE_COUNT];	// device data, index is the minor number
 	dev_t 			FirstDeviceNumber;				// MAJOR(devNumber),MINOR(devNumber) (eg 240 , 0)
 	struct class	*pModuleClass;					// /sys/class/*
 	int				dma_update_in_hwi;
@@ -260,62 +259,58 @@ extern struct hid_driver imago_hid_driver;
 
 /*** prototypes ***/
 /******************************************************************************************/
-DEVICE_DATA *imago_alloc_dev_data(struct device *dev, u8 dev_type);
-void imago_free_dev_data(DEVICE_DATA *pDevData);
-void imago_dev_close(DEVICE_DATA *pDevData);
-long imago_locked_ioctl(PDEVICE_DATA pDevData, u32 cmd, u8 __user * pToUserMem);
-int imago_create_device(PDEVICE_DATA pDevData);
-long imago_create_deviceid(PDEVICE_DATA pDevData, u8* deviceIdOut);
-long imago_release_deviceid(PDEVICE_DATA pDevData, u8 deviceID);
-long imago_abort_longterm_read(PDEVICE_DATA pDevData, u8 deviceID);
-void imago_sun_interrupt(PDEVICE_DATA pDevData, u32 *sun_packet);
+struct DEVICE_DATA *imago_alloc_dev_data(struct device *dev, u8 dev_type);
+void imago_free_dev_data(struct DEVICE_DATA *pDevData);
+void imago_dev_close(struct DEVICE_DATA *pDevData);
+long imago_locked_ioctl(struct DEVICE_DATA *pDevData, u32 cmd, u8 __user * pToUserMem);
+int imago_create_device(struct DEVICE_DATA *pDevData);
+long imago_create_deviceid(struct DEVICE_DATA *pDevData, u8* deviceIdOut);
+long imago_release_deviceid(struct DEVICE_DATA *pDevData, u8 deviceID);
+long imago_abort_longterm_read(struct DEVICE_DATA *pDevData, u8 deviceID);
+void imago_sun_interrupt(struct DEVICE_DATA *pDevData, u32 *sun_packet);
 
 /* DMA functions */
-int imago_DMARead_AddJob(PDEVICE_DATA pDevData, u32 iDMA, struct DMA_READ_JOB *pJob);
-void imago_DMARead_DPC(PDEVICE_DATA pDevData);
-void imago_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC);
-
-int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMAChannel, uintptr_t pVMUser,
+int imago_dma_addjob(struct DEVICE_DATA *pDevData, u32 iDMA, struct DMA_READ_JOB *pJob);
+void imago_dma_event(struct DEVICE_DATA *pDevData);
+int imago_dma_map(struct DEVICE_DATA *pDevData, struct DMA_READ_CHANNEL *pDMAChannel, uintptr_t pVMUser,
 		u32 bufferSize, u8 reversePages, struct DMA_READ_JOB **ppJob);
-void imago_DMARead_UnMapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMAChannel, struct DMA_READ_JOB *pJob);
-
-int imago_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA);
-int imago_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData,  const u32 iDMA);
-int imago_DMARead_Reset_DMAChannel(PDEVICE_DATA pDevData, unsigned int dma_channel);
+void imago_dma_unmap(struct DEVICE_DATA *pDevData, struct DMA_READ_CHANNEL *pDMAChannel, struct DMA_READ_JOB *pJob);
+int imago_dma_abort(struct DEVICE_DATA *pDevData, const u32 iDMA);
+int imago_dma_abort_threads(struct DEVICE_DATA *pDevData,  const u32 iDMA);
+int imago_dma_reset(struct DEVICE_DATA *pDevData, unsigned int dma_channel);
 
 /* I2C adapter functions */
-long imago_init_i2cAdapter(PDEVICE_DATA pDevData);
+long imago_init_i2cAdapter(struct DEVICE_DATA *pDevData);
 void imago_remove_i2cAdapter(void);
 
-int imago_write_locked(PDEVICE_DATA pDevData, u32* packet, unsigned int packet_size);
-int imago_write_internal(PDEVICE_DATA pDevData, u32 *packet, unsigned int packet_size);
-int imago_read_internal(PDEVICE_DATA pDevData, u32* buf, unsigned int count);
+int imago_write_internal(struct DEVICE_DATA *pDevData, u32 *packet, unsigned int packet_size);
+int imago_read_internal(struct DEVICE_DATA *pDevData, u32* buf, unsigned int count);
 
 // device uses PCIe interface (common buffer + MSI)
-static inline bool IS_TYPEWITH_COMMONBUFFER(DEVICE_DATA *pDeviceData)
+static inline bool IS_TYPEWITH_COMMONBUFFER(struct DEVICE_DATA *pDeviceData)
 {
 	return ((pDeviceData->flags & IMAGO_DEV_FLAG_PCIE) != 0);
 }
 
 // device uses PCI interface
-static inline bool IS_TYPEWITH_PCI(DEVICE_DATA *pDeviceData)
+static inline bool IS_TYPEWITH_PCI(struct DEVICE_DATA *pDeviceData)
 {
 	return ((pDeviceData->flags & IMAGO_DEV_FLAG_PCI) != 0);
 }
 
 // device supports 64-bit addressing
-static inline bool IS_TYPEWITH_PCI64BIT(DEVICE_DATA *pDeviceData)
+static inline bool IS_TYPEWITH_PCI64BIT(struct DEVICE_DATA *pDeviceData)
 {
 	return ((pDeviceData->flags & IMAGO_DEV_FLAG_PCI64BIT) != 0);
 }
 
 // device supports DMA
-static inline bool IS_TYPEWITH_DMA2HOST(DEVICE_DATA *pDeviceData)
+static inline bool IS_TYPEWITH_DMA2HOST(struct DEVICE_DATA *pDeviceData)
 {
 	return ((pDeviceData->flags & IMAGO_DEV_FLAG_DMA2HOST) != 0);
 }
 
-static inline unsigned long imago_DMARead_Lock(DEVICE_DATA *pDevData)
+static inline unsigned long imago_dma_lock(struct DEVICE_DATA *pDevData)
 {
 	unsigned long flags = 0;
 	if (pDevData->setupTcInHWI)
@@ -325,7 +320,7 @@ static inline unsigned long imago_DMARead_Lock(DEVICE_DATA *pDevData)
 	return flags;
 }
 
-static inline void imago_DMARead_Unlock(DEVICE_DATA *pDevData, unsigned long flags)
+static inline void imago_dma_unlock(struct DEVICE_DATA *pDevData, unsigned long flags)
 {
 	if (pDevData->setupTcInHWI)
 		raw_spin_unlock_irqrestore(&pDevData->DMARead_SpinLock, flags);

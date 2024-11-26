@@ -46,7 +46,7 @@ MODULE_DEVICE_TABLE(spi, imago_spi_id);
 
 
 // writes FPGA packet
-static int fpga_write(struct _DEVICE_DATA *pDevData, u32* packet, unsigned int packet_size)
+static int fpga_write(struct DEVICE_DATA *pDevData, u32* packet, unsigned int packet_size)
 {
 	struct spi_transfer transfer;
 	struct spi_message message;
@@ -107,7 +107,7 @@ static int fpga_write(struct _DEVICE_DATA *pDevData, u32* packet, unsigned int p
 // IRQ thread
 static irqreturn_t spi_thread(int irq, void *dev_id)
 {
-	PDEVICE_DATA pDevData = (PDEVICE_DATA)dev_id;
+	struct DEVICE_DATA *pDevData = (struct DEVICE_DATA *)dev_id;
 	u32			sun_packet[MAX_SUNPACKETSIZE/4];
 	struct spi_transfer transfer;
 	struct spi_message message;
@@ -145,7 +145,7 @@ static irqreturn_t spi_thread(int irq, void *dev_id)
 
 static int imago_spi_probe(struct spi_device *spi)
 {
-	PDEVICE_DATA pDevData = NULL;
+	struct DEVICE_DATA *pDevData = NULL;
 	u8 dev_type;
 	const struct of_device_id *of_id;
 	int res;
@@ -201,7 +201,7 @@ static int imago_spi_probe(struct spi_device *spi)
 
 static int imago_spi_remove(struct spi_device *spi)
 {
-	PDEVICE_DATA pDevData = (PDEVICE_DATA)spi_get_drvdata(spi);
+	struct DEVICE_DATA *pDevData = (struct DEVICE_DATA *)spi_get_drvdata(spi);
 
 	dev_dbg(&spi->dev, "imago_spi_remove\n");
 

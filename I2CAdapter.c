@@ -31,7 +31,7 @@ This bridges the SunSystem interface and makes it possible for a standard rtc dr
 
 struct adapterData
 {
-	PDEVICE_DATA pDevData;
+	struct DEVICE_DATA *pDevData;
 	unsigned short previousHost;
 	u8 deviceID;
 };
@@ -169,7 +169,7 @@ struct i2c_adapter imago_i2cAdapter = {
 	.algo_data = NULL,
 };
 
-long imago_init_i2cAdapter(PDEVICE_DATA pDevData)
+long imago_init_i2cAdapter(struct DEVICE_DATA *pDevData)
 {
 	struct adapterData *data;
 	

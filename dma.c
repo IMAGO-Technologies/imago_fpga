@@ -51,7 +51,7 @@ static bool list_has_entry(struct list_head *entry, struct list_head *head)
 
 
 //Init und mapped/pinned den "Job<>UserBuffer", struct ist beim return(min die Flags gültig) wickelt daher beim Fehler nichts rück ab (kann nicht als DPC laufen)
-int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMAChannel, uintptr_t pVMUser,
+int imago_dma_map(struct DEVICE_DATA *pDevData, struct DMA_READ_CHANNEL *pDMAChannel, uintptr_t pVMUser,
 		u32 bufferSize, u8 reversePages, struct DMA_READ_JOB **ppJob)
 {
 	struct DMA_READ_JOB *pJob = NULL;
@@ -83,9 +83,9 @@ int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMACha
 		return -ENOMEM;
 	}
 
-	flags = imago_DMARead_Lock(pDevData);
+	flags = imago_dma_lock(pDevData);
 	list_add_tail(&pJob->list, &pDMAChannel->job_list_allocated);
-	imago_DMARead_Unlock(pDevData, flags);
+	imago_dma_unlock(pDevData, flags);
 
 	pJob->pVMUser = (uintptr_t) pVMUser;
 
@@ -95,6 +95,7 @@ int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMACha
 	pJob->ppPageList = kmalloc(pagesToMap * sizeof(struct page*), GFP_KERNEL);
 	if (pJob->ppPageList == NULL) {
 		dev_err(pDevData->dev, "MappUserBuffer: too many pages");
+		imago_dma_unmap(pDevData, pDMAChannel, pJob);
 		return -ENOMEM;
 	}
 
@@ -150,12 +151,14 @@ int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMACha
 
 	if (pagesPinned < 0) {
 		dev_err(pDevData->dev, "MappUserBuffer: get_user_pages() failed");
+		imago_dma_unmap(pDevData, pDMAChannel, pJob);
 		return pagesPinned;
 	}
 	pJob->pagesPinned 	= pagesPinned;
 	if (((u32)pagesPinned) != pagesToMap) {
 		dev_err(pDevData->dev, "MappUserBuffer: get_user_pages() %d failed from %d pinned",
 			pagesPinned, pagesToMap);
+		imago_dma_unmap(pDevData, pDMAChannel, pJob);
 		return -EFAULT;
 	}
 
@@ -196,6 +199,7 @@ int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMACha
 										GFP_KERNEL);				/*alloc type*/
 	if (result < 0) {			
 		dev_err(pDevData->dev, "MappUserBuffer: sg_alloc_table_from_pages() failed");
+		imago_dma_unmap(pDevData, pDMAChannel, pJob);
 		return result;
 	}
 #else
@@ -209,6 +213,7 @@ int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMACha
 							GFP_KERNEL);	/*wie wird die page gealloc*/
 	if (result < 0) {
 		dev_err(pDevData->dev, "MappUserBuffer: sg_alloc_table() failed");
+		imago_dma_unmap(pDevData, pDMAChannel, pJob);
 		return result;
 	}
 
@@ -308,14 +313,13 @@ int imago_DMARead_MapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMACha
 }
 
 
-
 // Macht einen CleanUp des Jobs
 // Achtung! 
 // 	> es können nur Teile eines Jobs gültig sein
 //  > darf nicht in einem DPC laufen! (set_page_dirty_lock())
 // - unmapping/pinnen 
 // - TC/Job freigeben
-void imago_DMARead_UnMapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMAChannel, struct DMA_READ_JOB *pJob)
+void imago_dma_unmap(struct DEVICE_DATA *pDevData, struct DMA_READ_CHANNEL *pDMAChannel, struct DMA_READ_JOB *pJob)
 {
 	unsigned long flags;
 
@@ -331,11 +335,11 @@ void imago_DMARead_UnMapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMA
 	// remove job from job_list_allocated
 #ifdef DEBUG
 	if (!list_has_entry(&pJob->list, &pDMAChannel->job_list_allocated))
-		dev_err(pDevData->dev, "imago_DMARead_UnMapUserBuffer: job not found in job_list_allocated\n");
+		dev_err(pDevData->dev, "imago_dma_unmap: job not found in job_list_allocated\n");
 #endif
-	flags = imago_DMARead_Lock(pDevData);
+	flags = imago_dma_lock(pDevData);
 	list_del(&pJob->list);
-	imago_DMARead_Unlock(pDevData, flags);
+	imago_dma_unlock(pDevData, flags);
 
 	/**********************************************************************/
 	// unmapp
@@ -398,129 +402,19 @@ void imago_DMARead_UnMapUserBuffer(PDEVICE_DATA pDevData, DMA_READ_CHANNEL *pDMA
 	kmem_cache_free(pDevData->dma_job_cache, pJob);
 }
 
-// beendet eine DMA, egal ob mit oder ohne Fehler, ob gelaufen oder nicht (läuft auch aus DPC)
-static void imago_DMARead_EndDMA(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC, const bool isOk, const u16 BufferCounter)
-{	
-	PDMA_READ_CHANNEL pDMAChannel = &pDevData->DMARead_Channel[iDMA];
-	PDMA_READ_TC pTC = &pDMAChannel->TCs[iTC];
-	unsigned long flags;
 
-	dev_dbg(pDevData->dev, "imago_DMARead_EndDMA > DMA: %d, TC: %d, Res: %d, Seq: %d\n",
-				   	iDMA, iTC, isOk, BufferCounter);
-	if (pTC->pJob == NULL) {
-		dev_warn(pDevData->dev, "imago_DMARead_EndDMA(): invalid TC, DMA: %d, TC: %d, Res: %d, Seq: %d\n",
-						iDMA, iTC, isOk, BufferCounter);
-		return;
-	}
-
-	flags = imago_DMARead_Lock(pDevData);
-
-	// check if current job has completed all SG elements
-	if (isOk && pTC->sg_remaining != 0) {
-		// start next transfer for this job
-		imago_DMARead_StartNextTransfer_Locked(pDevData, iDMA, iTC);
-		imago_DMARead_Unlock(pDevData, flags);
-		return;
-	}
-
-	// copy job data from finished TC
-	pTC->pJob->boIsOk			= isOk;
-	pTC->pJob->BufferCounter	= BufferCounter;
-	pTC->pJob->timestamp		= div_u64(ktime_get_ns(), NSEC_PER_USEC);
-
-#ifdef DEBUG
-	if (list_has_entry(&pTC->pJob->list, &pDMAChannel->job_list_allocated))
-		dev_err(pDevData->dev, "imago_DMARead_EndDMA: job already found in job_list_allocated\n");
-	if (list_has_entry(&pTC->pJob->list, &pDMAChannel->job_list_pending))
-		dev_err(pDevData->dev, "imago_DMARead_EndDMA: job already found in job_list_pending\n");
-	if (list_has_entry(&pTC->pJob->list, &pDMAChannel->job_list_complete))
-		dev_err(pDevData->dev, "imago_DMARead_EndDMA: job already found in job_list_complete\n");
-#endif
-	// move job to job_list_complete
-	list_add_tail(&pTC->pJob->list, &pDMAChannel->job_list_complete);
-
-	// start next job in job_list_pending
-	if (!list_empty(&pDMAChannel->job_list_pending)) {
-		pTC->pJob = list_first_entry(&pDMAChannel->job_list_pending, struct DMA_READ_JOB, list);
-		list_del(&pTC->pJob->list);
-		pTC->sg_remaining = pTC->pJob->SGTable.nents;
-		pTC->sg_list = pTC->pJob->SGTable.sgl;
-		imago_DMARead_StartNextTransfer_Locked(pDevData, iDMA, iTC);
-	}
-	else {
-		// TC freigeben, unter lock setzen wegen race mit imago_DMARead_Reset_DMAChannel()
-		pTC->pJob = NULL;
-	}
-
-	imago_DMARead_Unlock(pDevData, flags);
-
-	// notify thread
-	complete(&pDMAChannel->job_complete);
-}
-
-
-/****************************************
- * 
- * DMARead fns
- *
-****************************************/
-
-// add job to FIFO and start transfer if idle
-int imago_DMARead_AddJob(PDEVICE_DATA pDevData, u32 iDMA, struct DMA_READ_JOB *pJob)
+static void imago_dma_start(struct DEVICE_DATA *pDevData, const u32 iDMA, const u32 iTC)
 {
-	DMA_READ_CHANNEL *pDMAChannel = &pDevData->DMARead_Channel[iDMA];
-	int iTC;
-	unsigned long flags;
-
-	flags = imago_DMARead_Lock(pDevData);
-
-#ifdef DEBUG
-	if (!list_has_entry(&pJob->list, &pDMAChannel->job_list_allocated))
-		dev_err(pDevData->dev, "imago_DMARead_AddJob: job not found in job_list_allocated\n");
-#endif
-
-	// start transfer if a transfer channel is idle
-	for (iTC = 0; iTC < pDevData->DMARead_TCs; iTC++) {
-		if (pDMAChannel->TCs[iTC].pJob == NULL) {
-			// remove from job_list_allocated
-			list_del(&pJob->list);
-			pDMAChannel->TCs[iTC].pJob = pJob;
-			pDMAChannel->TCs[iTC].sg_remaining = pJob->SGTable.nents;
-			pDMAChannel->TCs[iTC].sg_list = pJob->SGTable.sgl;
-
-			imago_DMARead_StartNextTransfer_Locked(pDevData, iDMA, iTC);
-			imago_DMARead_Unlock(pDevData, flags);
-
-			return 0;
-		}
-	}
-
-	// move job from job_list_allocated to job_list_pending
-	list_move_tail(&pJob->list, &pDMAChannel->job_list_pending);
-	
-	imago_DMARead_Unlock(pDevData, flags);
-
-	return 0;
-}
-
-
-//startet den nächste Transfer(SGs),
-// - erkennt Fehler wenn möglich DMA abbrechen
-// - nächste kann aber auch 1. bzw. letzte Transfer sein
-// - wird mit DMALock aufgerufen
-void imago_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 iDMA, const u32 iTC)
-{
-	int 			iSG 	= 0;
-	DMA_READ_TC 	*pTC 	= pDevData->DMARead_Channel[iDMA].TCs + iTC;
+	int iSG = 0;
+	struct DMA_READ_TC *pTC = pDevData->DMARead_Channel[iDMA].TCs + iTC;
 	struct DMA_READ_JOB *pJob = pTC->pJob;
-	u32				dma_flags = DMA_READ_TC_SG_FLAG_START_TRANSFER;
+	u32 dma_flags = DMA_READ_TC_SG_FLAG_START_TRANSFER;
 
-	dev_dbg(pDevData->dev, "imago_DMARead_StartNextTransfer_Locked > DMA: %d, TC: %d\n",	iDMA, iTC);
+	dev_dbg(pDevData->dev, "imago_dma_start > DMA: %d, TC: %d\n",	iDMA, iTC);
 
-	//> alles gut (sicher ist sicher) kann aber nichts machen
-	if ((iDMA >= pDevData->DMARead_channels) || (iTC >= pDevData->DMARead_TCs) ||
-			pJob == NULL || (pTC->sg_remaining == 0) || (pTC->sg_list == NULL)) {
-		dev_err(pDevData->dev, "imago_DMARead_StartNextTransfer_Locked > Invalid context!\n");
+	if (iDMA >= pDevData->DMARead_channels || iTC >= pDevData->DMARead_TCs ||
+			pJob == NULL || pTC->sg_remaining == 0 || pTC->sg_list == NULL) {
+		dev_err(pDevData->dev, "imago_dma_start > Invalid context\n");
 		return;
 	}
 
@@ -534,7 +428,7 @@ void imago_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 iDM
 		// check size
 		if(		((sg_length & 0x3) != 0)
 		 	||  (sg_length > DMA_READ_TC_SG_MAX_BYTECOUNT ) ) {
-			dev_err(pDevData->dev, "imago_DMARead_StartNextTransfer_Locked > Invalid DMA size!\n");
+			dev_err(pDevData->dev, "imago_dma_start > Invalid DMA size!\n");
 			dma_flags |= DMA_READ_TC_SG_FLAG_ERROR;		// abort transfer
 			iSG = pDevData->DMARead_SGs;				// last element
 		}
@@ -563,13 +457,112 @@ void imago_DMARead_StartNextTransfer_Locked(PDEVICE_DATA pDevData, const u32 iDM
 }
 
 
-//Beendet alle DMAs die durch sind (bzw. deren DMATransfer), und versucht neue zu starte
-void imago_DMARead_DPC(PDEVICE_DATA pDevData)
+static void imago_dma_finish(struct DEVICE_DATA *pDevData, const u32 iDMA, const u32 iTC, const bool success, const u16 BufferCounter)
+{	
+	struct DMA_READ_CHANNEL *pDMAChannel = &pDevData->DMARead_Channel[iDMA];
+	struct DMA_READ_TC *pTC = &pDMAChannel->TCs[iTC];
+	unsigned long flags;
+
+	dev_dbg(pDevData->dev, "imago_dma_finish > DMA: %d, TC: %d, Res: %d, Seq: %d\n",
+				   	iDMA, iTC, success, BufferCounter);
+	if (pTC->pJob == NULL) {
+		dev_warn(pDevData->dev, "imago_dma_finish(): invalid TC, DMA: %d, TC: %d, Res: %d, Seq: %d\n",
+						iDMA, iTC, success, BufferCounter);
+		return;
+	}
+
+	flags = imago_dma_lock(pDevData);
+
+	// check if current job has completed all SG elements
+	if (success && pTC->sg_remaining != 0) {
+		// start next transfer for this job
+		imago_dma_start(pDevData, iDMA, iTC);
+		imago_dma_unlock(pDevData, flags);
+		return;
+	}
+
+	// copy job data from finished TC
+	pTC->pJob->success			= success;
+	pTC->pJob->BufferCounter	= BufferCounter;
+	pTC->pJob->timestamp		= div_u64(ktime_get_ns(), NSEC_PER_USEC);
+
+#ifdef DEBUG
+	if (list_has_entry(&pTC->pJob->list, &pDMAChannel->job_list_allocated))
+		dev_err(pDevData->dev, "imago_dma_finish: job already found in job_list_allocated\n");
+	if (list_has_entry(&pTC->pJob->list, &pDMAChannel->job_list_pending))
+		dev_err(pDevData->dev, "imago_dma_finish: job already found in job_list_pending\n");
+	if (list_has_entry(&pTC->pJob->list, &pDMAChannel->job_list_complete))
+		dev_err(pDevData->dev, "imago_dma_finish: job already found in job_list_complete\n");
+#endif
+	// move job to job_list_complete
+	list_add_tail(&pTC->pJob->list, &pDMAChannel->job_list_complete);
+
+	// start next job in job_list_pending
+	if (!list_empty(&pDMAChannel->job_list_pending)) {
+		pTC->pJob = list_first_entry(&pDMAChannel->job_list_pending, struct DMA_READ_JOB, list);
+		list_del(&pTC->pJob->list);
+		pTC->sg_remaining = pTC->pJob->SGTable.nents;
+		pTC->sg_list = pTC->pJob->SGTable.sgl;
+		imago_dma_start(pDevData, iDMA, iTC);
+	}
+	else {
+		// TC freigeben, unter lock setzen wegen race mit imago_dma_reset()
+		pTC->pJob = NULL;
+	}
+
+	imago_dma_unlock(pDevData, flags);
+
+	// notify thread
+	complete(&pDMAChannel->job_complete);
+}
+
+
+// start dma if idle, else add the job to job_list_pending
+int imago_dma_addjob(struct DEVICE_DATA *pDevData, u32 iDMA, struct DMA_READ_JOB *pJob)
+{
+	struct DMA_READ_CHANNEL *pDMAChannel = &pDevData->DMARead_Channel[iDMA];
+	int iTC;
+	unsigned long flags;
+
+	flags = imago_dma_lock(pDevData);
+
+#ifdef DEBUG
+	if (!list_has_entry(&pJob->list, &pDMAChannel->job_list_allocated))
+		dev_err(pDevData->dev, "imago_dma_addjob: job not found in job_list_allocated\n");
+#endif
+
+	// start transfer if a transfer channel is idle
+	for (iTC = 0; iTC < pDevData->DMARead_TCs; iTC++) {
+		if (pDMAChannel->TCs[iTC].pJob == NULL) {
+			// remove from job_list_allocated
+			list_del(&pJob->list);
+			pDMAChannel->TCs[iTC].pJob = pJob;
+			pDMAChannel->TCs[iTC].sg_remaining = pJob->SGTable.nents;
+			pDMAChannel->TCs[iTC].sg_list = pJob->SGTable.sgl;
+
+			imago_dma_start(pDevData, iDMA, iTC);
+			imago_dma_unlock(pDevData, flags);
+
+			return 0;
+		}
+	}
+
+	// move job from job_list_allocated to job_list_pending
+	list_move_tail(&pJob->list, &pDMAChannel->job_list_pending);
+	
+	imago_dma_unlock(pDevData, flags);
+
+	return 0;
+}
+
+
+// DMA event handler
+void imago_dma_event(struct DEVICE_DATA *pDevData)
 {
 	int iDMA, iTC;
-	u8 BitShift;
+	u8 shift;
 	u32 IRQReg_A, IRQReg_B;
-	u32 isDoneReg, isOkReg;
+	u32 completeReg, successReg;
 	u32 DMAMask;
 
 	IRQReg_A = ((u32*)pDevData->pVACommonBuffer)[0];
@@ -579,48 +572,48 @@ void imago_DMARead_DPC(PDEVICE_DATA pDevData)
 	DMAMask = pDevData->DMARead_channels * pDevData->DMARead_TCs;
 	DMAMask = (1 << DMAMask)-1;
 
-	isDoneReg = (IRQReg_A >> 4)	 & DMAMask;
-	isOkReg = (~(IRQReg_B >> 4)) & DMAMask & isDoneReg; 
+	completeReg = (IRQReg_A >> 4)	& DMAMask;
+	successReg = (~(IRQReg_B >> 4)) & DMAMask & completeReg; 
 
-	dev_dbg(pDevData->dev, "imago_DMARead_DPC > isDoneReg: 0x%08X, isOkReg: 0x%08X\n", isDoneReg, isOkReg);
+	dev_dbg(pDevData->dev, "imago_dma_event > completeReg: 0x%08X, successReg: 0x%08X\n", completeReg, successReg);
 
-	BitShift = 0;
+	shift = 0;
 	for (iDMA = 0; iDMA < pDevData->DMARead_channels; iDMA++) {
 		for (iTC = 0; iTC < pDevData->DMARead_TCs; iTC++) {
-			bool isDone, isOk;
+			bool complete, success;
 			u16 bufferCounter;
 		
-			isDone 		= (isDoneReg >> BitShift) & 0x1;
-			isOk 		= (isOkReg   >> BitShift) & 0x1;
+			complete	= (completeReg >> shift) & 0x1;
+			success 	= (successReg  >> shift) & 0x1;
 
-			if (isDone) {
-				bufferCounter = *(u16 *)(pDevData->pVACommonBuffer + HOST_BUFFER_DMAREAD_COUNTER_OFFSET + 8 * BitShift);
-				imago_DMARead_EndDMA(pDevData, iDMA, iTC, isOk, bufferCounter);
+			if (complete) {
+				bufferCounter = *(u16 *)(pDevData->pVACommonBuffer + HOST_BUFFER_DMAREAD_COUNTER_OFFSET + 8 * shift);
+				imago_dma_finish(pDevData, iDMA, iTC, success, bufferCounter);
 			}
 
 			// bit shift increases across TC and DMA channels
-			BitShift++;
-		}//for TC
-	}//for DMA
+			shift++;
+		}
+	}
 }
 
 
-//bricht laufende DMAs ab sowie ungenutzte buffer
-int imago_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA)
+// aborts DMA channel transfers and moves pending jobs to job_list_complete
+int imago_dma_abort(struct DEVICE_DATA *pDevData, const u32 iDMA)
 {
-	PDMA_READ_CHANNEL pDMAChannel = &pDevData->DMARead_Channel[iDMA];
+	struct DMA_READ_CHANNEL *pDMAChannel = &pDevData->DMARead_Channel[iDMA];
 	int iTC;
 	unsigned long flags;
 	struct list_head *list_tmp, *list_next;
 
-	dev_dbg(pDevData->dev, "imago_DMARead_Abort_DMAChannel> DMA: %d\n", iDMA);
+	dev_dbg(pDevData->dev, "imago_dma_abort> DMA: %d\n", iDMA);
 
-	flags = imago_DMARead_Lock(pDevData);
+	flags = imago_dma_lock(pDevData);
 
 	// move jobs from job_list_pending to job_list_complete and signal completion for each job
 	list_for_each_safe(list_tmp, list_next, &pDMAChannel->job_list_pending) {
 		struct DMA_READ_JOB *pJob = list_entry(list_tmp, struct DMA_READ_JOB, list);
-		pJob->boIsOk = false;
+		pJob->success = false;
 
 		dev_dbg(pDevData->dev, "moving job from job_list_pending to job_list_complete\n");
 
@@ -646,21 +639,21 @@ int imago_DMARead_Abort_DMAChannel(PDEVICE_DATA pDevData, const u32 iDMA)
 		}					
 	}
 
-	imago_DMARead_Unlock(pDevData, flags);
+	imago_dma_unlock(pDevData, flags);
 	return 0;
 }
 
 
-// Aborts all threads which are waiting for DMA job completion
-int imago_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData, const u32 iDMA)
+// aborts all threads which are waiting for DMA job completion
+int imago_dma_abort_threads(struct DEVICE_DATA *pDevData, const u32 iDMA)
 {
-	PDMA_READ_CHANNEL pDMAChannel = &pDevData->DMARead_Channel[iDMA];
+	struct DMA_READ_CHANNEL *pDMAChannel = &pDevData->DMARead_Channel[iDMA];
 	int i, threads;
 
-	dev_dbg(pDevData->dev, "imago_DMARead_Abort_DMAWaiter> DMA: %u, threads: %u\n", iDMA, pDMAChannel->dmaWaitCount);
+	dev_dbg(pDevData->dev, "imago_dma_abort_threads> DMA: %u, threads: %u\n", iDMA, pDMAChannel->dmaWaitCount);
 
 	if (pDMAChannel->abortWait) {
-		dev_warn(pDevData->dev, "imago_DMARead_Abort_DMAWaiter(): abort DMA operation is already in progress\n");
+		dev_warn(pDevData->dev, "imago_dma_abort_threads(): abort DMA operation is already in progress\n");
 		return -EALREADY;
 	}
 
@@ -689,31 +682,33 @@ int imago_DMARead_Abort_DMAWaiter(PDEVICE_DATA pDevData, const u32 iDMA)
 }
 
 
-int imago_DMARead_Reset_DMAChannel(PDEVICE_DATA pDevData, unsigned int dma_channel)
+// This function is called by the library during channel initialization (CameraLinkIn::ConfigureCLInput)
+// in case the DMA channel was not shutdown properly before.
+int imago_dma_reset(struct DEVICE_DATA *pDevData, unsigned int dma_channel)
 {
-	PDMA_READ_CHANNEL pDMAChannel = &pDevData->DMARead_Channel[dma_channel];
+	struct DMA_READ_CHANNEL *pDMAChannel = &pDevData->DMARead_Channel[dma_channel];
 	int i;
 	unsigned long flags;
 	struct list_head *list_tmp, *list_next;
 
-	// abort running DMA transfers in FPGA and move jobs from Jobs_ToDo to Jobs_Done FIFO
-	imago_DMARead_Abort_DMAChannel(pDevData, dma_channel);
+	// abort running DMA transfers in FPGA and move jobs from job_list_pending to job_list_complete
+	imago_dma_abort(pDevData, dma_channel);
 
-	// Wait for completion of pending transfers from FPGA
+	// wait for completion of pending transfers by FPGA
 	for (i = 0; i < pDevData->DMARead_TCs; i++) {
-		flags = imago_DMARead_Lock(pDevData);
+		flags = imago_dma_lock(pDevData);
 		if (pDMAChannel->TCs[i].pJob != NULL) {
 			// reset completion, removing count associated with jobs in Jobs_Done FIFO,
 			// because we only wait once for report of the aborted transfer
 			reinit_completion(&pDMAChannel->job_complete);
-			imago_DMARead_Unlock(pDevData, flags);
+			imago_dma_unlock(pDevData, flags);
 			if (wait_for_completion_timeout(&pDMAChannel->job_complete, msecs_to_jiffies(100)) == 0) {
-				dev_err(pDevData->dev, "imago_DMARead_Reset_DMAChannel(): DMA timeout waiting for lost job\n");
+				dev_err(pDevData->dev, "imago_dma_reset(): DMA timeout waiting for lost job\n");
 				return -EFAULT;
 			}
 		}
 		else
-			imago_DMARead_Unlock(pDevData, flags);
+			imago_dma_unlock(pDevData, flags);
 	}
 
 	// move entries from job_list_complete to job_list_allocated
@@ -722,19 +717,19 @@ int imago_DMARead_Reset_DMAChannel(PDEVICE_DATA pDevData, unsigned int dma_chann
 	// unmap job buffers and remove them from job_list_allocated
 	list_for_each_safe(list_tmp, list_next, &pDMAChannel->job_list_allocated) {
 		struct DMA_READ_JOB *pJob = list_entry(list_tmp, struct DMA_READ_JOB, list);
-		dev_info(pDevData->dev, "imago_DMARead_Reset_DMAChannel(): unmapping lost buffer 0x%lx\n", pJob->pVMUser);
+		dev_info(pDevData->dev, "imago_dma_reset(): unmapping lost buffer 0x%lx\n", pJob->pVMUser);
 		if (pDMAChannel->doManualMap)
 			dma_sync_sg_for_cpu(pDevData->dev, pJob->SGTable.sgl, pJob->SGTable.orig_nents, DMA_FROM_DEVICE);
-		imago_DMARead_UnMapUserBuffer(pDevData, pDMAChannel, pJob);
+		imago_dma_unmap(pDevData, pDMAChannel, pJob);
 	}
 
 #ifdef DEBUG
 	if (!list_empty(&pDMAChannel->job_list_allocated))
-		dev_err(pDevData->dev, "imago_DMARead_Reset_DMAChannel: job_list_allocated is not empty\n");
+		dev_err(pDevData->dev, "imago_dma_reset: job_list_allocated is not empty\n");
 	if (!list_empty(&pDMAChannel->job_list_pending))
-		dev_err(pDevData->dev, "imago_DMARead_Reset_DMAChannel: job_list_pending is not empty\n");
+		dev_err(pDevData->dev, "imago_dma_reset: job_list_pending is not empty\n");
 	if (!list_empty(&pDMAChannel->job_list_complete))
-		dev_err(pDevData->dev, "imago_DMARead_Reset_DMAChannel: job_list_complete is not empty\n");
+		dev_err(pDevData->dev, "imago_dma_reset: job_list_complete is not empty\n");
 #endif
 
 	// Reset completion

@@ -22,7 +22,7 @@
 
 
 // Process a SUN interrupt packet
-void imago_sun_interrupt(DEVICE_DATA *pDevData, u32 *sun_packet)
+void imago_sun_interrupt(struct DEVICE_DATA *pDevData, u32 *sun_packet)
 {
 	u8 wordCount = sun_packet[1] & 0xFF;
 	u8 deviceID = (sun_packet[1] >> 20) & (MAX_IRQDEVICECOUNT-1);

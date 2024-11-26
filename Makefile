@@ -24,7 +24,7 @@ else
 endif
 
 ccflags-y := $(DEBFLAGS) -Werror -Wall -Wno-unused-parameter -Wno-date-time 
-imago_fpga-objs := FileOps.o sun_irq.o ioctl.o module.o device.o DMARead.o
+imago_fpga-objs := file_ops.o sun_irq.o ioctl.o module.o device.o dma.o
 ifneq ($(CONFIG_PCI),)
 	imago_fpga-objs += PCI.o
 endif

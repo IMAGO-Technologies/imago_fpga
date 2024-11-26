@@ -47,13 +47,14 @@ static int imago_open(struct inode *node, struct file *filp)
 	return 0;
 }
 
+
 static int imago_release(struct inode *inode, struct file *filp)
 {
-	PDEVICE_DATA pDevData = NULL;
+	struct DEVICE_DATA *pDevData = NULL;
 	if (filp == NULL || filp->private_data == NULL)
 		return -EINVAL;
 
-	pDevData = (PDEVICE_DATA) filp->private_data;
+	pDevData = (struct DEVICE_DATA *) filp->private_data;
 
 	// dev_info(pDevData->dev, "imago_release()\n");
 	put_device(pDevData->sub_dev);
@@ -61,17 +62,18 @@ static int imago_release(struct inode *inode, struct file *filp)
 	return 0;
 }
 
+
 //Note: alte ioctl war unter "big kernel lock"
 //http://lwn.net/Articles/119652/
 static long imago_unlocked_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	long ret = 0;
-	PDEVICE_DATA pDevData = NULL;
+	struct DEVICE_DATA *pDevData = NULL;
 	void __user *pUser = (void __user *)arg;
 
 	if (filp == NULL || filp->private_data == NULL)
 		return -EINVAL;
-	pDevData = (PDEVICE_DATA) filp->private_data;
+	pDevData = (struct DEVICE_DATA *) filp->private_data;
 
 	if (!pDevData->boIsDeviceOpen) {
 		dev_warn(pDevData->dev, "imago_unlocked_ioctl(): device is not ready\n");
@@ -100,7 +102,66 @@ static long imago_unlocked_ioctl(struct file *filp, unsigned int cmd, unsigned l
 	return ret;
 }
 
-int imago_read_internal(PDEVICE_DATA pDevData, u32* buf, unsigned int count)
+
+static int imago_write_locked(struct DEVICE_DATA *pDevData, u32* packet, unsigned int packet_size)
+{
+	// insert serialID to Header1:
+	u8 deviceID = (packet[1] >> 20) & (MAX_IRQDEVICECOUNT - 1);
+	if (deviceID != 0) {
+		packet[1] &= ~(1 << 26);
+		packet[1] |= pDevData->SunDeviceData[deviceID].serialID << 26;
+	}
+
+	return pDevData->write(pDevData, packet, packet_size);
+}
+
+
+int imago_write_internal(struct DEVICE_DATA *pDevData, u32* packet, unsigned int packet_size)
+{
+	int res;
+
+	// lock FPGA access, may be interrupted and restarted by the kernel
+	if (down_interruptible(&pDevData->DeviceSem) != 0) {
+		dev_dbg(pDevData->dev, "imago_write_internal(): down_interruptible() timeout\n");
+		return -ERESTARTSYS;
+	}
+
+	res = imago_write_locked(pDevData, packet, packet_size);
+
+	up(&pDevData->DeviceSem);
+
+	return res;
+}
+
+
+static ssize_t imago_write(struct file *filp, const char __user *buf, size_t count, loff_t *pos)
+{
+	int res;
+	struct DEVICE_DATA *pDevData = NULL;
+	u32 packet[4];
+
+	if (filp == NULL || filp->private_data == NULL || (count % 4) != 0 || count > sizeof(packet))
+		return -EINVAL;
+	pDevData = (struct DEVICE_DATA *) filp->private_data;
+
+	if (!pDevData->boIsDeviceOpen) {
+		dev_warn(pDevData->dev, "imago_write(): device is not ready\n");
+		return -ENODEV;
+	}
+
+	dev_dbg(pDevData->dev, "imago_write(): %d bytes\n", (int)count);
+
+	if (copy_from_user(packet, buf, count) != 0) {
+		dev_warn(pDevData->dev, "imago_write(): copy_from_user() failed\n");
+		return -EFAULT;
+	}
+
+	res = imago_write_internal(pDevData, packet, count / 4);
+	return res;
+}
+
+
+int imago_read_internal(struct DEVICE_DATA *pDevData, u32* buf, unsigned int count)
 {
 	struct SUN_DEVICE_DATA* pSunDevice;
 	u32 DeviceID;
@@ -235,14 +296,14 @@ int imago_read_internal(PDEVICE_DATA pDevData, u32* buf, unsigned int count)
 
 static ssize_t imago_read(struct file* filp, char __user* buf, size_t count, loff_t* pos)
 {
-	PDEVICE_DATA pDevData = NULL;
+	struct DEVICE_DATA *pDevData = NULL;
 	int ret;
 	u32 data[8];
 
 	if (filp == NULL || filp->private_data == NULL || count > sizeof(data))
 		return -EINVAL;
 
-	pDevData = (PDEVICE_DATA)filp->private_data;
+	pDevData = (struct DEVICE_DATA *)filp->private_data;
 	if (!pDevData->boIsDeviceOpen) {
 		dev_warn(pDevData->dev, "imago_read(): device is not ready\n");
 		return -ENODEV;
@@ -267,62 +328,6 @@ static ssize_t imago_read(struct file* filp, char __user* buf, size_t count, lof
 	}
 	return ret;
 }
-
-int imago_write_locked(PDEVICE_DATA pDevData, u32* packet, unsigned int packet_size)
-{
-	// insert serialID to Header1:
-	u8 deviceID = (packet[1] >> 20) & (MAX_IRQDEVICECOUNT - 1);
-	if (deviceID != 0) {
-		packet[1] &= ~(1 << 26);
-		packet[1] |= pDevData->SunDeviceData[deviceID].serialID << 26;
-	}
-
-	return pDevData->write(pDevData, packet, packet_size);
-}
-
-int imago_write_internal(PDEVICE_DATA pDevData, u32* packet, unsigned int packet_size)
-{
-	int res;
-
-	// lock FPGA access, may be interrupted and restarted by the kernel
-	if (down_interruptible(&pDevData->DeviceSem) != 0) {
-		dev_dbg(pDevData->dev, "imago_write_internal(): down_interruptible() timeout\n");
-		return -ERESTARTSYS;
-	}
-
-	res = imago_write_locked(pDevData, packet, packet_size);
-
-	up(&pDevData->DeviceSem);
-
-	return res;
-}
-
-static ssize_t imago_write(struct file *filp, const char __user *buf, size_t count, loff_t *pos)
-{
-	int res;
-	PDEVICE_DATA pDevData = NULL;
-	u32 packet[4];
-
-	if (filp == NULL || filp->private_data == NULL || (count % 4) != 0 || count > sizeof(packet))
-		return -EINVAL;
-	pDevData = (PDEVICE_DATA) filp->private_data;
-
-	if (!pDevData->boIsDeviceOpen) {
-		dev_warn(pDevData->dev, "imago_write(): device is not ready\n");
-		return -ENODEV;
-	}
-
-	dev_dbg(pDevData->dev, "imago_write(): %d bytes\n", (int)count);
-
-	if (copy_from_user(packet, buf, count) != 0) {
-		dev_warn(pDevData->dev, "imago_write(): copy_from_user() failed\n");
-		return -EFAULT;
-	}
-
-	res = imago_write_internal(pDevData, packet, count / 4);
-	return res;
-}
-
 
 
 struct file_operations fpga_ops = {
