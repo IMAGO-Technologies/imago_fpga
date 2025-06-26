@@ -260,7 +260,7 @@ long imago_locked_ioctl(struct DEVICE_DATA *pDevData, u32 cmd, u8 __user * pToUs
 				return result;
 
 			// return job pointer as handle for unmapping later
-			user_ptr = (u64)pJob;
+			user_ptr = (u64)(uintptr_t)pJob;
 			if (__put_user(user_ptr, (u64 *)pToUserMem) != 0) {
 				dev_warn(pDevData->dev, "Locked_ioctl> put_user failed\n");
 				return -EFAULT;
@@ -298,7 +298,7 @@ long imago_locked_ioctl(struct DEVICE_DATA *pDevData, u32 cmd, u8 __user * pToUs
 			}
 
 			pDMAChannel = &pDevData->DMARead_Channel[iDMAChannel];
-			pJob = (struct DMA_READ_JOB *)user_ptr;
+			pJob = (struct DMA_READ_JOB *)(uintptr_t)user_ptr;
 			imago_dma_unmap(pDevData, pDMAChannel, pJob);
 			
 			return 0;
@@ -386,7 +386,7 @@ long imago_locked_ioctl(struct DEVICE_DATA *pDevData, u32 cmd, u8 __user * pToUs
 			}
 
 			pDMAChannel = &pDevData->DMARead_Channel[iDMAChannel];
-			pJob = (struct DMA_READ_JOB *)user_ptr;
+			pJob = (struct DMA_READ_JOB *)(uintptr_t)user_ptr;
 
 			dma_sync_sg_for_device(pDevData->dev, pJob->SGTable.sgl, pJob->SGTable.orig_nents, DMA_FROM_DEVICE);
 			

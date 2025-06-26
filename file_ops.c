@@ -112,6 +112,8 @@ static int imago_write_locked(struct DEVICE_DATA *pDevData, u32* packet, unsigne
 		packet[1] |= pDevData->SunDeviceData[deviceID].serialID << 26;
 	}
 
+	dev_dbg(pDevData->dev, "imago_write_locked(): H0=0x%08x H1=0x%08x D=0x%08x\n", packet[0], packet[1], packet[2]);
+
 	return pDevData->write(pDevData, packet, packet_size);
 }
 
