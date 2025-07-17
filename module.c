@@ -42,7 +42,11 @@ MODULE_DATA _ModuleData;
 
 
 // "Called when a device is added, removed from this class, or a few other things that generate uevents to add the environment variables."
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 2, 0)
+static int dev_uevent(const struct device *dev, struct kobj_uevent_env *env)
+#else
 static int dev_uevent(struct device *dev, struct kobj_uevent_env *env)
+#endif
 {
 	// do not use dev_dbg(), because of "i2c: prevent endless uevent loop with CONFIG_I2C_DEBUG_CORE":
 	// https://patchwork.ozlabs.org/project/linux-i2c/patch/1458748247-9219-1-git-send-email-jglauber@cavium.com/
@@ -121,7 +125,11 @@ static int __init imago_module_init(void)
 
 	/* erzeugt eine Sysfs class */
 	/**********************************************************************/
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
+	_ModuleData.pModuleClass = class_create("agexdrv");
+#else
 	_ModuleData.pModuleClass = class_create(THIS_MODULE, "agexdrv");
+#endif
 	if (IS_ERR(_ModuleData.pModuleClass)) {
 		pr_err(MODMODULENAME": error creating sysfs class\n");
 		return PTR_ERR(_ModuleData.pModuleClass);

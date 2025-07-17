@@ -378,13 +378,9 @@ static int imago_pci_probe(struct pci_dev *pcidev, const struct pci_device_id *i
 			INIT_LIST_HEAD(&pDMAChannel->job_list_complete);
 		}
 
-		//damit z.b dma_map_sg() (mit einer IOMMU) nicht zuviel zusammengefasst
-		// aber >nicht< für sg_alloc_table_from_pages()!
-		if (dma_set_max_seg_size(&pcidev->dev, DMA_READ_TC_SG_MAX_BYTECOUNT) != 0) {
-			dev_err(&pcidev->dev, "dma_set_max_seg_size failed!\n");
-			imago_free_dev_data(pDevData);
-			return -EIO;
-		}
+		// don't check return value because of "dma-mapping: don't return errors from dma_set_max_seg_size"
+		// in kernel >= 6.12:
+		dma_set_max_seg_size(&pcidev->dev, DMA_READ_TC_SG_MAX_BYTECOUNT);
 	}
 	
 	// setup interrupt

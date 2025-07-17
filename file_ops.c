@@ -331,6 +331,9 @@ static ssize_t imago_read(struct file* filp, char __user* buf, size_t count, lof
 	return ret;
 }
 
+#ifndef no_llseek
+#define no_llseek NULL
+#endif
 
 struct file_operations fpga_ops = {
 	.owner = THIS_MODULE,

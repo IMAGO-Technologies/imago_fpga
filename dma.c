@@ -112,14 +112,16 @@ int imago_dma_map(struct DEVICE_DATA *pDevData, struct DMA_READ_CHANNEL *pDMACha
 // pin_user_pages() and related calls:
 // https://www.kernel.org/doc/html/latest/core-api/pin_user_pages.html
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,9,0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 5, 0)
+	pagesPinned = get_user_pages(pJob->pVMUser, pagesToMap, FOLL_WRITE, pJob->ppPageList);
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(4,9,0)
 // 4.8.17 >>> 4.9.0 (Oct 2016)
 //	Linux 4.9-rc2(https://lwn.net/Articles/704380/): Lorenzo Stoakes (10): 			mm: replace get_user_pages() write/force parameters with gup_flags
 //					http://lists.openwall.net/netdev/2016/10/13/1
 //					https://marc.info/?l=linux-mm&m=147585445805166
 //		bei 4.8.17 get_user_pages() 	> 	__get_user_pages_locked()  da wurde dann aus if(write) flags |= FOLL_WRITE
 //
-	pagesPinned = get_user_pages(pJob->pVMUser, pagesToMap, FOLL_WRITE, pJob->ppPageList, NULL);	
+	pagesPinned = get_user_pages(pJob->pVMUser, pagesToMap, FOLL_WRITE, pJob->ppPageList, NULL);
 #elif LINUX_VERSION_CODE >= KERNEL_VERSION(4,6,0)
 // 4.5.7 >>> 4.6.0 (Feb 2016)
 //	https://github.com/torvalds/linux/commit/d4edcf0d56958db0aca0196314ca38a5e730ea92#diff-c098b65a8bd8c7db23377b90578a62c1  

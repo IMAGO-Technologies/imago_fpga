@@ -22,6 +22,7 @@
 
 #include "imago_fpga.h"
 #include <linux/spi/spi.h>
+#include <linux/of.h>
 
 
 static const struct of_device_id imago_spi_of_match[] = {
@@ -199,7 +200,11 @@ static int imago_spi_probe(struct spi_device *spi)
 }
 
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 18, 0)
 static int imago_spi_remove(struct spi_device *spi)
+#else
+static void imago_spi_remove(struct spi_device *spi)
+#endif
 {
 	struct DEVICE_DATA *pDevData = (struct DEVICE_DATA *)spi_get_drvdata(spi);
 
@@ -207,15 +212,20 @@ static int imago_spi_remove(struct spi_device *spi)
 
 	if (pDevData == NULL) {
 		dev_warn(&spi->dev, "imago_spi_remove: device data is invalid\n");
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 18, 0)
 		return -ENODEV;
+#else
+		return;
+#endif
 	}
 
-	//IRQ zu�ckgeben
 	free_irq(spi->irq, pDevData);
 	
 	imago_dev_close(pDevData);
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 18, 0)
 	return 0;
+#endif
 }
 
 struct spi_driver imago_spi_driver = {
