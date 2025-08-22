@@ -1,7 +1,7 @@
 /*
  * HID.c
  *
- * USB-HID driver
+ * USB-HID driver for FT260 connected to an FPGA
  *
  * Copyright (C) IMAGO Technologies GmbH
  *
@@ -24,6 +24,21 @@
 #include <linux/hid.h>
 #include <linux/usb.h>
 
+/* Report IDs / Feature In */
+enum {
+	FT260_CHIP_VERSION			= 0xA0,
+	FT260_SYSTEM_SETTINGS		= 0xA1,
+	FT260_I2C_STATUS			= 0xC0,
+	FT260_I2C_READ_REQ			= 0xC2,
+	FT260_I2C_REPORT_MIN		= 0xD0,
+	FT260_I2C_REPORT_MAX		= 0xDE,
+	FT260_GPIO					= 0xB0,
+	FT260_UART_INTERRUPT_STATUS	= 0xB1,
+	FT260_UART_STATUS			= 0xE0,
+	FT260_UART_RI_DCD_STATUS	= 0xE1,
+	FT260_UART_REPORT_MIN		= 0xF0,
+	FT260_UART_REPORT_MAX		= 0xFE,
+};
 
 struct imago_hid_uart {
 	struct DEVICE_DATA *pDevData;
@@ -33,16 +48,16 @@ struct imago_hid_uart {
 };
 
 
-static int raw_event(struct hid_device *hid, struct hid_report *report,
+static int imago_hid_raw_event(struct hid_device *hid, struct hid_report *report,
 		u8 *data, int size)
 {
 	hid_dbg(hid, "raw_event: report id=0x%02x\n", data[0]);
-	if (data[0] == 0xb1) {
+	if (data[0] == FT260_UART_INTERRUPT_STATUS) {
 		// UART interrupt report (not used, but fires once after first access)
 		hid_dbg(hid, "raw_event: interrupt=0x%02x\n", data[1]);
 		hid_dbg(hid, "raw_event: DCD / RI =0x%02x\n", data[2]);
 	}
-	else if (data[0] >= 0xf0 && data[0] <= 0xfe) {
+	else if (data[0] >= FT260_UART_REPORT_MIN && data[0] <= FT260_UART_REPORT_MAX) {
 		// UART Input Report
 		struct imago_hid_uart *hid_uart = hid_get_drvdata(hid);
 		unsigned int i;
@@ -66,102 +81,83 @@ static int raw_event(struct hid_device *hid, struct hid_report *report,
 	return 0;
 }
 
-static int fpga_write(struct DEVICE_DATA *pDevData, u32* packet, unsigned int packet_size)
+static int _imago_hid_fpga_write(struct hid_device *hid, u8 *tx_buf, u32* packet)
+{
+	const unsigned int packet_size = 3;
+	u8 report_id = FT260_I2C_REPORT_MIN + (4 * packet_size - 1) / 4;
+	int res;
+
+	tx_buf[0] = report_id;
+	tx_buf[1] = 4 * packet_size;	// actual payload size
+	memcpy(&tx_buf[2], packet, 4 * packet_size);
+
+	res = hid_hw_output_report(hid, tx_buf, 2 + 4 * packet_size);
+	if (res != (2 + 4 * packet_size)) {
+		if (res < 0)
+			return res;
+		return -EIO;
+	}
+
+	return 0;
+}
+
+static int imago_hid_fpga_write(struct DEVICE_DATA *pDevData, u32* packet, unsigned int packet_size)
 {
 	struct hid_device *hid = to_hid_device(pDevData->dev);
 	struct imago_hid_uart *hid_uart = hid_get_drvdata(hid);
-	u8 report_id = 0xd0 + (4 * packet_size - 1) / 4;
 	int res;
 
 	if (packet_size != 3) {
-		dev_warn(pDevData->dev, "fpga_write(): invalid packet size\n");
+		dev_warn(pDevData->dev, "imago_hid_fpga_write(): invalid packet size\n");
 		return -EFBIG;
 	}
 
-	hid_uart->tx_buf[0] = report_id;
-	hid_uart->tx_buf[1] = 4 * packet_size;	// actual payload size
-	memcpy(&hid_uart->tx_buf[2], packet, 4 * packet_size);
-
-	hid_dbg(hid, "fpga_write: h0=0x%08x, h1=0x%08x, data=0x%08x\n", ((u32 *)&hid_uart->tx_buf[2])[0], ((u32 *)&hid_uart->tx_buf[2])[1], ((u32 *)&hid_uart->tx_buf[2])[2]);
-
-	res = hid_hw_output_report(hid, hid_uart->tx_buf, 2 + 4 * packet_size);
-
-	if (res != 2 + 4 * packet_size) {
-		hid_err(hid, "fpga_write(): hid_hw_output_report() failed\n");
-		return -EIO;
+	res = _imago_hid_fpga_write(hid, hid_uart->tx_buf, packet);
+	if (res < 0) {
+		hid_err(hid, "imago_hid_fpga_write(): hid_hw_output_report() failed (%d)\n", res);
+		return res;
 	}
 
 	return 4 * packet_size;
 }
 
-static int imago_hid_probe(struct hid_device *hdev, const struct hid_device_id *id)
+static int imago_hid_uart_init(struct hid_device *hdev)
 {
-	int res;
-	u8 dev_type;
-	struct DEVICE_DATA *pDevData = NULL;
+	int res = 0;
 	u8 *msg = NULL;
-	struct usb_interface *intf = to_usb_interface(hdev->dev.parent);
-	struct imago_hid_uart *hid_uart;
-
-	dev_type = id->driver_data;
-	if (dev_type == DeviceType_Invalid) {
-		hid_err(hdev, "invalid device type (%u)\n", dev_type);
-		return -EINVAL;
-	}
-
-	hid_dbg(hdev, "FT260 interface: %u\n", intf->cur_altsetting->desc.bInterfaceNumber);
-
-	res = hid_parse(hdev);
-	if (res) {
-		hid_err(hdev, "parse failed\n");
-		goto exit;
-	}
-
-	res = hid_hw_start(hdev, HID_CONNECT_DEFAULT);
-	if (res) {
-		hid_err(hdev, "hw start failed\n");
-		goto exit;
-	}
-
-	if (intf->cur_altsetting->desc.bInterfaceNumber == 0)
-		return 0;
 
 	msg = kmalloc(64, GFP_KERNEL);
 
-	res = hid_hw_raw_request(hdev, 0xa1, msg,
-				 26, HID_FEATURE_REPORT, HID_REQ_GET_REPORT);
+	res = hid_hw_raw_request(hdev, FT260_SYSTEM_SETTINGS, msg,
+				 25, HID_FEATURE_REPORT, HID_REQ_GET_REPORT);
 	if (res < 0) {
 		hid_err(hdev, "hid_hw_raw_request failed\n");
 		kfree(msg);
-		goto exit_stop;
+		return res;
 	}
 	hid_dbg(hdev, "FT260 chip_mode: %d\n", msg[1]);
 	if (msg[1] != 0) {
-		res = -ENODEV;
 		kfree(msg);
-		goto exit_stop;
+		return -ENODEV;
 	}
 
-	res = hid_hw_open(hdev);
-	if (res < 0) {
-		hid_err(hdev, "hid_hw_open() failed\n");
-		kfree(msg);
-		goto exit_stop;
-	}
+	hid_dbg(hdev, "FT260 System Status: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+		msg[0], msg[1], msg[2], msg[3], msg[4], msg[5], msg[6], msg[7], msg[8], msg[9], msg[10], msg[11], msg[12], msg[13], msg[14]);
 
 	// set system clock
-	msg[0] = 0xa1;	// Report ID
+	msg[0] = FT260_SYSTEM_SETTINGS;	// Report ID
 	msg[1] = 0x01;	// Set Clock
 	msg[2] = 2;		// 48 MHz
-	res = hid_hw_raw_request(hdev, 0xa1, msg,
+	res = hid_hw_raw_request(hdev, FT260_SYSTEM_SETTINGS, msg,
 				 3, HID_FEATURE_REPORT, HID_REQ_SET_REPORT);
 	if (res < 0) {
 		hid_err(hdev, "hid_hw_raw_request() set system clock failed\n");
-		goto exit_stop;
+		kfree(msg);
+		return res;
 	}
 
 	// configure UART
-	msg[0] = 0xa1;		// Report ID
+	msg[0] = FT260_SYSTEM_SETTINGS;		// Report ID
 	msg[1] = 0x41;		// Configure UART
 	msg[2] = 4;			// flow_ctrl: off
 	//*(unsigned int*)&msg[3] = 4156250;	// 4.15625 Mbps
@@ -171,10 +167,88 @@ static int imago_hid_probe(struct hid_device *hdev, const struct hid_device_id *
 	msg[8] = 0;			// parity: no parity
 	msg[9] = 0;			// one stop bit
 	msg[10] = 0;		// breaking: not TXD spacing
-	res = hid_hw_raw_request(hdev, 0xa1, msg, 11, HID_FEATURE_REPORT, HID_REQ_SET_REPORT);
+	res = hid_hw_raw_request(hdev, FT260_SYSTEM_SETTINGS, msg, 11, HID_FEATURE_REPORT, HID_REQ_SET_REPORT);
 	if (res < 0) {
 		hid_err(hdev, "hid_hw_raw_request() Configure UART failed\n");
+		kfree(msg);
+		return res;
+	}
+
+	kfree(msg);
+	return 0;
+}
+
+static int imago_hid_probe(struct hid_device *hdev, const struct hid_device_id *id)
+{
+	int res;
+	u8 dev_type;
+	struct DEVICE_DATA *pDevData = NULL;
+	struct usb_interface *intf = to_usb_interface(hdev->dev.parent);
+	struct imago_hid_uart *hid_uart;
+	int i;
+
+	dev_type = id->driver_data;
+	if (dev_type == DeviceType_Invalid) {
+		hid_err(hdev, "invalid device type (%u)\n", dev_type);
+		return -EINVAL;
+	}
+
+	hid_dbg(hdev, "FT260 interface: %u\n", intf->cur_altsetting->desc.bInterfaceNumber);
+	
+	res = hid_parse(hdev);
+	if (res) {
+		hid_err(hdev, "failed to parse HID\n");
+		return res;
+	}
+
+	res = hid_hw_start(hdev, HID_CONNECT_DEFAULT);
+	if (res) {
+		hid_err(hdev, "failed to start HID HW\n");
+		return res;
+	}
+
+	hid_info(hdev, "USB HID v%x.%02x Device [%s] on %s\n",
+		hdev->version >> 8, hdev->version & 0xff, hdev->name,
+		hdev->phys);
+
+	// Interface-0 is I2C, we use UART at Interface-1 only
+	if (intf->cur_altsetting->desc.bInterfaceNumber == 0)
+		return 0;
+
+	res = hid_hw_open(hdev);
+	if (res < 0) {
+		hid_err(hdev, "failed to open HID HW\n");
 		goto exit_stop;
+	}
+
+
+	// The FT260 sometimes generates errors while sending output reports after reset.
+	// Test output report by sending an FPGA packet and reset the device if it fails.
+	for (i = 0; i < 3; i++) {
+		u32 packet[3] = {0x10000000, 0x00000001, 0x00000000 };	// dummy register
+		u8 *msg = NULL;
+
+		res = imago_hid_uart_init(hdev);
+		if (res < 0)
+			goto exit_stop;
+
+		msg = kmalloc(64, GFP_KERNEL);
+		res = _imago_hid_fpga_write(hdev, msg, packet);
+		kfree(msg);
+		if (res == 0) {
+			break;	// success
+		}
+		else if (res == -EPIPE && i < 3) {
+			// reset the device
+			usb_reset_device(to_usb_device(hdev->dev.parent->parent));
+			msleep(1500);
+		}
+		else {
+			hid_err(hdev, "_imago_hid_fpga_write(): hid_hw_output_report() failed (%d)\n", res);
+			if (res >= 0)
+				res = -EIO;
+			goto exit_stop;
+		}
 	}
 
 	hid_uart = kzalloc(sizeof(*hid_uart), GFP_KERNEL);
@@ -184,10 +258,12 @@ static int imago_hid_probe(struct hid_device *hdev, const struct hid_device_id *
 	}
 
 	pDevData = imago_alloc_dev_data(&hdev->dev, dev_type);
-	if (pDevData == NULL)
-		return -EINVAL;
+	if (pDevData == NULL) {
+		res = -EINVAL;
+		goto exit_stop;
+	}			
 
-	pDevData->write = fpga_write;
+	pDevData->write = imago_hid_fpga_write;
 	hid_uart->pDevData = pDevData;
 	hid_set_drvdata(hdev, hid_uart);
 
@@ -196,20 +272,15 @@ static int imago_hid_probe(struct hid_device *hdev, const struct hid_device_id *
 	// create char device
 	res = imago_create_device(pDevData);
 	if (res < 0)
-		return res;
+		goto exit_stop;
 
 	hid_info(hdev, "probe done\n");
-
-	res = 0;
-	goto exit;
+	return 0;
 
 exit_stop:
 	hid_hw_stop(hdev);
 	if (pDevData != NULL)
 		imago_free_dev_data(pDevData);
-exit:
-	if (msg != NULL)
-		kfree(msg);
 
 	return res;
 }
@@ -232,9 +303,10 @@ static void imago_hid_remove(struct hid_device *hdev)
 		imago_dev_close(pDevData);
 
 		kfree(hid_uart);
+
+		hid_hw_close(hdev);
 	}
 
-	hid_hw_close(hdev);
 	hid_hw_stop(hdev);
 }
 
@@ -251,6 +323,6 @@ struct hid_driver imago_hid_driver = {
 		.id_table = imago_devices,
 		.probe = imago_hid_probe,
 		.remove = imago_hid_remove,
-		.raw_event = raw_event,
+		.raw_event = imago_hid_raw_event,
 };
 
