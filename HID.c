@@ -201,7 +201,7 @@ static int imago_hid_probe(struct hid_device *hdev, const struct hid_device_id *
 		return res;
 	}
 
-	res = hid_hw_start(hdev, HID_CONNECT_DEFAULT);
+	res = hid_hw_start(hdev, 0);
 	if (res) {
 		hid_err(hdev, "failed to start HID HW\n");
 		return res;
