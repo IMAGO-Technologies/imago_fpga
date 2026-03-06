@@ -23,6 +23,7 @@
 #include "imago_fpga.h"
 #include <linux/spi/spi.h>
 #include <linux/of.h>
+#include <linux/clk.h>
 
 
 static const struct of_device_id imago_spi_of_match[] = {
@@ -34,6 +35,10 @@ static const struct of_device_id imago_spi_of_match[] = {
 		.compatible	= "imago,fpga-spi-vspv3",
 		.data		= (void *)DeviceType_VSPV3,
 	},
+	{
+		.compatible	= "imago,fpga-spi-vspv4",
+		.data		= (void *)DeviceType_VSPV4,
+	},
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, imago_spi_of_match);
@@ -41,6 +46,7 @@ MODULE_DEVICE_TABLE(of, imago_spi_of_match);
 static const struct spi_device_id imago_spi_id[] = {
         {"fpga-spi-daytona", DeviceType_DAYTONA},
         {"fpga-spi-vspv3", DeviceType_VSPV3},
+        {"fpga-spi-vspv4", DeviceType_VSPV4},
         {}
 };
 MODULE_DEVICE_TABLE(spi, imago_spi_id);
@@ -172,6 +178,24 @@ static int imago_spi_probe(struct spi_device *spi)
 	pDevData = imago_alloc_dev_data(&spi->dev, dev_type);
 	if (pDevData == NULL)
 		return -EINVAL;
+
+	if (pDevData->device_type == DeviceType_VSPV4) {
+		struct clk *fpga_clk = of_clk_get(spi->dev.of_node, 0);
+		if (IS_ERR(fpga_clk)) {
+			dev_err(&spi->dev, "FPGA clock not found in device tree\n");
+			imago_free_dev_data(pDevData);
+			return PTR_ERR(fpga_clk);
+		}
+		
+		res = clk_prepare_enable(fpga_clk);
+		if (res) {
+			pr_err("Failed to enable FPGA clock\n");
+			imago_free_dev_data(pDevData);
+			return res;
+		}
+		// MachXO3 PLL lock-in time
+		usleep_range(17500, 20000);
+	}
 
 	pDevData->write = fpga_write;
 	spi_set_drvdata(spi, pDevData);

@@ -70,6 +70,9 @@ static struct imago_device_info device_info[] = {
 	[DeviceType_VCXM2] = {
 		.name = "VisionCam XM2",
 		.flags = IMAGO_DEV_FLAG_PCIE | IMAGO_DEV_FLAG_DMA2HOST | IMAGO_DEV_FLAG_PCI64BIT},
+	[DeviceType_VSPV4] = {
+		.name = "VisionSensor PV4",
+		.flags = IMAGO_DEV_FLAG_SPI},
 };
 
 // allocate and initialize DEVICE_DATA struct
