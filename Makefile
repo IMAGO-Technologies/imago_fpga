@@ -15,6 +15,9 @@
 #		e.g: ccflags-y += -v
 #
 
+# include dkms.conf for PACKAGE_VERSION
+include $(PWD)/dkms.conf
+
 #DEBUG=y
 ifeq ($(DEBUG),y)
   DEBFLAGS = -O -g -DDEBUG -Wno-sign-compare  # "-O" is needed to expand inlines
@@ -23,7 +26,7 @@ else
   DEBFLAGS = -O2 -Wno-sign-compare 
 endif
 
-ccflags-y := $(DEBFLAGS) -Werror -Wall -Wno-unused-parameter -Wno-date-time 
+ccflags-y := $(DEBFLAGS) -DMODVERSION=\"$(PACKAGE_VERSION)\" -Werror -Wall -Wno-unused-parameter -Wno-date-time 
 imago_fpga-objs := file_ops.o sun_irq.o ioctl.o module.o device.o dma.o
 ifneq ($(CONFIG_PCI),)
 	imago_fpga-objs += PCI.o
