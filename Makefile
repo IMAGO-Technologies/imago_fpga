@@ -3,20 +3,11 @@
 # and use 'tail -f /var/log/kern.log' for debug massages
 #DEBUG = y
 
-# Add your debugging flag (or not) to EXTRA_CLAGS
-#Note:
-# for kernel upto 2.6.23 uses
-# 		CFLAGS
-#
-# later it used EXTRA_CLAGS instead of CFLAGS 
-#		e.g: EXTRA_CLAGS += $(DEBFLAGS) 
-#
-# since ~2007/2009 it uses ccflags-y
-#		e.g: ccflags-y += -v
-#
+# get directory of this module
+M ?= $(shell pwd)
 
 # include dkms.conf for PACKAGE_VERSION
-include $(PWD)/dkms.conf
+include $(M)/dkms.conf
 
 #DEBUG=y
 ifeq ($(DEBUG),y)
@@ -50,7 +41,7 @@ KERNELDIR ?= /lib/modules/$(shell uname -r)/build
 
 
 default:
-	$(MAKE) -C $(KERNELDIR) M=$(CURDIR) modules 
+	$(MAKE) -C $(KERNELDIR) M=$(M) modules 
 
 # create a file like 'imago_fpga_4.9.0-6-amd64_x86_64.ko'
 deploy:
@@ -71,6 +62,6 @@ clean:
 
 #default /lib/modules/$(KERNELRELEASE)/extra
 install:
-	make -C $(KERNELDIR) M=$(CURDIR) modules_install
+	make -C $(KERNELDIR) M=$(M) modules_install
 	depmod -a 
 
