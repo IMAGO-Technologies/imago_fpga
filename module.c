@@ -87,9 +87,10 @@ static int __init imago_module_init(void)
 	_ModuleData.dma_update_in_hwi = dma_update_in_hwi;
 
 	// Test for existing module using the old name "agexpcidrv".
-	// find_module() was removed in 5.12, but the old module doesn't support this kernel anyway,
-	// so no check is required.
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5,12,0)
+	// find_module() was removed in 5.12 (and 5.10.220 but not 5.11), but the old module doesn't
+	// support new kernels anyway, so no check is required then.
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,12,0) && \
+    (LINUX_VERSION_CODE < KERNEL_VERSION(5,10,220) || LINUX_VERSION_CODE >= KERNEL_VERSION(5,11,0))
 	{
 		struct module *old_mod;
 		mutex_lock(&module_mutex);
