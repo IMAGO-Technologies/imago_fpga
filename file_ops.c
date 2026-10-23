@@ -21,13 +21,6 @@
 #include "imago_fpga.h"
 
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5,0,0)
-#define __access_ok__(type, addr, size) access_ok(type, addr, size)
-#else
-#define __access_ok__(type, addr, size) access_ok(addr, size)
-#endif
-
-
 static int imago_open(struct inode *node, struct file *filp)
 {
 	int iMinor;
@@ -79,14 +72,6 @@ static long imago_unlocked_ioctl(struct file *filp, unsigned int cmd, unsigned l
 		dev_warn(pDevData->dev, "imago_unlocked_ioctl(): device is not ready\n");
 		return -ENODEV;
 	}
-
-	if (_IOC_TYPE(cmd) != IMAGO_IOC_MAGIC)
-		return -ENOTTY;
-
-	if ((_IOC_DIR(cmd) & _IOC_READ) && !__access_ok__(VERIFY_WRITE, pUser, _IOC_SIZE(cmd)))
-		return -EFAULT;
-	if ((_IOC_DIR(cmd) & _IOC_WRITE) && !__access_ok__(VERIFY_READ, pUser, _IOC_SIZE(cmd)))
-		return -EFAULT;
 
 	if (down_interruptible(&pDevData->DeviceSem) != 0) {
 		dev_dbg(pDevData->dev, "imago_unlocked_ioctl(): down_interruptible() failed\n");
