@@ -25,7 +25,6 @@
 #include <linux/spi/spi.h>
 #include <linux/hid.h>
 
-//module defines "sudo modinfo agexpcidrv.ko"
 MODULE_VERSION(MODVERSION);
 MODULE_LICENSE(MODLICENSE);
 MODULE_DESCRIPTION(MODDESCRIPTION);
@@ -36,31 +35,24 @@ static int dma_update_in_hwi = -1;
 module_param(dma_update_in_hwi, int, 0644);
 MODULE_PARM_DESC(dma_update_in_hwi, "Update DMA transfer in irq (0: no, use threaded irq; 1: yes; -1: auto/default).");
 
-
-//static member (die gleichen für alle devices)
 MODULE_DATA _ModuleData;
 
 
-// "Called when a device is added, removed from this class, or a few other things that generate uevents to add the environment variables."
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 2, 0)
-static int dev_uevent(const struct device *dev, struct kobj_uevent_env *env)
+static char *imago_devnode(const struct device *dev, umode_t *mode)
 #else
-static int dev_uevent(struct device *dev, struct kobj_uevent_env *env)
+static char *imago_devnode(struct device *dev, umode_t *mode)
 #endif
 {
-	// do not use dev_dbg(), because of "i2c: prevent endless uevent loop with CONFIG_I2C_DEBUG_CORE":
-	// https://patchwork.ozlabs.org/project/linux-i2c/patch/1458748247-9219-1-git-send-email-jglauber@cavium.com/
-	pr_devel("uevent: device: %s\n", dev_name(dev));
+	pr_devel("devnode: device: %s\n", dev_name(dev));
 
-	return add_uevent_var(env, "DEVMODE=%#o", 0666);
+	if (mode)
+		*mode = 0660;
+
+	return NULL;
 }
 
-	 
-//<====================================>
-//	Module
-//<====================================>
 
-//wird aufgerufen wenn das Modul geladen wird
 static int __init imago_module_init(void)
 {
 	int res;
@@ -137,8 +129,7 @@ static int __init imago_module_init(void)
 	}
 
 	// add the uevent handler
-	_ModuleData.pModuleClass->dev_uevent = dev_uevent;	//send uevents to udev, so it'll create the /dev/node
-
+	_ModuleData.pModuleClass->devnode = imago_devnode;
 
 	// register drivers
 #if IS_ENABLED(CONFIG_PCI)
@@ -163,8 +154,7 @@ static int __init imago_module_init(void)
 	return 0;
 }
 
-//wird aufgerufen wenn das Modul entladen wird
-//Note: kann nicht entladen werden wenn es noch genutzt wird
+
 static void __exit imago_module_exit(void)
 {
 	pr_devel(MODMODULENAME": imago_module_exit()\n");
