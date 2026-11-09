@@ -205,40 +205,40 @@ int imago_dma_map(struct DEVICE_DATA *pDevData, struct DMA_READ_CHANNEL *pDMACha
 		return result;
 	}
 #else
-{
-	struct scatterlist *pSGList	= NULL;
-	u32 bytesRemaining = bufferSize;
-	s32	iSG = 0;
+	{
+		struct scatterlist *pSGList	= NULL;
+		u32 bytesRemaining = bufferSize;
+		s32	iSG = 0;
 
-	result = sg_alloc_table(&pJob->SGTable	/*header*/, 
-							pagesPinned 	/*für wie viele Einträge*/, 
-							GFP_KERNEL);	/*wie wird die page gealloc*/
-	if (result < 0) {
-		dev_err(pDevData->dev, "MappUserBuffer: sg_alloc_table() failed");
-		imago_dma_unmap(pDevData, pDMAChannel, pJob);
-		return result;
-	}
+		result = sg_alloc_table(&pJob->SGTable	/*header*/, 
+								pagesPinned 	/*für wie viele Einträge*/, 
+								GFP_KERNEL);	/*wie wird die page gealloc*/
+		if (result < 0) {
+			dev_err(pDevData->dev, "MappUserBuffer: sg_alloc_table() failed");
+			imago_dma_unmap(pDevData, pDMAChannel, pJob);
+			return result;
+		}
 
-	// sg_set_page(): set sg entry to point at given page
-	pSGList = pJob->SGTable.sgl;
-	for (iSG = 0; iSG < pagesPinned; iSG++) {
-		u32 bytes = bytesRemaining;
-		if (bytes > PAGE_SIZE)
-			bytes = PAGE_SIZE;
-		bytesRemaining -= bytes;
-		if (reversePages)
-			sg_set_page(pSGList,
-						pJob->ppPageList[pagesPinned - iSG - 1],
-						bytes,
-						PAGE_SIZE - bytes);				/*Offset*/
-		else
-			sg_set_page(pSGList,				/*an diese Stelle wird die Page eingetragen*/
-						pJob->ppPageList[iSG]	/*Pointer zur page struct*/,
-						bytes,
-						0);	/*Offset*/
-		pSGList = sg_next(pSGList);
+		// sg_set_page(): set sg entry to point at given page
+		pSGList = pJob->SGTable.sgl;
+		for (iSG = 0; iSG < pagesPinned; iSG++) {
+			u32 bytes = bytesRemaining;
+			if (bytes > PAGE_SIZE)
+				bytes = PAGE_SIZE;
+			bytesRemaining -= bytes;
+			if (reversePages)
+				sg_set_page(pSGList,
+							pJob->ppPageList[pagesPinned - iSG - 1],
+							bytes,
+							PAGE_SIZE - bytes);				/*Offset*/
+			else
+				sg_set_page(pSGList,				/*an diese Stelle wird die Page eingetragen*/
+							pJob->ppPageList[iSG]	/*Pointer zur page struct*/,
+							bytes,
+							0);	/*Offset*/
+			pSGList = sg_next(pSGList);
+		}
 	}
-}
 #endif
 
 
@@ -328,7 +328,7 @@ void imago_dma_unmap(struct DEVICE_DATA *pDevData, struct DMA_READ_CHANNEL *pDMA
 	dev_dbg(pDevData->dev, "UnMapUserBuffer\n");
 
 	if (pDevData == NULL) {
-		dev_err(pDevData->dev, "MappUserBuffer:invalid arguments");
+		pr_err(MODMODULENAME": MappUserBuffer: invalid argument");
 		return;
 	}
 	if (pJob == NULL)

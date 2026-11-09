@@ -350,7 +350,7 @@ static int imago_pci_probe(struct pci_dev *pcidev, const struct pci_device_id *i
 														PAGE_SIZE,		/* größe in Bytes (wird eh min zu einer Page)*/
 														&pDevData->pBACommonBuffer,
 														GFP_KERNEL);	/* zone wird über die maske eingestellt, sonst nur noch ob GFP_ATOMIC)*/
-		if (pDevData->pVACommonBuffer == 0) {
+		if (!pDevData->pVACommonBuffer) {
 			dev_err(&pcidev->dev, "dma_alloc_coherent failed!\n");
 			imago_free_dev_data(pDevData);
 			return -ENOMEM;
@@ -436,7 +436,7 @@ static int imago_pci_probe(struct pci_dev *pcidev, const struct pci_device_id *i
 		// low 32 bit
 		iowrite32((pDevData->pBACommonBuffer & 0xFFFFFFFF), pDevData->pVABAR0 + ISR_COMMONBUFFER_ADR_AGEX2);
 
-#ifdef CONFIG_64BIT		
+#ifdef CONFIG_64BIT
 		// high 32 bit
 		if (IS_TYPEWITH_PCI64BIT(pDevData))
 			iowrite32((pDevData->pBACommonBuffer >> 32), pDevData->pVABAR0 + ISR_COMMONBUFFER_ADR_AGEX2 + 4);

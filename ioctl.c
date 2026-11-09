@@ -134,30 +134,27 @@ long imago_locked_ioctl(struct DEVICE_DATA *pDevData, u32 cmd, u8 __user * pToUs
 		// Values can only be modified when 0 (or set with the same value).
 		case IOC_DMAREAD_CONFIG:
 		{
-			u16 tmpDMAs, tmpTCs, tmpSGs;
 			u8 iDMA, iTC;
+			struct {
+				u16 dma_count;
+				u16 tc_count;
+				u16 sg_count;
+			} __attribute__((packed)) dma_config;
 
 			if (!IS_TYPEWITH_DMA2HOST(pDevData)) {				
 				dev_warn(pDevData->dev, "imago_locked_ioctl: No DMA support\n");
 				return -EFAULT;
 			}
-			if (get_user(tmpDMAs, (u16*)(pToUserMem + 0)) != 0) {
-				dev_warn(pDevData->dev, "imago_locked_ioctl: get_user failed\n");
-				return -EFAULT;
-			}
-			if (get_user(tmpTCs,(u16*)(pToUserMem + 2)) != 0) {
-				dev_warn(pDevData->dev, "imago_locked_ioctl: get_user failed\n");
-				return -EFAULT;
-			}
-			if (get_user(tmpSGs,(u16*)(pToUserMem + 4)) != 0) {
-				dev_warn(pDevData->dev, "imago_locked_ioctl: get_user failed\n");
+
+			if (copy_from_user(&dma_config, pToUserMem, sizeof(dma_config))) {
+				dev_err(pDevData->dev, "imago_locked_ioctl: IOC_DMAREAD_CONFIG: copy_from_user() faild\n");
 				return -EFAULT;
 			}
 
 			// reconfiguring with the same values is allowed
-			if (	pDevData->DMARead_channels == tmpDMAs
-				&&	pDevData->DMARead_TCs == tmpTCs
-				&&	pDevData->DMARead_SGs == tmpSGs)
+			if (	pDevData->DMARead_channels == dma_config.dma_count
+				&&	pDevData->DMARead_TCs == dma_config.tc_count
+				&&	pDevData->DMARead_SGs == dma_config.sg_count)
 				return 0;
 
 			// only allow configuration the first time
@@ -168,19 +165,21 @@ long imago_locked_ioctl(struct DEVICE_DATA *pDevData, u32 cmd, u8 __user * pToUs
 				return -EFAULT;
 			}
 			// check limits
-			if ((tmpDMAs > MAX_DMA_CHANNELS) || (tmpTCs > MAX_DMA_READ_CHANNELTCS) || (tmpSGs > MAX_DMA_READ_TCSGS)) {
+			if ((dma_config.dma_count > MAX_DMA_CHANNELS)
+				|| (dma_config.tc_count > MAX_DMA_READ_CHANNELTCS)
+				|| (dma_config.sg_count > MAX_DMA_READ_TCSGS)) {
 				dev_warn(pDevData->dev, "imago_locked_ioctl: DMA channel is out of range\n");
 				return -EFAULT;
 			}
 
-			pDevData->DMARead_channels	= tmpDMAs;
-			pDevData->DMARead_TCs		= tmpTCs;
-			pDevData->DMARead_SGs		= tmpSGs;
+			pDevData->DMARead_channels	= dma_config.dma_count;
+			pDevData->DMARead_TCs		= dma_config.tc_count;
+			pDevData->DMARead_SGs		= dma_config.sg_count;
 
 			// save FPGA address for writing into the descriptor FIFO for each TC
 			for (iDMA = 0; iDMA < pDevData->DMARead_channels; iDMA++) {
 				for (iTC = 0; iTC < pDevData->DMARead_TCs; iTC++) {
-					pDevData->DMARead_Channel[iDMA].TCs[iTC].pDesriptorFifo = pDevData->pVABAR0 
+					pDevData->DMARead_Channel[iDMA].TCs[iTC].pDesriptorFifo = pDevData->pVABAR0
 						+ DMA_READ_TC_SG_OFFSET
 						+ (iDMA * pDevData->DMARead_TCs + iTC) * 16;
 				}
@@ -215,8 +214,12 @@ long imago_locked_ioctl(struct DEVICE_DATA *pDevData, u32 cmd, u8 __user * pToUs
 		// map user buffer for DMA
 		case IOC_DMAREAD_MAP_BUFFER:
 		{
-			u8 	iDMAChannel, reversePages;
-			u64 user_ptr, bufferSize;
+			struct {
+				u8 dma_channel;
+				u64 user_ptr;
+				u64 buffer_size;
+				u8 reverse_pages;
+			} __attribute__((packed)) map_data;
 			struct DMA_READ_CHANNEL *pDMAChannel;
 			struct DMA_READ_JOB *pJob = NULL;
 			int result;
@@ -225,43 +228,32 @@ long imago_locked_ioctl(struct DEVICE_DATA *pDevData, u32 cmd, u8 __user * pToUs
 				dev_warn(pDevData->dev, "imago_locked_ioctl: No DMA support\n");
 				return -EFAULT;
 			}
-			if (get_user(iDMAChannel, pToUserMem) != 0) {
-				dev_warn(pDevData->dev, "imago_locked_ioctl: get_user failed\n");
+
+			if (copy_from_user(&map_data, pToUserMem, sizeof(map_data))) {
+				dev_err(pDevData->dev, "imago_locked_ioctl: IOC_DMAREAD_MAP_BUFFER: copy_from_user() faild\n");
 				return -EFAULT;
 			}
-			if (get_user(user_ptr, (u64*)(pToUserMem + 1)) != 0) {
-				dev_warn(pDevData->dev, "imago_locked_ioctl: get_user failed\n");
-				return -EFAULT;
-			}
-			if (get_user(bufferSize, (u64*)(pToUserMem + sizeof(u64) + 1)) != 0) {
-				dev_warn(pDevData->dev, "imago_locked_ioctl: get_user failed\n");
-				return -EFAULT;
-			}
-			if (get_user(reversePages, (u8*)(pToUserMem + 2*sizeof(u64) + 1)) != 0) {
-				dev_warn(pDevData->dev, "imago_locked_ioctl: get_user failed\n");
-				return -EFAULT;
-			}
-		
-			if (iDMAChannel >= pDevData->DMARead_channels) {
+
+			if (map_data.dma_channel >= pDevData->DMARead_channels) {
 				dev_warn(pDevData->dev, "imago_locked_ioctl: DMA channel is out of range");
 				return -EFAULT;
 			}
-			if (bufferSize == 0 || bufferSize > 0xffffffff) {
+			if (map_data.buffer_size == 0 || map_data.buffer_size > 0xffffffff) {
 				dev_warn(pDevData->dev, "imago_locked_ioctl: invalid buffer size");
 				return -EFAULT;
 			}
 
-			pDMAChannel = &pDevData->DMARead_Channel[iDMAChannel];
+			pDMAChannel = &pDevData->DMARead_Channel[map_data.dma_channel];
 			pDMAChannel->doManualMap = true;
 
 			// map buffer
-			result = imago_dma_map(pDevData, pDMAChannel, (uintptr_t)user_ptr, bufferSize, reversePages, &pJob);
+			result = imago_dma_map(pDevData, pDMAChannel, (uintptr_t)map_data.user_ptr, map_data.buffer_size, map_data.reverse_pages, &pJob);
 			if (result < 0)
 				return result;
 
 			// return job pointer as handle for unmapping later
-			user_ptr = (u64)(uintptr_t)pJob;
-			if (put_user(user_ptr, (u64 *)pToUserMem) != 0) {
+			map_data.user_ptr = (u64)(uintptr_t)pJob;
+			if (put_user(map_data.user_ptr, (u64 __user *)pToUserMem) != 0) {
 				dev_warn(pDevData->dev, "imago_locked_ioctl: put_user failed\n");
 				return -EFAULT;
 			}
@@ -272,33 +264,31 @@ long imago_locked_ioctl(struct DEVICE_DATA *pDevData, u32 cmd, u8 __user * pToUs
 		// unmap user buffer
 		case IOC_DMAREAD_UNMAP_BUFFER:
 		{
-			u8 iDMAChannel;
-			u64 user_ptr;
+			struct {
+				u8 dma_channel;
+				u64 user_ptr;
+			} __attribute__((packed)) unmap_data;
 			struct DMA_READ_CHANNEL *pDMAChannel;
 			struct DMA_READ_JOB *pJob;
-			// struct list_head *list_tmp, *list_next;
 
 			if (!IS_TYPEWITH_DMA2HOST(pDevData)) {
 				dev_warn(pDevData->dev, "imago_locked_ioctl: No DMA support\n");
 				return -EFAULT;
 			}
 
+			if (copy_from_user(&unmap_data, pToUserMem, sizeof(unmap_data))) {
+				dev_err(pDevData->dev, "imago_locked_ioctl: IOC_DMAREAD_UNMAP_BUFFER: copy_from_user() faild\n");
+				return -EFAULT;
+			}
+
 			//> Args vom User lesen und testen
-			if (get_user(iDMAChannel, pToUserMem) != 0) {
-				dev_warn(pDevData->dev, "imago_locked_ioctl: get_user failed\n");
-				return -EFAULT;
-			}
-			if (get_user(user_ptr, (u64*)(pToUserMem + 1)) != 0) {
-				dev_warn(pDevData->dev, "imago_locked_ioctl: get_user failed\n");
-				return -EFAULT;
-			}
-			if (iDMAChannel >= pDevData->DMARead_channels) {
+			if (unmap_data.dma_channel >= pDevData->DMARead_channels) {
 				dev_warn(pDevData->dev, "imago_locked_ioctl: DMA channel is out of range");
 				return -EFAULT;
 			}
 
-			pDMAChannel = &pDevData->DMARead_Channel[iDMAChannel];
-			pJob = (struct DMA_READ_JOB *)(uintptr_t)user_ptr;
+			pDMAChannel = &pDevData->DMARead_Channel[unmap_data.dma_channel];
+			pJob = (struct DMA_READ_JOB *)(uintptr_t)unmap_data.user_ptr;
 			imago_dma_unmap(pDevData, pDMAChannel, pJob);
 			
 			return 0;
@@ -307,8 +297,11 @@ long imago_locked_ioctl(struct DEVICE_DATA *pDevData, u32 cmd, u8 __user * pToUs
 		// add buffer for DMA (old version which also maps the buffer)
 		case IOC_DMAREAD_ADD_BUFFER:
 		{
-			u8 iDMAChannel;
-			u64 UserPTR, bufferSize;
+			struct {
+				u8 dma_channel;
+				u64 user_ptr;
+				u64 buffer_size;
+			} __attribute__((packed)) buffer_data;
 			struct DMA_READ_CHANNEL *pDMAChannel;
 			struct DMA_READ_JOB *pJob = NULL;
 			int result;
@@ -318,39 +311,30 @@ long imago_locked_ioctl(struct DEVICE_DATA *pDevData, u32 cmd, u8 __user * pToUs
 				return -EFAULT;
 			}
 
-			//> Args vom User lesen und testen
-			if (get_user(iDMAChannel, pToUserMem) != 0) {
-				dev_warn(pDevData->dev, "imago_locked_ioctl: get_user failed\n");
-				return -EFAULT;
-			}
-			if (get_user(UserPTR, (u64*)(pToUserMem + 1)) != 0) {
-				dev_warn(pDevData->dev, "imago_locked_ioctl: get_user failed\n");
-				return -EFAULT;
-			}
-			if (get_user(bufferSize, (u64*)(pToUserMem + sizeof(u64) + 1)) != 0) {
-				dev_warn(pDevData->dev, "imago_locked_ioctl: get_user failed\n");
+			if (copy_from_user(&buffer_data, pToUserMem, sizeof(buffer_data))) {
+				dev_err(pDevData->dev, "imago_locked_ioctl: IOC_DMAREAD_ADD_BUFFER: copy_from_user() faild\n");
 				return -EFAULT;
 			}
 
-			if (iDMAChannel >= pDevData->DMARead_channels) {
+			if (buffer_data.dma_channel >= pDevData->DMARead_channels) {
 				dev_warn(pDevData->dev, "imago_locked_ioctl: DMA channel is out of range");
 				return -EFAULT;
 			}
-			if (bufferSize == 0 || bufferSize > 0xffffffff) {
+			if (buffer_data.buffer_size == 0 || buffer_data.buffer_size > 0xffffffff) {
 				dev_warn(pDevData->dev, "imago_locked_ioctl: invalid buffer size");
 				return -EFAULT;
 			}
 
-			pDMAChannel = &pDevData->DMARead_Channel[iDMAChannel];
+			pDMAChannel = &pDevData->DMARead_Channel[buffer_data.dma_channel];
 			pDMAChannel->doManualMap = false;
 
 			// map user buffer for DMA
-			result = imago_dma_map(pDevData, pDMAChannel, (uintptr_t) UserPTR, bufferSize, 0, &pJob);
+			result = imago_dma_map(pDevData, pDMAChannel, (uintptr_t) buffer_data.user_ptr, buffer_data.buffer_size, 0, &pJob);
 			if (result < 0)
 				return result;
 
 			// start DMA if idle, else add job to job_list_pending
-			result = imago_dma_addjob(pDevData, iDMAChannel, pJob);
+			result = imago_dma_addjob(pDevData, buffer_data.dma_channel, pJob);
 			if (result != 0)
 				return result;
 
@@ -360,8 +344,10 @@ long imago_locked_ioctl(struct DEVICE_DATA *pDevData, u32 cmd, u8 __user * pToUs
 		// add mapped buffer for DMA
 		case IOC_DMAREAD_ADD_MAPPED_BUFFER:
 		{
-			u8 iDMAChannel;
-			u64 user_ptr;
+			struct {
+				u8 dma_channel;
+				u64 user_ptr;
+			} __attribute__((packed)) buffer_data;
 			struct DMA_READ_CHANNEL *pDMAChannel;
 			struct DMA_READ_JOB *pJob;
 			int result;
@@ -371,27 +357,23 @@ long imago_locked_ioctl(struct DEVICE_DATA *pDevData, u32 cmd, u8 __user * pToUs
 				return -EFAULT;
 			}
 
-			//> Args vom User lesen und testen
-			if (get_user(iDMAChannel, pToUserMem) != 0) {
-				dev_warn(pDevData->dev, "imago_locked_ioctl: get_user failed\n");
+			if (copy_from_user(&buffer_data, pToUserMem, sizeof(buffer_data))) {
+				dev_err(pDevData->dev, "imago_locked_ioctl: IOC_DMAREAD_ADD_MAPPED_BUFFER: copy_from_user() faild\n");
 				return -EFAULT;
 			}
-			if (get_user(user_ptr, (u64*)(pToUserMem + 1)) != 0) {
-				dev_warn(pDevData->dev, "imago_locked_ioctl: get_user failed\n");
-				return -EFAULT;
-			}
-			if (iDMAChannel >= pDevData->DMARead_channels) {
+
+			if (buffer_data.dma_channel >= pDevData->DMARead_channels) {
 				dev_warn(pDevData->dev, "imago_locked_ioctl: DMA channel is out of range");
 				return -EFAULT;
 			}
 
-			pDMAChannel = &pDevData->DMARead_Channel[iDMAChannel];
-			pJob = (struct DMA_READ_JOB *)(uintptr_t)user_ptr;
+			pDMAChannel = &pDevData->DMARead_Channel[buffer_data.dma_channel];
+			pJob = (struct DMA_READ_JOB *)(uintptr_t)buffer_data.user_ptr;
 
 			dma_sync_sg_for_device(pDevData->dev, pJob->SGTable.sgl, pJob->SGTable.orig_nents, DMA_FROM_DEVICE);
 			
 			// start DMA if idle, else add job to job_list_pending
-			result = imago_dma_addjob(pDevData, iDMAChannel, pJob);
+			result = imago_dma_addjob(pDevData, buffer_data.dma_channel, pJob);
 			if (result != 0)
 				return result;
 
@@ -428,7 +410,7 @@ long imago_locked_ioctl(struct DEVICE_DATA *pDevData, u32 cmd, u8 __user * pToUs
 				dev_err(pDevData->dev, "imago_locked_ioctl: IOC_DMAREAD_WAIT_FOR_BUFFER: No DMA support\n");
 				return -EFAULT;
 			}
-			if (__copy_from_user(&ctl_in, pToUserMem, sizeof(ctl_in))) {
+			if (copy_from_user(&ctl_in, pToUserMem, sizeof(ctl_in))) {
 				dev_err(pDevData->dev, "imago_locked_ioctl: IOC_DMAREAD_WAIT_FOR_BUFFER: copy_from_user() faild\n");
 				return -EFAULT;
 			}

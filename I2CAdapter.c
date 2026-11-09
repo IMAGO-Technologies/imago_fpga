@@ -157,12 +157,12 @@ static unsigned int i2cAdapter_functionality(struct i2c_adapter *adapt)
 	return I2C_FUNC_I2C;
 }
 
-struct i2c_algorithm imago_i2cAlgo = {
+static struct i2c_algorithm imago_i2cAlgo = {
 	.master_xfer = i2cAdapter_xfer,
 	.functionality = i2cAdapter_functionality,
 };
 
-struct i2c_adapter imago_i2cAdapter = {
+static struct i2c_adapter imago_i2cAdapter = {
 	.owner = THIS_MODULE,
 	.algo = &imago_i2cAlgo,
 	.name = "IMAGO i2c adapter",

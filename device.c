@@ -110,10 +110,11 @@ struct DEVICE_DATA *imago_alloc_dev_data(struct device *dev, u8 dev_type)
 		pDevData->flags				= device_info[dev_type].flags;
 	else
 		pDevData->flags				= 0;
+
 #if LINUX_VERSION_CODE > KERNEL_VERSION(2,6,32)
-		sema_init(&pDevData->DeviceSem,1);		//1<>frei
+	sema_init(&pDevData->DeviceSem,1);		//1<>frei
 #else
-		init_MUTEX( &pDevData->DeviceSem);
+	init_MUTEX( &pDevData->DeviceSem);
 #endif
 
 	/* SUN */
@@ -176,15 +177,13 @@ static void imago_dev_release(struct device *dev)
 		imago_free_dev_data(pDevData);
 }
 
-extern struct file_operations fpga_ops;
-
 // Helper function for creating a char device
 int imago_create_device(struct DEVICE_DATA *pDevData)
 {
 	int res;
 
 	// add char device for file ops
-	cdev_init(&pDevData->DeviceCDev, &fpga_ops);
+	cdev_init(&pDevData->DeviceCDev, &imago_fpga_ops);
 	pDevData->DeviceCDev.owner = THIS_MODULE;
 
 	res = cdev_add(&pDevData->DeviceCDev, pDevData->DeviceNumber, 1);

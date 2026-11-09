@@ -184,7 +184,7 @@ static int imago_hid_probe(struct hid_device *hdev, const struct hid_device_id *
 	u8 dev_type;
 	struct DEVICE_DATA *pDevData = NULL;
 	struct usb_interface *intf = to_usb_interface(hdev->dev.parent);
-	struct imago_hid_uart *hid_uart;
+	struct imago_hid_uart *hid_uart = NULL;
 	int i;
 
 	dev_type = id->driver_data;
@@ -258,7 +258,7 @@ static int imago_hid_probe(struct hid_device *hdev, const struct hid_device_id *
 	}
 
 	pDevData = imago_alloc_dev_data(&hdev->dev, dev_type);
-	if (pDevData == NULL) {
+	if (!pDevData) {
 		res = -EINVAL;
 		goto exit_stop;
 	}			
@@ -279,8 +279,10 @@ static int imago_hid_probe(struct hid_device *hdev, const struct hid_device_id *
 
 exit_stop:
 	hid_hw_stop(hdev);
-	if (pDevData != NULL)
+	if (pDevData)
 		imago_free_dev_data(pDevData);
+	if (hid_uart)
+		kfree(hid_uart);
 
 	return res;
 }
@@ -295,7 +297,7 @@ static void imago_hid_remove(struct hid_device *hdev)
 		struct imago_hid_uart *hid_uart = hid_get_drvdata(hdev);
 		struct DEVICE_DATA *pDevData = hid_uart->pDevData;
 
-		if (pDevData == NULL) {
+		if (!pDevData) {
 			hid_warn(hdev, "imago_hid_remove(): device data is invalid\n");
 			return;
 		}

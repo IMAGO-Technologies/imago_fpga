@@ -310,8 +310,8 @@ static ssize_t imago_read(struct file* filp, char __user* buf, size_t count, lof
 	}
 	else if (ret == -ERESTARTSYS) {
 		// store modified write size and timeout in user memory
-		put_user(data[1], (u32*)(buf + 1));
-		put_user(data[2], (u32*)(buf + 2));
+		put_user(data[1], (u32 __user *)(buf + 1));
+		put_user(data[2], (u32 __user *)(buf + 2));
 	}
 	return ret;
 }
@@ -320,7 +320,7 @@ static ssize_t imago_read(struct file* filp, char __user* buf, size_t count, lof
 #define no_llseek NULL
 #endif
 
-struct file_operations fpga_ops = {
+struct file_operations imago_fpga_ops = {
 	.owner = THIS_MODULE,
 	.open = imago_open,
 	.release = imago_release,

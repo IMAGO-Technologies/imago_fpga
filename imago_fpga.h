@@ -178,7 +178,7 @@ struct DMA_READ_TC
 {
 	struct DMA_READ_JOB	*pJob;				// current job data
 	struct scatterlist	*sg_list;			// SG list for current transfer
-	u32					*pDesriptorFifo;
+	void __iomem		*pDesriptorFifo;
 	u16					sg_remaining;		// number of remaining SG elements for DMA to complete
 };
 
@@ -222,7 +222,7 @@ struct DEVICE_DATA
 	//> BAR0
 	//***************************************************************/
 	bool					boIsBAR0Requested;	//ist die Bar0 gültig
-	void*					pVABAR0;			//zeigt auf den Anfang des gemapped mem vom PCIDev (eg 0xffffc90017480000)
+	void __iomem*			pVABAR0;			//zeigt auf den Anfang des gemapped mem vom PCIDev (eg 0xffffc90017480000)
 
 	//> CommonBuffer (AGEX2/4...)
 	//***************************************************************/
@@ -256,6 +256,7 @@ extern MODULE_DATA _ModuleData;
 extern struct pci_driver imago_pci_driver;
 extern struct spi_driver imago_spi_driver;
 extern struct hid_driver imago_hid_driver;
+extern struct file_operations imago_fpga_ops;
 
 /*** prototypes ***/
 /******************************************************************************************/
