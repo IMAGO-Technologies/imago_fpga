@@ -1,0 +1,60 @@
+name: Analyze kernel module
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    name: Build kernel module
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Kernel module code analysis
+        shell: bash
+        run: |
+            echo "Git hash:: [$(git rev-parse HEAD)]($(git ls-remote --get-url)/commit/$(git rev-parse HEAD))" >> $GITHUB_STEP_SUMMARY
+            sudo apt-get update
+            sudo apt-get install -y build-essential linux-headers-generic dwarves sqlite3 libsqlite3-dev libdbd-sqlite3-perl libssl-dev libtry-tiny-perl
+            echo " "
+            echo "Building and installing sparse..."
+            git clone git://git.kernel.org/pub/scm/devel/sparse/sparse.git
+            make -C sparse -j $(nproc)
+            make -C sparse install
+            export PATH=$HOME/bin:$PATH
+            echo " "
+            echo "Building and installing smatch..."
+            git clone https://github.com/error27/smatch.git
+            make -C smatch -j $(nproc)
+            sparse --version
+            sudo ln -sf /sys/kernel/btf/vmlinux /lib/modules/$(uname -r)/build/vmlinux
+            set -o pipefail
+            echo "Analyzing kernel module using sparse..."
+            echo "### Kernel module analysis using sparse" >> $GITHUB_STEP_SUMMARY
+            make -j $(nproc) -C /lib/modules/$(uname -r)/build M=$PWD C=2 CF="-fdiagnostic-prefix" modules 2>&1 | tee build.log
+            grep "sparse:" build.log > sparse_errors.log || true
+            if [ -s sparse_errors.log ]; then
+                echo "sparse analysis found issues!" | tee $GITHUB_STEP_SUMMARY
+                cat sparse_errors.log | tee $GITHUB_STEP_SUMMARY
+                exit 1
+            else
+                echo "no problems found" >> $GITHUB_STEP_SUMMARY
+            fi
+            echo "### Kernel module analysis using smatch" >> $GITHUB_STEP_SUMMARY
+            echo " "
+            echo "Analyzing kernel module using smatch..."
+            make clean
+            make -j $(nproc) -C /lib/modules/$(uname -r)/build M=$PWD C=2 CHECK="$PWD/smatch/smatch -p=kernel" modules 2> smatch_errors.log
+            sed -i -e '/the compiler differs/ { N; N; d; }' smatch_errors.log
+            if [ -s smatch_errors.log ]; then
+                echo "smatch analysis found issues!" | tee $GITHUB_STEP_SUMMARY
+                cat smatch_errors.log | tee $GITHUB_STEP_SUMMARY
+                exit 1
+            else
+                echo "no problems found" >> $GITHUB_STEP_SUMMARY
+            fi
